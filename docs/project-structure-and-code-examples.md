@@ -1,121 +1,99 @@
-# Project Structure and Code Examples for Java Spring Boot Development
+# Project Structure
 
-## Project Directory Layout
-- **src/**: Contains all application source code.
-  - **main/**: Application’s main codebase.
-    - **java/**: Java source files.
-      - **com/example/**: Base package of the application; adjust package structure as needed.
-        - **entities/**: Contains entity classes that represent the domain model.
-        - **repositories/**: Interfaces for data access (Spring Data JPA repositories).
-        - **services/**: Business logic and service implementations.
-        - **controllers/**: REST controllers for handling web requests.
-        - **dto/**: Data Transfer Objects for transferring data between layers.
-        - **exceptions/**: Global exception handlers.
-    - **resources/**: Contains application configuration files (e.g., application.properties).
+## Overview
+In this document, we will explore the essential components of a well-structured project. Understanding the project structure helps maintain clean code and promotes best practices.
 
-## Entity Examples
+## Directory Structure
+- **src/**: Contains the main application code.
+- **docs/**: Documentation files.
+- **tests/**: Unit and integration tests.
+
+## Entity Example
+Entities are the core business objects of the application. Each entity usually corresponds to a database table.
+
+### Example: User Entity
 ```java
-package com.example.entities;
-
-import javax.persistence.*;
-
-@Entity
-@Table(name = "users")
 public class User {
-    @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
-
-    private String username;
+    private String name;
     private String email;
 
     // Getters and Setters
 }
 ```
 
-## Repository Interfaces
+## Repository
+The repository layer interacts with the database. It abstracts data access and provides methods to retrieve and store entities.
+
+### Example: UserRepository
 ```java
-package com.example.repositories;
-
-import org.springframework.data.jpa.repository.JpaRepository;
-import com.example.entities.User;
-
 public interface UserRepository extends JpaRepository<User, Long> {
-    Optional<User> findByUsername(String username);
+    Optional<User> findByEmail(String email);
 }
 ```
 
-## Service Implementations
+## Service
+The service layer contains business logic. It calls repositories and coordinates data flow between entities and controllers.
+
+### Example: UserService
 ```java
-package com.example.services;
-
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.stereotype.Service;
-import com.example.repositories.UserRepository;
-import com.example.entities.User;
-
 @Service
 public class UserService {
     @Autowired
     private UserRepository userRepository;
 
-    public User findUserByUsername(String username) {
-        return userRepository.findByUsername(username).orElse(null);
+    public User findUserByEmail(String email) {
+        return userRepository.findByEmail(email)
+            .orElseThrow(() -> new UserNotFoundException(email));
     }
 }
 ```
 
-## REST Controllers
+## Controller
+Controllers handle HTTP requests and responses. They map client requests to service layer methods.
+
+### Example: UserController
 ```java
-package com.example.controllers;
-
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.*;
-import com.example.services.UserService;
-import com.example.entities.User;
-
 @RestController
-@RequestMapping("/api/users")
+@RequestMapping("/users")
 public class UserController {
     @Autowired
     private UserService userService;
 
-    @GetMapping("/{username}")
-    public ResponseEntity<User> getUser(@PathVariable String username) {
-        User user = userService.findUserByUsername(username);
-        return user != null ? ResponseEntity.ok(user) : ResponseEntity.notFound().build();
+    @GetMapping("/email/{email}")
+    public ResponseEntity<User> getUserByEmail(@PathVariable String email) {
+        User user = userService.findUserByEmail(email);
+        return ResponseEntity.ok(user);
     }
 }
 ```
 
-## DTO Classes
-```java
-package com.example.dto;
+## DTO (Data Transfer Object)
+DTOs are simple objects that carry data between processes. They help in reducing database access and improving performance.
 
+### Example: UserDTO
+```java
 public class UserDTO {
-    private String username;
+    private String name;
     private String email;
 
     // Getters and Setters
 }
 ```
 
-## Global Exception Handlers
+## Exception Handling
+Effective exception handling is crucial for providing feedback to API users and for maintaining application reliability.
+
+### Example: Global Exception Handler
 ```java
-package com.example.exceptions;
-
-import org.springframework.http.HttpStatus;
-import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.ControllerAdvice;
-import org.springframework.web.bind.annotation.ExceptionHandler;
-
 @ControllerAdvice
 public class GlobalExceptionHandler {
-
-    @ExceptionHandler(Exception.class)
-    public ResponseEntity<String> handleException(Exception e) {
-        return new ResponseEntity<>(e.getMessage(), HttpStatus.INTERNAL_SERVER_ERROR);
+    @ExceptionHandler(UserNotFoundException.class)
+    public ResponseEntity<String> handleUserNotFound(UserNotFoundException ex) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ex.getMessage());
     }
 }
 ```
+
+## Conclusion
+Following a structured approach to your project design will ensure that the application remains maintainable, scalable, and easy to understand.
