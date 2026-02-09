@@ -1,60 +1,66 @@
-# Issue Development Workflow for Java Spring Boot + Docker
+# Kỹ Năng: Dự Án Java Spring Boot + Docker với Tập Trung Vào Mẫu Kiến Trúc
 
-## Overview
-This document outlines the development workflow for issues related to Java Spring Boot projects utilizing Docker.
+## Giới Thiệu
+Trong tài liệu này, chúng ta sẽ khám phá chi tiết về việc phát triển ứng dụng sử dụng Java Spring Boot trong môi trường Docker, tập trung vào các mẫu kiến trúc thiết kế.
 
-## Prerequisites
-- **Java 11 or later**: Ensure Java is installed and configured properly.
-- **Maven**: The project is built using Maven.
-- **Docker**: Docker should be installed for containerization.
+## 1. Mẫu Kiến Trúc
+### 1.1. Kiến Trúc Microservices
+- **Định Nghĩa**: Phân chia ứng dụng thành các dịch vụ nhỏ độc lập.
+- **Ưu điểm**: Khả năng mở rộng, bảo trì và triển khai độc lập.
 
-## Workflow Steps
-1. **Issue Creation**  
-   Create a new issue in GitHub describing the feature, bug, or task clearly.
+### 1.2. Mẫu MVC (Model-View-Controller)
+- **Định Nghĩa**: Tách biệt logic nghiệp vụ, giao diện người dùng và quản lý dữ liệu.
+- **Cách Thực Hiện**: Sử dụng các annotation trong Spring để định nghĩa Controller, Service, và Repository.
 
-2. **Branching**  
-   - Create a new branch from `main` with the naming convention `issue/#ISSUE_NUMBER-description`.
-   - Example: `issue/42-add-docker-support`
+## 2. Chi Tiết Về Dịch Vụ
+### 2.1. Dịch Vụ Đăng Nhập
+- **Tập Trung**: Xác thực người dùng.
+- **Mits**: Thực hiện xác thực với JWT.
+- **Đầu Vào**: Tên người dùng và mật khẩu.
+- **Đầu Ra**: Token xác thực.
 
-3. **Development**  
-   - Implement the required changes in the new branch.
-   - Use the IDE of your choice; IntelliJ IDEA or Eclipse is recommended.
+### 2.2. Dịch Vụ Đặt Hàng
+- **Tập Trung**: Quản lý quy trình đặt hàng.
+- **Mits**: Xử lý thông tin đặt hàng và tính toán giá trị.
+- **Đầu Vào**: Chi tiết sản phẩm, thông tin người dùng.
+- **Đầu Ra**: Xác nhận đặt hàng, chi tiết hóa đơn.
 
-4. **Testing**  
-   - Run unit tests using Maven: `mvn test`
-   - Ensure all tests pass before proceeding.
+## 3. Cấu Trúc Dự Án
+### 3.1. Cấu Trúc Thư Mục
+```
+project-root/
+│
+├── src/
+│   ├── main/
+│   │   ├── java/
+│   │   │   └── com/example/project/
+│   │   │       ├── controller/
+│   │   │       ├── service/
+│   │   │       ├── repository/
+│   │   │       └── model/
+│   │   └── resources/
+│   └── test/
+└── Dockerfile
+```  
 
-5. **Dockerization**  
-   - Build Docker image:
-     ```bash
-     docker build -t my-spring-boot-app .
-     ```
-   - Run Docker container:
-     ```bash
-     docker run -p 8080:8080 my-spring-boot-app
-     ```
-   - Test the application in a browser or API client at `http://localhost:8080`
+### 3.2. Dockerfile
+```dockerfile
+FROM openjdk:11-jre-slim
+WORKDIR /app
+COPY target/project.jar /app/project.jar
+ENTRYPOINT [ "java", "-jar", "project.jar" ]
+```  
 
-6. **Commit Changes**  
-   - Commit your changes with a message referencing the issue number.
-   - Example: `git commit -m "Fixes #42: Added Docker support"`
+## 4. Hướng Dẫn Triển Khai
+### 4.1. Xây Dựng Hình Ảnh Docker
+```bash
+docker build -t <tên_hình_ảnh> .
+```  
 
-7. **Push Changes**  
-   - Push the branch to the remote repository:
-     ```bash
-     git push origin issue/#ISSUE_NUMBER
-     ```
+### 4.2. Chạy Ứng Dụng
+```bash
+docker run -p 8080:8080 <tên_hình_ảnh>
+```  
 
-8. **Create Pull Request**  
-   - Open a pull request from your branch into `main`.
-   - Add reviewers and mention related issues in the PR description.
-
-9. **Merge**  
-   - Once approved, merge the pull request to `main`.
-   - Delete the branch after merging to keep the repository clean.
-
-10. **Deployment**  
-    - Deploy the updated application as per the deployment pipeline guidelines.
-
-## Conclusion
-Following this workflow helps maintain consistency and quality in the development of Java Spring Boot applications with Docker integration.
+## 5. Kết Luận
+Tài liệu này đã cung cấp một cái nhìn tổng quan về cách phát triển ứng dụng Java Spring Boot chạy trên Docker với các mẫu kiến trúc thiết kế. Hãy tiếp tục nghiên cứu cho các trường hợp sử dụng cụ thể!
