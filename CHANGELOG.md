@@ -6,6 +6,20 @@ All notable changes to 4AiCoding. The project started from
 
 ## Unreleased
 
+### M3a — per-sandbox spec, ports, observability, isolation
+- `POST /v1/sandboxes` accepts `image` (instance image or one on
+  `SANDBOXD_IMAGE_ALLOWLIST`), `command`, `resources.cpus`/`resources.memory_mb`
+  (clamped to the instance maximums) and `network.ports`. The spec is stored
+  (migration `0028`), so a recreated container is identical, env included.
+- New routes: `GET|PUT|POST /v1/sandboxes/{id}/network/ports`,
+  `DELETE /v1/sandboxes/{id}/network/ports/{port}`, `GET /v1/sandboxes/{id}/metrics`,
+  `GET /v1/sandboxes/{id}/metrics/stream` (SSE) and `GET /v1/sandboxes/{id}/volumes`.
+- Sandboxes always run as `1000:1000` (`SANDBOXD_SANDBOX_USER`); older containers
+  are recreated as that user on their next start.
+- The API refuses requests from the sandbox network (source guard), and
+  docker-compose reaches the control plane over a separate `sandboxd_ctl` network.
+- Create and recreate share one container builder (`sandboxspec.Build`).
+
 ### M2 — lifecycle API and cleanup
 - New `/v1` lifecycle routes: `GET /v1/sandboxes`, `POST /v1/sandboxes/{id}/restart`,
   `POST /v1/sandboxes/{id}/exec`, `GET /v1/sandboxes/{id}/logs` (SSE with `follow=true`).

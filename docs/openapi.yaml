@@ -20,6 +20,8 @@ tags:
   - name: auth
   - name: sandboxes
   - name: snapshots
+  - name: network
+  - name: observability
 
 paths:
   /version:
@@ -406,6 +408,118 @@ paths:
             text/event-stream: { schema: { type: string } }
         "404": { $ref: "#/components/responses/Error" }
 
+  /v1/sandboxes/{id}/network/ports:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    get:
+      operationId: listSandboxPorts
+      tags: [network]
+      summary: Preview ports of a sandbox, with their URLs
+      responses:
+        "200": { $ref: "#/components/responses/Ports" }
+        "404": { $ref: "#/components/responses/Error" }
+    put:
+      operationId: replaceSandboxPorts
+      tags: [network]
+      summary: Replace the preview ports. A running sandbox is restarted on a rebuilt container.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ports]
+              additionalProperties: false
+              properties:
+                ports: { type: array, items: { $ref: "#/components/schemas/PortRequest" } }
+      responses:
+        "200": { $ref: "#/components/responses/Ports" }
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+    post:
+      operationId: addSandboxPort
+      tags: [network]
+      summary: Add one preview port (idempotent)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PortRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/Ports" }
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+
+  /v1/sandboxes/{id}/network/ports/{port}:
+    parameters:
+      - { $ref: "#/components/parameters/Id" }
+      - { name: port, in: path, required: true, schema: { type: integer } }
+    delete:
+      operationId: deleteSandboxPort
+      tags: [network]
+      summary: Remove one preview port
+      responses:
+        "200": { $ref: "#/components/responses/Ports" }
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+
+  /v1/sandboxes/{id}/metrics:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    get:
+      operationId: sandboxMetrics
+      tags: [observability]
+      summary: One resource sample (CPU, memory, network, block IO, pids). Zeros while stopped.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Metrics" }
+        "404": { $ref: "#/components/responses/Error" }
+
+  /v1/sandboxes/{id}/metrics/stream:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    get:
+      operationId: sandboxMetricsStream
+      tags: [observability]
+      summary: Metrics samples as Server-Sent Events, one `data:` Metrics object per interval
+      parameters:
+        - { name: interval, in: query, schema: { type: integer, minimum: 1, maximum: 60, default: 2 } }
+      responses:
+        "200":
+          description: SSE stream
+          content:
+            text/event-stream: { schema: { type: string } }
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+
+  /v1/sandboxes/{id}/volumes:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    get:
+      operationId: sandboxVolumes
+      tags: [observability]
+      summary: What is mounted into the sandbox. Host paths are never returned.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  volumes:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        type: { type: string, example: workspace }
+                        destination: { type: string, example: /home/sandbox }
+                        read_only: { type: boolean }
+                        used_bytes: { type: integer, format: int64 }
+        "404": { $ref: "#/components/responses/Error" }
+
   /v1/snapshots:
     get:
       operationId: listSnapshots
@@ -485,13 +599,60 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
+    Ports:
+      description: The sandbox's preview ports
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              ports:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    container: { type: integer }
+                    preview_url: { type: string }
   schemas:
+    PortRequest:
+      type: object
+      required: [container]
+      additionalProperties: false
+      properties:
+        container: { type: integer, minimum: 1, maximum: 65535 }
+    Resources:
+      type: object
+      description: Hard limits. Requests are clamped (not rejected) to the instance maximums; responses carry the applied values.
+      properties:
+        cpus: { type: number, description: "--cpus; 0 = no hard CPU limit" }
+        memory_mb: { type: integer, description: "--memory; 0 in a request = instance default" }
+    Metrics:
+      type: object
+      properties:
+        sandbox_id: { type: string }
+        status: { type: string }
+        at: { type: string, format: date-time }
+        stats:
+          type: object
+          properties:
+            cpu_percent: { type: number }
+            mem_usage_bytes: { type: integer, format: int64 }
+            mem_limit_bytes: { type: integer, format: int64 }
+            mem_percent: { type: number }
+            net_rx_bytes: { type: integer, format: int64 }
+            net_tx_bytes: { type: integer, format: int64 }
+            block_read_bytes: { type: integer, format: int64 }
+            block_write_bytes: { type: integer, format: int64 }
+            pids: { type: integer }
     Sandbox:
       type: object
       properties:
         id: { type: string }
         status: { type: string, enum: [creating, running, stopped, error] }
-        image: { type: string }
+        image: { type: string, description: "The image the sandbox runs (its own, or the instance image it follows)." }
+        command: { type: array, items: { type: string } }
+        env: { type: object, additionalProperties: { type: string } }
+        resources: { $ref: "#/components/schemas/Resources" }
         ports: { type: array, items: { type: integer } }
         preview: { $ref: "#/components/schemas/Preview" }
         visibility: { type: string, enum: [public, private] }
@@ -517,6 +678,14 @@ components:
       type: object
       additionalProperties: false
       properties:
+        image: { type: string, description: "Instance image when omitted. Any other image must be on SANDBOXD_IMAGE_ALLOWLIST." }
+        command: { type: array, maxItems: 64, items: { type: string }, description: "Overrides the image CMD." }
+        resources: { $ref: "#/components/schemas/Resources" }
+        network:
+          type: object
+          additionalProperties: false
+          properties:
+            ports: { type: array, items: { $ref: "#/components/schemas/PortRequest" }, description: "Structured form of `ports`; use one or the other." }
         ports: { type: array, items: { type: integer, minimum: 1, maximum: 65535 } }
         env: { type: object, additionalProperties: { type: string }, description: "Visible to every process in the sandbox. Never pass secrets." }
         visibility: { type: string, enum: [public, private], default: private }

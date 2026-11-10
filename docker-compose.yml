@@ -11,6 +11,11 @@
 # at runtime from the prebuilt ${SANDBOXD_IMAGE}. They join the same
 # ${SANDBOXD_NETWORK} so Traefik can route to them.
 #
+# Networks (PLAN §8 #13): sandboxes live on ${SANDBOXD_NETWORK}. The control
+# plane is reached ONLY over sandboxd_ctl, as http://sandboxd-ctl:9000. It also
+# sits on the sandbox network (it probes a waking sandbox's port) but refuses
+# every request whose source is in that network.
+#
 # Everything is parameterised from .env (see .env.example).
 
 networks:
@@ -18,6 +23,9 @@ networks:
     # Explicit name so the literal string also works as the --network
     # value sandboxd passes to `docker run` for each sandbox.
     name: ${SANDBOXD_NETWORK:-sandboxd_net}
+  sandboxd_ctl:
+    # Edge router <-> control plane only. Sandboxes never join it.
+    name: sandboxd_ctl
 
 services:
   traefik:
@@ -45,6 +53,7 @@ services:
       - ./traefik/dynamic:/etc/traefik/dynamic:ro
       - ${SANDBOXD_LOG_DIR:-/var/lib/sandboxd/log}:${SANDBOXD_LOG_DIR:-/var/lib/sandboxd/log}
     networks:
+      - sandboxd_ctl
       - sandboxd_net
 
   sandboxd:
@@ -60,7 +69,7 @@ services:
     image: ${SANDBOXD_CONTROL_PLANE_IMAGE:-sandboxd-control-plane:0.3.0}
     restart: unless-stopped
     userns_mode: "host"  # see traefik above
-    # Reachable on the internal network as http://sandboxd:9000. The API
+    # Reachable by Traefik as http://sandboxd-ctl:9000 (control network). The API
     # is also published to the loopback for local use / the upstream
     # backend; change SANDBOXD_API_BIND in .env if 127.0.0.1:9090 clashes.
     ports:
@@ -78,6 +87,12 @@ services:
       SANDBOXD_IMAGE: ${SANDBOXD_IMAGE:-sandboxd-base:0.3.0}
       SANDBOXD_NETWORK: ${SANDBOXD_NETWORK:-sandboxd_net}
       SANDBOXD_USERNS: ${SANDBOXD_USERNS:-host}
+      SANDBOXD_IMAGE_ALLOWLIST: ${SANDBOXD_IMAGE_ALLOWLIST:-}
+      SANDBOXD_SANDBOX_USER: ${SANDBOXD_SANDBOX_USER:-1000:1000}
+      SANDBOXD_DEFAULT_MEMORY_MB: ${SANDBOXD_DEFAULT_MEMORY_MB:-10240}
+      SANDBOXD_MAX_MEMORY_MB: ${SANDBOXD_MAX_MEMORY_MB:-10240}
+      SANDBOXD_MAX_CPUS: ${SANDBOXD_MAX_CPUS:-0}
+      SANDBOXD_MAX_PORTS_PER_SANDBOX: ${SANDBOXD_MAX_PORTS_PER_SANDBOX:-16}
       # Sandbox container runtime: empty = docker default (runc); "runsc" = gVisor
       # (stronger per-sandbox kernel isolation). SANDBOXD_DNS overrides resolv.conf
       # for gVisor sandboxes (netstack can't reach Docker's embedded DNS).
@@ -108,4 +123,6 @@ services:
       # --- idle lifecycle (override if you like) ---
       SANDBOXD_IDLE_THRESHOLD_SECONDS: ${SANDBOXD_IDLE_THRESHOLD_SECONDS:-2100}
     networks:
-      - sandboxd_net
+      sandboxd_ctl:
+        aliases: [sandboxd-ctl]
+      sandboxd_net: {}

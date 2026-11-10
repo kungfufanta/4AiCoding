@@ -15,7 +15,7 @@ http:
   middlewares:
     sandbox-preview-auth:
       forwardAuth:
-        address: "http://sandboxd:9000/forward-auth"
+        address: "http://sandboxd-ctl:9000/forward-auth"
         trustForwardHeader: true
         authResponseHeaders:
           - X-Sandbox-External-User-Id

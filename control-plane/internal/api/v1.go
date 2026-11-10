@@ -17,12 +17,20 @@ import (
 
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/audit"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/events"
+	"github.com/tastyeffectco/sandboxd/control-plane/internal/sandboxspec"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/store"
 )
 
-// errPerAppImage is returned when a request names an image. Per-sandbox images
-// arrive in M3a; until then the image is instance-wide (SANDBOXD_IMAGE).
-const errPerAppImage = "per-sandbox image selection is not supported yet; set SANDBOXD_IMAGE instance-wide"
+// effectiveMemoryMB is the hard memory limit a sandbox runs with.
+func (s *Server) effectiveMemoryMB(sb *store.Sandbox) int {
+	if sb.Spec.MemoryMB > 0 {
+		return sb.Spec.MemoryMB
+	}
+	if m := s.specEnv().MemoryMB; m > 0 {
+		return m
+	}
+	return sandboxspec.DefaultMemoryMB
+}
 
 // --- v1 response shapes ---------------------------------------------
 
@@ -38,19 +46,29 @@ type v1External struct {
 }
 
 type v1Sandbox struct {
-	ID             string      `json:"id"`
-	Status         string      `json:"status"`
-	Image          string      `json:"image"`
-	Ports          []int       `json:"ports"`
-	Preview        *v1Preview  `json:"preview,omitempty"` // only when the sandbox exposes ports
-	Visibility     string      `json:"visibility"`
-	IdlePolicy     string      `json:"idle_policy"`
-	External       *v1External `json:"external,omitempty"`
-	ErrorMessage   string      `json:"error_message,omitempty"`
-	LastActiveAt   string      `json:"last_active_at,omitempty"`
-	KeepaliveUntil string      `json:"keepalive_until,omitempty"`
-	CreatedAt      string      `json:"created_at"`
-	UpdatedAt      string      `json:"updated_at,omitempty"`
+	ID             string            `json:"id"`
+	Status         string            `json:"status"`
+	Image          string            `json:"image"`
+	Command        []string          `json:"command,omitempty"`
+	Env            map[string]string `json:"env,omitempty"`
+	Resources      v1Resources       `json:"resources"`
+	Ports          []int             `json:"ports"`
+	Preview        *v1Preview        `json:"preview,omitempty"` // only when the sandbox exposes ports
+	Visibility     string            `json:"visibility"`
+	IdlePolicy     string            `json:"idle_policy"`
+	External       *v1External       `json:"external,omitempty"`
+	ErrorMessage   string            `json:"error_message,omitempty"`
+	LastActiveAt   string            `json:"last_active_at,omitempty"`
+	KeepaliveUntil string            `json:"keepalive_until,omitempty"`
+	CreatedAt      string            `json:"created_at"`
+	UpdatedAt      string            `json:"updated_at,omitempty"`
+}
+
+// v1Resources are the effective (post-clamp) resource limits. 0 = no hard
+// limit beyond the instance default.
+type v1Resources struct {
+	CPUs     float64 `json:"cpus"`
+	MemoryMB int     `json:"memory_mb"`
 }
 
 // --- helpers --------------------------------------------------------
@@ -158,7 +176,10 @@ func (s *Server) v1SandboxFromRow(_ *http.Request, sb *store.Sandbox) v1Sandbox 
 	out := v1Sandbox{
 		ID:         sb.ID,
 		Status:     sb.Status,
-		Image:      sb.Image,
+		Image:      sandboxspec.DesiredImage(sb, s.Image),
+		Command:    sb.Spec.Command,
+		Env:        sb.Spec.Env,
+		Resources:  v1Resources{CPUs: sb.Spec.CPUs, MemoryMB: s.effectiveMemoryMB(sb)},
 		Ports:      sb.Ports,
 		Visibility: sb.Visibility,
 		IdlePolicy: sb.IdlePolicy,
@@ -263,9 +284,22 @@ type v1CreateReq struct {
 		RepoURL string `json:"repo_url"`
 		Branch  string `json:"branch,omitempty"`
 	} `json:"workspace,omitempty"`
-	// Image is rejected until per-sandbox images land (M3a). Declared so we
-	// 400 it instead of silently dropping it.
-	Image *string `json:"image,omitempty"`
+	// Image selects the sandbox image ("" = the instance image). Others must
+	// be on the instance allowlist.
+	Image   string   `json:"image,omitempty"`
+	Command []string `json:"command,omitempty"`
+	// Resources are hard limits, clamped (not rejected) to the instance
+	// maximums; the response carries the applied values.
+	Resources *v1Resources `json:"resources,omitempty"`
+	// Network.Ports is the structured form of Ports (PLAN §4 sandboxspec).
+	Network *struct {
+		Ports []v1PortReq `json:"ports,omitempty"`
+	} `json:"network,omitempty"`
+}
+
+// v1PortReq is one preview port in a create / network request.
+type v1PortReq struct {
+	Container int `json:"container"`
 }
 
 func (s *Server) v1CreateSandbox(w http.ResponseWriter, r *http.Request) {
@@ -276,9 +310,14 @@ func (s *Server) v1CreateSandbox(w http.ResponseWriter, r *http.Request) {
 		writeV1Err(w, http.StatusBadRequest, "invalid_request", "invalid json: "+err.Error())
 		return
 	}
-	if req.Image != nil {
-		writeV1Err(w, http.StatusBadRequest, "invalid_request", errPerAppImage)
-		return
+	if req.Network != nil && len(req.Network.Ports) > 0 {
+		if len(req.Ports) > 0 {
+			writeV1Err(w, http.StatusBadRequest, "invalid_request", "use either ports or network.ports, not both")
+			return
+		}
+		for _, p := range req.Network.Ports {
+			req.Ports = append(req.Ports, p.Container)
+		}
 	}
 	if req.FromSnapshot != "" && req.Workspace != nil {
 		writeV1Err(w, http.StatusBadRequest, "invalid_request", "from_snapshot and workspace are mutually exclusive")
@@ -293,6 +332,12 @@ func (s *Server) v1CreateSandbox(w http.ResponseWriter, r *http.Request) {
 		"visibility": vis,
 		"env":        req.Env,
 		"external":   map[string]string{"user_id": req.External.UserID, "project_id": req.External.ProjectID},
+		"image":      req.Image,
+		"command":    req.Command,
+	}
+	if req.Resources != nil {
+		createBody["cpus"] = req.Resources.CPUs
+		createBody["memory_mb"] = req.Resources.MemoryMB
 	}
 	if req.IdlePolicy != "" {
 		createBody["idle_policy"] = req.IdlePolicy

@@ -59,6 +59,10 @@ type Sandbox struct {
 	ExternalProjectID   sql.NullString
 	ExternalWorkspaceID sql.NullString
 	Visibility          string
+
+	// Spec (0028) is the per-sandbox runtime spec: image, command, env,
+	// resources. Zero value = instance defaults.
+	Spec Spec
 }
 
 // WorkspaceOwner is the durable sandbox_id -> upstream-identity
@@ -152,11 +156,9 @@ func (s *Store) Get(ctx context.Context, id string) (*Sandbox, error) {
 	if err != nil {
 		return nil, err
 	}
-	ports, err := s.portsFor(ctx, id)
-	if err != nil {
+	if err := s.fill(ctx, sb); err != nil {
 		return nil, err
 	}
-	sb.Ports = ports
 	return sb, nil
 }
 
@@ -183,11 +185,9 @@ func (s *Store) List(ctx context.Context) ([]*Sandbox, error) {
 		out = append(out, sb)
 	}
 	for _, sb := range out {
-		ports, err := s.portsFor(ctx, sb.ID)
-		if err != nil {
+		if err := s.fill(ctx, sb); err != nil {
 			return nil, err
 		}
-		sb.Ports = ports
 	}
 	return out, nil
 }
@@ -227,11 +227,9 @@ func (s *Store) ListByStatuses(ctx context.Context, statuses ...string) ([]*Sand
 		out = append(out, sb)
 	}
 	for _, sb := range out {
-		ports, err := s.portsFor(ctx, sb.ID)
-		if err != nil {
+		if err := s.fill(ctx, sb); err != nil {
 			return nil, err
 		}
-		sb.Ports = ports
 	}
 	return out, nil
 }
@@ -360,11 +358,9 @@ func (s *Store) ListFiltered(ctx context.Context, externalUserID, externalProjec
 		out = append(out, sb)
 	}
 	for _, sb := range out {
-		ports, err := s.portsFor(ctx, sb.ID)
-		if err != nil {
+		if err := s.fill(ctx, sb); err != nil {
 			return nil, err
 		}
-		sb.Ports = ports
 	}
 	return out, nil
 }

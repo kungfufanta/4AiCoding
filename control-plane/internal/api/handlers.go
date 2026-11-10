@@ -26,8 +26,8 @@ import (
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/manifest"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/metrics"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/snapshot"
+	"github.com/tastyeffectco/sandboxd/control-plane/internal/sandboxspec"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/store"
-	"github.com/tastyeffectco/sandboxd/control-plane/internal/traefik"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/wake"
 )
 
@@ -72,9 +72,14 @@ type createReq struct {
 	// milestone; a credential_id is rejected for now.
 	Git *createGitReq `json:"git,omitempty"`
 
-	// Image is rejected — per-app image selection is not supported (instance-wide
-	// via SANDBOXD_IMAGE). Declared so we 400 it instead of silently dropping it.
-	Image *string `json:"image,omitempty"`
+	// Image selects the sandbox image. "" = the instance image. Any other
+	// image must be on the instance allowlist (SANDBOXD_IMAGE_ALLOWLIST).
+	Image string `json:"image,omitempty"`
+	// Command overrides the image's CMD.
+	Command []string `json:"command,omitempty"`
+	// CPUs / MemoryMB are hard limits, clamped to the instance maximums.
+	CPUs     float64 `json:"cpus,omitempty"`
+	MemoryMB int     `json:"memory_mb,omitempty"`
 }
 
 type createGitReq struct {
@@ -324,8 +329,11 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid json: "+err.Error())
 		return
 	}
-	if req.Image != nil {
-		writeErr(w, http.StatusBadRequest, errPerAppImage)
+	spec, specErr := s.buildSpec(specInput{
+		Image: req.Image, Command: req.Command, Env: req.Env, CPUs: req.CPUs, MemoryMB: req.MemoryMB,
+	})
+	if specErr != nil {
+		writeErr(w, http.StatusBadRequest, specErr.Error())
 		return
 	}
 	if req.Git != nil && req.Git.CredentialID != "" {
@@ -335,11 +343,9 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	if req.MemoryHigh == "" {
 		req.MemoryHigh = "4G"
 	}
-	for _, p := range req.Ports {
-		if p < 1 || p > 65535 {
-			writeErr(w, http.StatusBadRequest, fmt.Sprintf("port out of range: %d", p))
-			return
-		}
+	if err := s.checkPorts(req.Ports); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
 	}
 	if req.ID == "" {
 		req.ID = newULID()
@@ -458,7 +464,6 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	sb := &store.Sandbox{
 		ID:                  req.ID,
 		Status:              "creating",
-		Image:               s.Image,
 		WorkspaceImg:        imgPath,
 		WorkspaceMnt:        mntPath,
 		MemoryHigh:          req.MemoryHigh,
@@ -469,7 +474,9 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		ExternalUserID:      nullStr(req.External.UserID),
 		ExternalProjectID:   nullStr(req.External.ProjectID),
 		ExternalWorkspaceID: nullStr(req.External.WorkspaceID),
+		Spec:                spec,
 	}
+	sb.Image = sandboxspec.DesiredImage(sb, s.Image)
 	if err := s.Store.Create(r.Context(), sb); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			writeErr(w, http.StatusConflict, "id collision (race)")
@@ -580,54 +587,12 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Build the optional env injection. Validate
-	// keys so a bad entry can't smuggle extra docker flags or break the
-	// KEY=VALUE encoding.
-	var envFlags []string
-	for k, v := range req.Env {
-		if k == "" || strings.ContainsAny(k, "=\n\r") || strings.ContainsAny(v, "\n\r") {
-			writeErr(w, http.StatusBadRequest, "invalid env var name/value: "+k)
-			return
-		}
-		envFlags = append(envFlags, k+"="+v)
-	}
-
-	// 2. docker run with the locked flag set + traefik labels.
-	// A1.5a — ensure the resolved web port has a preview router. ADDITIVE: never
-	// drops a requested port (multi-port API unchanged); only adds web_port when
-	// the sandbox already has port(s). A no-port sandbox stays preview-less.
-	previewPorts := req.Ports
-	if len(previewPorts) > 0 {
-		previewPorts = ensurePort(previewPorts, webPort)
-	}
-	labels := traefik.LabelsFor(s.hosts(), req.ID, previewPorts, visibility, s.PreviewEntrypoint, s.PreviewTLS)
-	volumes := []string{mntPath + ":/home/sandbox"}
-	if s.DNSResolvConf != "" {
-		// gVisor: override the unreachable embedded DNS (127.0.0.11).
-		volumes = append(volumes, s.DNSResolvConf+":/etc/resolv.conf:ro")
-	}
+	// 2. docker run with the hardened flag set + Traefik labels. The SAME
+	// builder backs the wake recreate path, so a sandbox's container is
+	// always reproducible from its row.
 	startRun := time.Now()
 	var runErr error
-	containerID, runErr := s.Docker.Run(r.Context(), docker.RunSpec{
-		Name:        "s-" + req.ID,
-		Hostname:    "s-" + req.ID,
-		Network:     s.Network,
-		Userns:      s.Userns,
-		Runtime:     s.Runtime,
-		ReadOnly:    true,
-		CapDrop:     []string{"ALL"},
-		SecurityOpt: []string{"no-new-privileges"},
-		CPUShares:   100,
-		Memory:      "10g",
-		MemorySwap:  "10g",
-		PidsLimit:   1024,
-		Ulimits:     []string{"nofile=65536:65536"},
-		Tmpfs:       []string{"/tmp:size=512m", "/var/tmp:size=128m"},
-		Env:         envFlags,
-		Volumes:     volumes,
-		Labels:      labels,
-		Image:       s.Image,
-	})
+	containerID, runErr := s.Docker.Run(r.Context(), sandboxspec.Build(sb, s.specEnv()))
 	metrics.ObserveDocker("run", startRun, &runErr)
 	if runErr != nil {
 		abort("docker.Run: " + runErr.Error())

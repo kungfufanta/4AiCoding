@@ -116,6 +116,9 @@ func (s *Store) Create(ctx context.Context, sb *Sandbox) error {
 				return err
 			}
 		}
+		if err := putSpec(ctx, tx, sb.ID, sb.Spec); err != nil {
+			return err
+		}
 		if sb.ExternalUserID.Valid {
 			_, err = tx.ExecContext(ctx, `
 				INSERT INTO workspace_owner

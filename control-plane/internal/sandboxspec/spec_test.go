@@ -146,3 +146,65 @@ func TestPreviewLabelsStale(t *testing.T) {
 		t.Error("flat labels of another tag: want stale")
 	}
 }
+
+// PLAN §8 #1: only the workspace (and, for gVisor, a read-only resolv.conf)
+// is ever mounted. Never the docker socket, never another host path.
+func TestBuildMountsOnlyTheWorkspace(t *testing.T) {
+	sb := row()
+	sb.Spec.Env = map[string]string{"A": "1"}
+	for _, e := range []Env{{Image: "img"}, {Image: "img", DNSResolvConf: "/var/lib/sandboxd/resolv.conf"}} {
+		s := Build(sb, e)
+		for _, v := range s.Volumes {
+			if strings.Contains(v, "docker.sock") {
+				t.Fatalf("docker socket mounted: %v", s.Volumes)
+			}
+			dst := strings.Split(v, ":")[1]
+			if dst != "/home/sandbox" && v != e.DNSResolvConf+":/etc/resolv.conf:ro" {
+				t.Fatalf("unexpected mount %q", v)
+			}
+		}
+	}
+}
+
+// PLAN §8 #3: the sandbox never runs as root, whatever the image's USER.
+func TestBuildForcesNonRootUser(t *testing.T) {
+	if s := Build(row(), Env{Image: "img"}); s.User != DefaultUser {
+		t.Fatalf("user = %q, want %q", s.User, DefaultUser)
+	}
+	if s := Build(row(), Env{Image: "img", User: "2000:2000"}); s.User != "2000:2000" {
+		t.Fatalf("user override = %q", s.User)
+	}
+}
+
+// PLAN §8 #7: the container env is exactly the spec env, nothing inherited.
+func TestBuildEnvIsOnlyTheSpecEnv(t *testing.T) {
+	t.Setenv("SANDBOXD_API_TOKENS", "default=secret")
+	sb := row()
+	if s := Build(sb, Env{Image: "img"}); len(s.Env) != 0 {
+		t.Fatalf("env without a spec = %v, want empty", s.Env)
+	}
+	sb.Spec.Env = map[string]string{"B": "2", "A": "1"}
+	s := Build(sb, Env{Image: "img"})
+	if strings.Join(s.Env, ",") != "A=1,B=2" {
+		t.Fatalf("env = %v, want [A=1 B=2]", s.Env)
+	}
+}
+
+func TestBuildAppliesSpecImageCommandAndResources(t *testing.T) {
+	sb := row()
+	sb.Spec = store.Spec{Image: "alpine:3.20", Command: []string{"sleep", "infinity"}, CPUs: 1.5, MemoryMB: 512}
+	s := Build(sb, Env{Image: "sandboxd-base:0.4.0"})
+	if s.Image != "alpine:3.20" {
+		t.Errorf("image = %q, want the pinned spec image", s.Image)
+	}
+	if strings.Join(s.Cmd, " ") != "sleep infinity" {
+		t.Errorf("cmd = %v", s.Cmd)
+	}
+	if s.CPUs != "1.5" || s.Memory != "512m" || s.MemorySwap != "512m" {
+		t.Errorf("resources cpus=%q mem=%q swap=%q", s.CPUs, s.Memory, s.MemorySwap)
+	}
+	d := Build(row(), Env{Image: "img", MemoryMB: 2048})
+	if d.CPUs != "" || d.Memory != "2048m" || len(d.Cmd) != 0 {
+		t.Errorf("defaults cpus=%q mem=%q cmd=%v", d.CPUs, d.Memory, d.Cmd)
+	}
+}

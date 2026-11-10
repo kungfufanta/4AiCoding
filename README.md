@@ -11,13 +11,16 @@ See [PLAN.md](PLAN.md) for the roadmap and the security baseline.
 | Area | Status |
 |---|---|
 | Lifecycle | Create, list, get, start, stop, restart, exec, logs (SSE follow) and delete over `/v1/sandboxes` |
-| Isolation | Read-only rootfs, `--cap-drop=ALL`, `no-new-privileges`, pids/memory limits, tmpfs `/tmp`; optional gVisor (`SANDBOXD_RUNTIME=runsc`) |
+| Spec | Per-sandbox image (allowlisted), command, env, CPU/memory limits (clamped); stored, so a rebuilt container is identical |
+| Network | Preview ports managed over `/v1/sandboxes/{id}/network/ports`; the API refuses requests from the sandbox network |
+| Observability | Per-sandbox metrics (one sample or an SSE stream) and mounted volumes |
+| Isolation | Non-root (`1000:1000`), read-only rootfs, `--cap-drop=ALL`, `no-new-privileges`, pids/memory limits, tmpfs `/tmp`, only the workspace mounted; optional gVisor (`SANDBOXD_RUNTIME=runsc`) |
 | Resources | Idle reaper, memory-pressure reaper, wake-on-request through Traefik, keepalive |
 | Workspaces | Persistent bind-mounted workspace per sandbox; snapshots; clone a public git repo at create time |
 | Access | API keys and console sessions (bcrypt), audit log |
 | Preview | Per-port Traefik routes: `http://s-<id>-<port>.preview.<domain>` |
 
-Planned next (see PLAN.md): per-sandbox images and commands, port and egress policy, domain manager, policy engine, approvals, a new web console, and multi-node workers.
+Planned next (see PLAN.md): policy engine and egress policy, session login, domain manager, approvals, a new web console, and multi-node workers.
 
 ## Quickstart (single host)
 

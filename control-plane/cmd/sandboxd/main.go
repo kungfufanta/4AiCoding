@@ -43,6 +43,7 @@ import (
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/logging"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/loopback"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/metrics"
+	"github.com/tastyeffectco/sandboxd/control-plane/internal/netguard"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/previewhost"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/reaper"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/reconcile"
@@ -424,20 +425,32 @@ func main() {
 	// created from an older base image than we now run, so long-lived sandboxes
 	// move onto the current image. Lossless: everything durable is in the
 	// workspace bind mount, and the container rootfs is read-only by construction.
+	// One spec environment for every container sandboxd builds (create and
+	// recreate), so both paths produce the same hardened container.
+	specEnv := sandboxspec.Env{
+		Image:             image,
+		Network:           network,
+		Userns:            userns,
+		Runtime:           sbxRuntime,
+		DNSResolvConf:     dnsResolvConf,
+		PreviewDomain:     domain,
+		PreviewHostStyle:  hosts.Style,
+		PreviewHostTag:    hosts.Tag,
+		PreviewEntrypoint: previewEntrypoint,
+		PreviewTLS:        previewTLS,
+		User:              envDefault("SANDBOXD_SANDBOX_USER", sandboxspec.DefaultUser),
+		MemoryMB:          intFromEnv("SANDBOXD_DEFAULT_MEMORY_MB", sandboxspec.DefaultMemoryMB),
+	}
+	limits := api.Limits{
+		ImageAllowlist: splitList(os.Getenv("SANDBOXD_IMAGE_ALLOWLIST")),
+		MaxCPUs:        floatFromEnv("SANDBOXD_MAX_CPUS", 0),
+		MaxMemoryMB:    intFromEnv("SANDBOXD_MAX_MEMORY_MB", sandboxspec.DefaultMemoryMB),
+		MaxPorts:       intFromEnv("SANDBOXD_MAX_PORTS_PER_SANDBOX", 16),
+	}
 	wakeHandler.Image = image
+	wakeHandler.User = specEnv.User
 	wakeHandler.Recreate = func(ctx context.Context, sb *store.Sandbox) error {
-		spec := sandboxspec.Build(sb, sandboxspec.Env{
-			Image:             image,
-			Network:           network,
-			Userns:            userns,
-			Runtime:           sbxRuntime,
-			DNSResolvConf:     dnsResolvConf,
-			PreviewDomain:     domain,
-			PreviewHostStyle:  hosts.Style,
-			PreviewHostTag:    hosts.Tag,
-			PreviewEntrypoint: previewEntrypoint,
-			PreviewTLS:        previewTLS,
-		})
+		spec := sandboxspec.Build(sb, specEnv)
 		// Remove any existing container first so the name is free; ignore a
 		// not-found (the common case) and let Run surface a real failure.
 		if err := dockerClient.Remove(ctx, spec.Name); err != nil && err != docker.ErrNotFound {
@@ -490,7 +503,9 @@ func main() {
 			IdleReapEnabled:      idleInterval > 0,
 			IdleThresholdSeconds: int(idleThreshold.Seconds()),
 		},
-		Live: live,
+		Live:    live,
+		SpecEnv: specEnv,
+		Limits:  limits,
 	}
 
 	// Phase 5 — after reconcile, if MemAvailable is
@@ -517,6 +532,25 @@ func main() {
 	// sandbox's stopped-wake is gated inside the wake handler itself.
 	apiMux := authMw.Wrap(server.Handler())
 	root := hostDispatch(wakeHandler, apiMux, log)
+	// PLAN §8 #13: refuse anything that comes from the sandbox network, for
+	// the API and the wake catch-all alike. The edge router reaches us over
+	// the control network (see docker-compose.yml), never over this one.
+	var guard netguard.Guard
+	if network != "" && os.Getenv("SANDBOXD_ALLOW_API_FROM_SANDBOX_NETWORK") != "true" {
+		subnets, gateways, gerr := dockerClient.NetworkSubnets(ctx, network)
+		switch {
+		case gerr != nil:
+			log.Error("startup: cannot read the sandbox network subnets; API source guard is OFF",
+				"network", network, "err", gerr.Error())
+		default:
+			if bad := guard.Set(subnets, gateways); len(bad) > 0 {
+				log.Warn("startup: ignored unparsable network entries", "entries", bad)
+			}
+			log.Info("startup: API refuses requests from the sandbox network",
+				"network", network, "subnets", subnets, "exempt_gateways", gateways)
+		}
+	}
+	root = guard.Wrap(root)
 	root = logging.Middleware(log, root)
 
 	httpSrv := &http.Server{
@@ -803,6 +837,15 @@ func uintFromEnv(k string, d uint64) uint64 {
 		return d
 	}
 	return n
+}
+
+// splitList parses a comma/space separated env list, dropping blanks.
+func splitList(v string) []string {
+	var out []string
+	for _, f := range strings.FieldsFunc(v, func(r rune) bool { return r == ',' || r == ' ' || r == '\n' }) {
+		out = append(out, f)
+	}
+	return out
 }
 
 func intFromEnv(k string, d int) int {

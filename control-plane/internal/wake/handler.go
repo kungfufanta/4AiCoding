@@ -75,6 +75,11 @@ type Handler struct {
 	// from a different one is stale (see Recreate).
 	Image string
 
+	// User is the uid:gid sandboxes must run as; a container created
+	// without it (e.g. before M3a forced a non-root user) is recreated.
+	// "" disables the check.
+	User string
+
 	hostRE *regexp.Regexp
 
 	mu       sync.Mutex
@@ -325,10 +330,14 @@ func (h *Handler) serve(r *http.Request, w http.ResponseWriter, id, port string,
 			log.Info("wake: container missing — recreating from the stored row")
 		case ierr != nil:
 			log.Warn("wake: pre-start inspect failed (continuing)", "err", ierr.Error())
-		case sandboxspec.NeedsRecreate(cur.Config.Image, h.Image):
+		case sandboxspec.NeedsRecreate(cur.Config.Image, sandboxspec.DesiredImage(sb, h.Image)):
 			stale = true
-			log.Info("wake: container built from an older image — recreating",
-				"container_image", cur.Config.Image, "current_image", h.Image)
+			log.Info("wake: container built from another image — recreating",
+				"container_image", cur.Config.Image, "want_image", sandboxspec.DesiredImage(sb, h.Image))
+		case h.User != "" && cur.Config.User != h.User:
+			stale = true
+			log.Info("wake: container runs as the wrong user — recreating",
+				"container_user", cur.Config.User, "want_user", h.User)
 		case sandboxspec.PreviewLabelsStale(cur.Config.Labels, h.Hosts):
 			// PREVIEW_DOMAIN changed since this container was created: its
 			// Traefik routers still point at the old host, so its new preview

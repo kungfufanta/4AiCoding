@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -45,6 +46,7 @@ type RunSpec struct {
 	CapDrop     []string // --cap-drop=ALL (passed once per entry)
 	SecurityOpt []string // --security-opt=no-new-privileges
 	CPUShares   int      // --cpu-shares=100
+	CPUs        string   // --cpus (hard CPU limit); "" = none
 	Memory      string   // --memory=10g
 	MemorySwap  string   // --memory-swap=10g
 	PidsLimit   int      // --pids-limit=1024
@@ -89,6 +91,9 @@ func (c *Client) Run(ctx context.Context, spec RunSpec) (string, error) {
 	}
 	if spec.CPUShares > 0 {
 		args = append(args, fmt.Sprintf("--cpu-shares=%d", spec.CPUShares))
+	}
+	if spec.CPUs != "" {
+		args = append(args, "--cpus="+spec.CPUs)
 	}
 	if spec.Memory != "" {
 		args = append(args, "--memory="+spec.Memory)
@@ -158,7 +163,12 @@ type ContainerJSON struct {
 	Config struct {
 		Image  string            `json:"Image"`
 		Labels map[string]string `json:"Labels"`
+		User   string            `json:"User"`
+		Cmd    []string          `json:"Cmd"`
 	} `json:"Config"`
+	// Mounts lists what is mounted into the container (bind / volume /
+	// tmpfs). Surfaced by GET /v1/sandboxes/{id}/volumes.
+	Mounts []Mount `json:"Mounts"`
 	// NetworkSettings is the subset Phase 5's wake-readiness probe
 	// needs: the container's bridge IP on the default network. We
 	// deliberately surface only what we use; adding fields later is
@@ -403,4 +413,119 @@ func (c *Client) run(ctx context.Context, args ...string) ([]byte, error) {
 		return stdout.Bytes(), fmt.Errorf("docker %s: %w (%s)", args[0], err, stderr.String())
 	}
 	return stdout.Bytes(), nil
+}
+
+// Mount is one entry of `docker inspect .Mounts`.
+type Mount struct {
+	Type        string `json:"Type"`
+	Source      string `json:"Source"`
+	Destination string `json:"Destination"`
+	Mode        string `json:"Mode"`
+	RW          bool   `json:"RW"`
+}
+
+// Stats is one `docker stats --no-stream` sample, parsed into numbers.
+type Stats struct {
+	CPUPercent    float64 `json:"cpu_percent"`
+	MemUsageBytes int64   `json:"mem_usage_bytes"`
+	MemLimitBytes int64   `json:"mem_limit_bytes"`
+	MemPercent    float64 `json:"mem_percent"`
+	NetRxBytes    int64   `json:"net_rx_bytes"`
+	NetTxBytes    int64   `json:"net_tx_bytes"`
+	BlockRead     int64   `json:"block_read_bytes"`
+	BlockWrite    int64   `json:"block_write_bytes"`
+	PIDs          int     `json:"pids"`
+}
+
+// Stats takes one resource sample of a running container.
+func (c *Client) Stats(ctx context.Context, name string) (Stats, error) {
+	out, err := c.run(ctx, "stats", "--no-stream", "--format", "{{json .}}", name)
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && isNotFoundStderr(exitErr.Stderr) {
+			return Stats{}, ErrNotFound
+		}
+		return Stats{}, err
+	}
+	return ParseStats(out)
+}
+
+// ParseStats parses the `docker stats --format '{{json .}}'` line, whose
+// numbers are human strings ("12.5%", "1.2MiB / 10GiB", "3kB / 1kB").
+func ParseStats(line []byte) (Stats, error) {
+	var raw struct {
+		CPUPerc  string `json:"CPUPerc"`
+		MemUsage string `json:"MemUsage"`
+		MemPerc  string `json:"MemPerc"`
+		NetIO    string `json:"NetIO"`
+		BlockIO  string `json:"BlockIO"`
+		PIDs     string `json:"PIDs"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(line), &raw); err != nil {
+		return Stats{}, fmt.Errorf("parse docker stats: %w", err)
+	}
+	var st Stats
+	st.CPUPercent = parsePercent(raw.CPUPerc)
+	st.MemPercent = parsePercent(raw.MemPerc)
+	st.MemUsageBytes, st.MemLimitBytes = parsePair(raw.MemUsage)
+	st.NetRxBytes, st.NetTxBytes = parsePair(raw.NetIO)
+	st.BlockRead, st.BlockWrite = parsePair(raw.BlockIO)
+	st.PIDs, _ = strconv.Atoi(strings.TrimSpace(raw.PIDs))
+	return st, nil
+}
+
+func parsePercent(s string) float64 {
+	f, _ := strconv.ParseFloat(strings.TrimSuffix(strings.TrimSpace(s), "%"), 64)
+	return f
+}
+
+func parsePair(s string) (int64, int64) {
+	a, b, ok := strings.Cut(s, "/")
+	if !ok {
+		return ParseSize(a), 0
+	}
+	return ParseSize(a), ParseSize(b)
+}
+
+// ParseSize converts a docker human size ("1.5MiB", "3kB", "0B") to bytes.
+func ParseSize(s string) int64 {
+	s = strings.TrimSpace(s)
+	units := []struct {
+		suffix string
+		mult   float64
+	}{
+		{"KiB", 1 << 10}, {"MiB", 1 << 20}, {"GiB", 1 << 30}, {"TiB", 1 << 40},
+		{"kB", 1e3}, {"KB", 1e3}, {"MB", 1e6}, {"GB", 1e9}, {"TB", 1e12}, {"B", 1},
+	}
+	for _, u := range units {
+		if strings.HasSuffix(s, u.suffix) {
+			f, err := strconv.ParseFloat(strings.TrimSpace(strings.TrimSuffix(s, u.suffix)), 64)
+			if err != nil {
+				return 0
+			}
+			return int64(math.Round(f * u.mult))
+		}
+	}
+	f, _ := strconv.ParseFloat(s, 64)
+	return int64(f)
+}
+
+// NetworkSubnets returns the IPAM subnets of a docker network and their
+// gateways (used to deny API requests that originate from the sandbox
+// network while still allowing the host, which appears as the gateway).
+func (c *Client) NetworkSubnets(ctx context.Context, network string) (subnets, gateways []string, err error) {
+	out, err := c.run(ctx, "network", "inspect", "--format", "{{range .IPAM.Config}}{{.Subnet}}|{{.Gateway}} {{end}}", network)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, f := range strings.Fields(string(out)) {
+		sub, gw, _ := strings.Cut(f, "|")
+		if sub != "" {
+			subnets = append(subnets, sub)
+		}
+		if gw != "" {
+			gateways = append(gateways, gw)
+		}
+	}
+	return subnets, gateways, nil
 }

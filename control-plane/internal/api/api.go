@@ -22,6 +22,7 @@ import (
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/instancecfg"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/loopback"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/metrics"
+	"github.com/tastyeffectco/sandboxd/control-plane/internal/sandboxspec"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/secrets"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/snapshot"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/store"
@@ -30,6 +31,14 @@ import (
 
 // Server bundles the collaborators the handlers need.
 type Server struct {
+	// SpecEnv is the instance-level container environment shared by the
+	// create path and the wake recreate path (see sandboxspec.Build). When
+	// its Image is empty (unit tests) it is derived from the fields below.
+	SpecEnv sandboxspec.Env
+	// Limits bounds what a create request may ask for (images, resources,
+	// ports). M3b moves these into the admin policy.
+	Limits Limits
+
 	Store         *store.Store
 	Docker        *docker.Client
 	Loopback      *loopback.Manager
@@ -172,6 +181,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/sandboxes/{id}/restart", s.observe("POST /v1/sandboxes/{id}/restart", s.v1RestartSandbox))
 	mux.HandleFunc("POST /v1/sandboxes/{id}/exec", s.observe("POST /v1/sandboxes/{id}/exec", s.v1ExecSandbox))
 	mux.HandleFunc("GET /v1/sandboxes/{id}/logs", s.observe("GET /v1/sandboxes/{id}/logs", s.v1SandboxLogs))
+	mux.HandleFunc("GET /v1/sandboxes/{id}/network/ports", s.observe("GET /v1/sandboxes/{id}/network/ports", s.v1GetPorts))
+	mux.HandleFunc("PUT /v1/sandboxes/{id}/network/ports", s.observe("PUT /v1/sandboxes/{id}/network/ports", s.v1PutPorts))
+	mux.HandleFunc("POST /v1/sandboxes/{id}/network/ports", s.observe("POST /v1/sandboxes/{id}/network/ports", s.v1AddPort))
+	mux.HandleFunc("DELETE /v1/sandboxes/{id}/network/ports/{port}", s.observe("DELETE /v1/sandboxes/{id}/network/ports/{port}", s.v1DeletePort))
+	mux.HandleFunc("GET /v1/sandboxes/{id}/metrics", s.observe("GET /v1/sandboxes/{id}/metrics", s.v1SandboxMetrics))
+	mux.HandleFunc("GET /v1/sandboxes/{id}/metrics/stream", s.observe("GET /v1/sandboxes/{id}/metrics/stream", s.v1SandboxMetricsStream))
+	mux.HandleFunc("GET /v1/sandboxes/{id}/volumes", s.observe("GET /v1/sandboxes/{id}/volumes", s.v1SandboxVolumes))
 	mux.HandleFunc("DELETE /v1/sandboxes/{id}", s.observe("DELETE /v1/sandboxes/{id}", s.v1DeleteSandbox))
 
 	// Instance settings.
