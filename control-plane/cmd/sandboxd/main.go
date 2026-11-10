@@ -343,6 +343,13 @@ func main() {
 	loopMgr.DockerBin = "docker"
 	loopMgr.Userns = userns
 	loopMgr.Log = log.With("component", "loopback")
+	if keng, ok := execEngine.(*kube.Engine); ok {
+		// M8: workspace seeding runs as a kubernetes Job — the
+		// kubernetes executor never touches a container runtime.
+		loopMgr.SeedFn = func(ctx context.Context, dir string) error {
+			return keng.SeedWorkspace(ctx, image, dir)
+		}
+	}
 
 	// Egress (nftables) is DISABLED in the portable OSS build: it
 	// requires host nftables + journald + systemd-timer refresh jobs
