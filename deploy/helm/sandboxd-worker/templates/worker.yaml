@@ -1,0 +1,114 @@
+{{- include "sandboxd-worker.validate" . -}}
+apiVersion: apps/v1
+kind: {{ .Values.kind }}
+metadata:
+  name: {{ include "sandboxd-worker.fullname" . }}
+  labels:
+    {{- include "sandboxd-worker.labels" . | nindent 4 }}
+spec:
+  {{- if eq .Values.kind "Deployment" }}
+  # One worker per node id: never run two pods with the same id.
+  replicas: 1
+  strategy:
+    type: Recreate
+  {{- else }}
+  updateStrategy:
+    type: RollingUpdate
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "sandboxd-worker.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "sandboxd-worker.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "sandboxd-worker.fullname" . }}
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: worker
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["worker"]
+          env:
+            - name: SANDBOXD_CONTROL_PLANE_URL
+              value: {{ .Values.controlPlane.url | quote }}
+            - name: SANDBOXD_WORKER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "sandboxd-worker.secretName" . }}
+                  key: {{ .Values.workerToken.existingSecretKey }}
+            - name: SANDBOXD_NODE_ID
+              {{- if .Values.nodeId }}
+              value: {{ .Values.nodeId | quote }}
+              {{- else }}
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+              {{- end }}
+            {{- with .Values.address }}
+            - name: SANDBOXD_NODE_ADDRESS
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if gt (float64 .Values.capacity.cpus) 0.0 }}
+            - name: SANDBOXD_CAPACITY_CPUS
+              value: {{ .Values.capacity.cpus | quote }}
+            {{- end }}
+            {{- if gt (int .Values.capacity.memoryMB) 0 }}
+            - name: SANDBOXD_CAPACITY_MEMORY_MB
+              value: {{ .Values.capacity.memoryMB | quote }}
+            {{- end }}
+            {{- if gt (int .Values.capacity.diskMB) 0 }}
+            - name: SANDBOXD_CAPACITY_DISK_MB
+              value: {{ .Values.capacity.diskMB | quote }}
+            {{- end }}
+            - name: SANDBOXD_HEARTBEAT_INTERVAL_SECONDS
+              value: {{ .Values.heartbeatIntervalSeconds | quote }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            privileged: false
+            capabilities:
+              drop: ["ALL"]
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      terminationGracePeriodSeconds: 10
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

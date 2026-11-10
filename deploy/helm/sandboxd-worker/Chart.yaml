@@ -1,0 +1,7 @@
+apiVersion: v2
+name: sandboxd-worker
+description: A sandboxd fleet worker for Kubernetes / k3s (PLAN M7a). It registers each node with the sandboxd control plane and heartbeats its capacity.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords: [sandboxd, sandbox, worker, k3s]

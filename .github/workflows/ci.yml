@@ -111,3 +111,49 @@ jobs:
       - name: leftover containers
         if: always()
         run: docker ps -a --filter "label=sandboxd.managed=true"
+
+  # k3s (PLAN M7a): the Helm chart runs `sandboxd worker` on a real k3s
+  # cluster and the pod joins the control plane's fleet (scripts/e2e-k3s.sh).
+  k3s:
+    needs: unit
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      K3S_VERSION: v1.31.4+k3s1
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: control-plane/go.mod
+          cache-dependency-path: control-plane/go.sum
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
+
+      - name: helm lint
+        run: helm lint deploy/helm/sandboxd-worker --set controlPlane.url=http://cp:9000 --set workerToken.value=t
+
+      - name: build sandboxd
+        run: cd control-plane && go build -o "$RUNNER_TEMP/sandboxd" ./cmd/sandboxd
+
+      - name: build images (sandbox + worker)
+        run: |
+          docker build -t sandboxd-e2e:ci scripts/e2e
+          docker build -t sandboxd:ci control-plane
+
+      - name: install k3s
+        run: |
+          curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION="$K3S_VERSION" \
+            INSTALL_K3S_EXEC="--disable traefik --disable metrics-server --write-kubeconfig-mode 644" sh -
+          docker save sandboxd:ci | sudo k3s ctr images import -
+
+      - name: k3s e2e (worker pod joins the fleet)
+        env:
+          SANDBOXD_IMAGE: sandboxd-e2e:ci
+          SANDBOXD_BIN: ${{ runner.temp }}/sandboxd
+          WORKER_IMAGE: sandboxd:ci
+          KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+        # PATH is passed through so sudo finds helm (installed in the tool cache).
+        run: sudo --preserve-env=SANDBOXD_IMAGE,SANDBOXD_BIN,WORKER_IMAGE,KUBECONFIG env "PATH=$PATH" bash scripts/e2e-k3s.sh

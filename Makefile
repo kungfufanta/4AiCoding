@@ -1,6 +1,6 @@
 # 4AiCoding — control plane (control-plane/, Go).
 .DEFAULT_GOAL := help
-.PHONY: help test lint fmt build e2e e2e-auth e2e-fleet preview console console-dev up down logs clean
+.PHONY: help test lint fmt build e2e e2e-auth e2e-fleet e2e-k3s helm-lint preview console console-dev up down logs clean
 
 CP := control-plane
 
@@ -32,6 +32,15 @@ e2e-auth: build ## Access-control e2e (auth on) against the local Docker daemon
 e2e-fleet: build ## Fleet e2e: 2 workers register, drain, offline (M6)
 	docker build -t sandboxd-e2e:local scripts/e2e
 	sudo SANDBOXD_IMAGE=sandboxd-e2e:local SANDBOXD_BIN=$(CURDIR)/bin/sandboxd bash scripts/e2e-fleet.sh
+
+e2e-k3s: build ## k3s e2e: the Helm chart worker joins the fleet (needs k3s + helm) (M7a)
+	docker build -t sandboxd-e2e:local scripts/e2e
+	docker build -t sandboxd:e2e control-plane
+	docker save sandboxd:e2e | sudo k3s ctr images import -
+	sudo env "PATH=$$PATH" SANDBOXD_IMAGE=sandboxd-e2e:local SANDBOXD_BIN=$(CURDIR)/bin/sandboxd WORKER_IMAGE=sandboxd:e2e bash scripts/e2e-k3s.sh
+
+helm-lint: ## Lint the worker Helm chart
+	helm lint deploy/helm/sandboxd-worker --set controlPlane.url=http://cp:9000 --set workerToken.value=t
 
 preview: ## Full compose stack + browser smoke of the console (screenshots in preview-shots/)
 	docker build -t sandboxd-e2e:local scripts/e2e

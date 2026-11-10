@@ -1,0 +1,60 @@
+# sandboxd-worker: joins Kubernetes nodes to a sandboxd control plane fleet.
+#
+# M7a scope: the worker registers, heartbeats its capacity and honours drain.
+# It does not run sandboxes yet (M7b), so the pod needs no container runtime
+# socket, no host mounts and no privileges.
+
+controlPlane:
+  # Base URL of the control plane API as seen from the pods (required),
+  # e.g. http://sandboxd-ctl.example.internal:9000
+  url: ""
+
+workerToken:
+  # The control plane's SANDBOXD_WORKER_TOKEN. Either give the value here
+  # (a Secret is created) or name an existing Secret holding it.
+  value: ""
+  existingSecret: ""
+  existingSecretKey: worker-token
+
+# DaemonSet (one worker per node; the node id is the Kubernetes node name, so
+# it stays the same across pod restarts) or Deployment (a single worker; set
+# nodeId, otherwise the id would change with every new pod).
+kind: DaemonSet
+
+# Fixed node id (Deployment only). Must match [a-z0-9][a-z0-9.-]{0,62}.
+nodeId: ""
+
+# Base URL other machines can reach this worker on (optional; reported to the
+# control plane as the node address).
+address: ""
+
+# Advertised capacity. 0 = detect (CPU count and MemTotal as the pod sees them).
+capacity:
+  cpus: 0
+  memoryMB: 0
+  diskMB: 0
+
+heartbeatIntervalSeconds: 10
+
+image:
+  repository: sandboxd
+  tag: ""          # defaults to the chart appVersion
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+resources:
+  requests:
+    cpu: 10m
+    memory: 32Mi
+  limits:
+    memory: 128Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+priorityClassName: ""
+podAnnotations: {}
+podLabels: {}
+
+# Extra environment variables for the worker container.
+extraEnv: []
