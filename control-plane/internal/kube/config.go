@@ -89,9 +89,27 @@ func LoadConfig(cfg Config) (Config, error) {
 		}
 	}
 	if cfg.APIServer == "" {
-		ic, err := inClusterConfig()
-		if err != nil {
-			return cfg, fmt.Errorf("kube: no cluster connection (set SANDBOXD_K8S_API / SANDBOXD_KUBECONFIG, or run in-cluster): %w", err)
+		ic, icerr := inClusterConfig()
+		if icerr != nil {
+			// The standard env markers can be absent on a pod with
+			// enableServiceLinks=false (the chart sets it to keep the
+			// environment clean). When the ServiceAccount token IS
+			// mounted, we are in-cluster: the apiserver is always
+			// reachable at its well-known service DNS name.
+			if tok, terr := os.ReadFile(inClusterTokenPath); terr == nil && len(tok) > 0 {
+				ic = Config{
+					APIServer: "https://kubernetes.default.svc",
+					Token:     strings.TrimSpace(string(tok)),
+				}
+				if ca, err := os.ReadFile(inClusterRootCA); err == nil {
+					ic.CAData = ca
+				}
+				if ns, err := os.ReadFile(inClusterNSPath); err == nil {
+					ic.Namespace = strings.TrimSpace(string(ns))
+				}
+			} else {
+				return cfg, fmt.Errorf("kube: no cluster connection (set SANDBOXD_K8S_API / SANDBOXD_KUBECONFIG, or run in-cluster): %w", icerr)
+			}
 		}
 		if cfg.Token == "" {
 			cfg.Token = ic.Token

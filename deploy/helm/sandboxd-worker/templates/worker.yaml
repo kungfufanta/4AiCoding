@@ -34,12 +34,15 @@ spec:
       serviceAccountName: {{ include "sandboxd-worker.fullname" . }}
       {{- if and .Values.executor.enabled (eq .Values.executor.engine "kubernetes") }}
       # The kubernetes engine drives sandbox objects through the API
-      # (least-privilege Role rendered in rbac.yaml).
+      # (least-privilege Role rendered in rbac.yaml). Service links stay
+      # ON: KUBERNES_SERVICE_HOST/PORT is how the in-cluster config
+      # finds the apiserver.
       automountServiceAccountToken: true
+      enableServiceLinks: true
       {{- else }}
       automountServiceAccountToken: false
-      {{- end }}
       enableServiceLinks: false
+      {{- end }}
       {{- with .Values.priorityClassName }}
       priorityClassName: {{ . }}
       {{- end }}
