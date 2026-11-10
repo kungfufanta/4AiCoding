@@ -1,8 +1,9 @@
 {{- if and .Values.executor.enabled (eq .Values.executor.engine "kubernetes") }}
 # M8 kubernetes engine RBAC: pods (create/get/list/delete + log/exec
-# subresources), services, networkpolicies and ingresses — namespaced,
-# nothing more. The sandbox pods themselves run with
-# automountServiceAccountToken=false (hardened by the engine).
+# subresources), services, networkpolicies, ingresses and the one-shot
+# workspace-seed Jobs — namespaced, nothing more. The sandbox pods
+# themselves run with automountServiceAccountToken=false (hardened by
+# the engine).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -24,6 +25,9 @@ rules:
     verbs: ["create", "get", "delete"]
   - apiGroups: ["networking.k8s.io"]
     resources: ["networkpolicies", "ingresses"]
+    verbs: ["create", "get", "delete"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
     verbs: ["create", "get", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
