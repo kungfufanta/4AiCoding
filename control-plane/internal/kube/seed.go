@@ -44,8 +44,10 @@ func (e *Engine) SeedWorkspace(ctx context.Context, image, hostDir string) error
 			"labels":    map[string]string{labelManaged: "true"},
 		},
 		"spec": map[string]any{
-			"backoffLimit":            0,
-			"ttlSecondsAfterFinished": 0,
+			"backoffLimit": 0,
+			// No ttlSecondsAfterFinished: the finished Job must stay long
+			// enough for the status poll below to see the outcome; the
+			// deferred delete cleans it up either way.
 			"template": map[string]any{
 				"metadata": map[string]any{"labels": map[string]string{
 					labelManaged: "true", labelSandbox: name,
@@ -97,6 +99,11 @@ func (e *Engine) SeedWorkspace(ctx context.Context, image, hostDir string) error
 			} `json:"status"`
 		}
 		if err := e.cli.do(ctx, "GET", path, nil, &status); err != nil {
+			if IsNotFound(err) {
+				// Deleted before reporting success (never by us): treat
+				// as failed rather than looping to the deadline.
+				return errors.New("kube seed: job vanished before completing")
+			}
 			return fmt.Errorf("kube seed: job status: %w", err)
 		}
 		switch {
