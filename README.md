@@ -25,7 +25,9 @@ See [PLAN.md](PLAN.md) for the roadmap and the security baseline.
 | Domain | `/v1/domain` stores domain and TLS mode, checks DNS, installs custom wildcard certificates for Traefik |
 | Preview | Per-port Traefik routes: `http://s-<id>-<port>.preview.<domain>` |
 
-Planned next (see PLAN.md): a new web console and multi-node workers.
+| Console | Web UI at `http://console.<domain>`: sandboxes, logs, exec, metrics, network, policy, approvals, users, API keys, audit, domain |
+
+Planned next (see PLAN.md): multi-node workers and a Kubernetes runtime.
 
 ## Quickstart (single host)
 
@@ -70,12 +72,17 @@ curl -s -H "$AUTH" -X POST $API/v1/sandboxes/$ID/restart
 curl -s -H "$AUTH" -X DELETE $API/v1/sandboxes/$ID
 ```
 
+### Web console
+
+`docker compose up` also starts the console. Open `http://console.localhost` (add `:$HTTP_PORT` if you changed it). The first visit asks you to create the admin account, unless `SANDBOXD_BOOTSTRAP_ADMIN` already did. Each screen shows the equivalent `curl` command. Viewers can only look, operators can manage sandboxes, and admins also manage policy, users, keys, approvals, the audit log and the domain.
+
 The full contract is [docs/openapi.yaml](docs/openapi.yaml). The older `/sandbox` routes still work but will be deprecated.
 
 ## Repository layout
 
 ```
 control-plane/      Go control plane (cmd/sandboxd, internal/*, migrations)
+console/            Web console (React 19 + TypeScript, Vite; served by nginx)
 image/              Sandbox base image (toolchains, no supervisor)
 traefik/            Edge router config (preview routes, wake, forward-auth)
 scripts/e2e.sh      Lifecycle e2e against a real Docker daemon
@@ -89,9 +96,11 @@ PLAN.md             Roadmap and security baseline
 make test   # go test -race ./...
 make lint   # gofmt + go vet
 make e2e    # build sandboxd + a tiny test image, then run scripts/e2e.sh
+make console      # typecheck + build the console
+make console-dev  # console dev server against a local sandboxd on 127.0.0.1:9090
 ```
 
-CI (`.github/workflows/ci.yml`) runs the unit job and the Docker integration job on every push and pull request.
+CI (`.github/workflows/ci.yml`) runs the Go unit job, the console build and the Docker integration job on every push and pull request.
 
 ## License
 

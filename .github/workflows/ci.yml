@@ -47,6 +47,26 @@ jobs:
       - name: test
         run: go test -race -count=1 ./...
 
+  # Console: typecheck + production build of the React SPA.
+  console:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: console
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: install
+        run: corepack enable && pnpm install --frozen-lockfile
+
+      - name: build
+        run: pnpm build
+
   # Integration: run the real sandboxd binary against the runner's Docker
   # daemon and drive the sandbox lifecycle over HTTP (scripts/e2e.sh).
   integration:

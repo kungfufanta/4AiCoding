@@ -2,6 +2,8 @@
 #
 #   traefik   edge router; turns each sandbox's labels into an HTTPS-or-
 #             HTTP preview route and wakes stopped sandboxes on demand.
+#   console   web UI (console/): static SPA + same-origin /v1 proxy, at
+#             http://console.${PREVIEW_DOMAIN}.
 #   sandboxd  control plane; creates/stops/destroys sandbox containers by
 #             shelling out to the host Docker daemon over the mounted
 #             socket, stores state in SQLite, runs the idle/pressure
@@ -144,3 +146,20 @@ services:
         aliases: [sandboxd-ctl]
       sandboxd_net:
         aliases: [sandboxd-egress]
+
+  console:
+    # The web console: static SPA + same-origin /v1 proxy to sandboxd.
+    # Reached through Traefik at http://console.${PREVIEW_DOMAIN}.
+    build:
+      context: ./console
+    image: ${SANDBOXD_CONSOLE_IMAGE:-sandboxd-console:0.4.0}
+    restart: unless-stopped
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    depends_on: [sandboxd]
+    networks:
+      # Control network only: sandboxes can never reach the console.
+      sandboxd_ctl:
+        aliases: [sandboxd-console]
