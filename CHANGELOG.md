@@ -6,6 +6,32 @@ All notable changes to 4AiCoding. The project started from
 
 ## Unreleased
 
+### M7b — sandboxes run on workers
+- Executor mode: a sandboxd with `SANDBOXD_CONTROL_PLANE_URL` (+
+  `SANDBOXD_WORKER_TOKEN`, `SANDBOXD_NODE_ID`, `SANDBOXD_NODE_ADDRESS`) runs
+  sandboxes for a control plane. It generates its own API token
+  (`<data>/state/node-api-token`, 0600), registers with it, reports usage,
+  applies the drain state and the control plane's policy from each
+  heartbeat, and accepts no other API credential.
+- Control plane: stores each node's token encrypted (migration `0033`,
+  `nodes.api_token_enc`) and binds the node id to it (a re-register with
+  another token is 409). `POST /v1/sandboxes` places the sandbox on the
+  schedulable node with the most free memory; `remote_sandboxes` records
+  worker placements; every `/v1/sandboxes/{id}/...` route is forwarded to
+  the owning worker (streaming included); `GET /v1/sandboxes` merges all
+  nodes and reports `unreachable_nodes`. Approval gates run on the control
+  plane and the cleared action is passed on with `X-Sandboxd-Fleet-Grant`,
+  honoured only from the control plane's credential. Forwarded writes are
+  audited as `sandbox.forward`.
+- New `DELETE /v1/nodes/{id}` (admin): forget a worker; refused while it
+  still runs sandboxes.
+- Helm chart: `executor.enabled` runs sandboxd on the node's Docker
+  (host network, Docker socket, host data dir, root with only CHOWN /
+  DAC_OVERRIDE / FOWNER).
+- CI: `scripts/e2e-fleet-exec.sh` (control plane + executor: placement,
+  exec/logs/list through the control plane, policy sync, approval for a
+  remote delete, drain) and an executor step in the k3s e2e.
+
 ### M7a — k3s worker: Helm chart, worker pod joins the fleet
 - New Helm chart `deploy/helm/sandboxd-worker`: runs `sandboxd worker` as a
   DaemonSet (node id = Kubernetes node name, stable across restarts) or as a

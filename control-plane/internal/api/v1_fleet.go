@@ -83,7 +83,7 @@ func (s *Server) fleetSnapshot(r *http.Request) ([]*store.Node, map[string]store
 	if err != nil {
 		return nil, nil, err
 	}
-	usage, err := s.Store.NodeUsage(r.Context())
+	usage, err := s.fleetUsage(r.Context())
 	if err != nil {
 		return nil, nil, err
 	}
@@ -156,7 +156,7 @@ func (s *Server) v1NodeCapacity(w http.ResponseWriter, r *http.Request) {
 		writeV1Err(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	usage, err := s.Store.NodeUsage(r.Context())
+	usage, err := s.fleetUsage(r.Context())
 	if err != nil {
 		writeV1Err(w, http.StatusInternalServerError, "internal", err.Error())
 		return
@@ -209,7 +209,7 @@ func (s *Server) setNodeDrain(w http.ResponseWriter, r *http.Request, state stri
 	if state == store.DrainDrain {
 		action = "node.drain"
 	}
-	usage, _ := s.Store.NodeUsage(r.Context())
+	usage, _ := s.fleetUsage(r.Context())
 	s.auditAction(r, audit.Entry{Action: action, Target: id,
 		Detail: map[string]any{"live_sandboxes": usage[id].Sandboxes}})
 	updated, err := s.Store.GetNode(r.Context(), id)

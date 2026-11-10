@@ -36,6 +36,15 @@ type actorCtxKey struct{}
 // worker credential cannot act on /v1 even if the path guard were bypassed.
 const ActorWorker = "worker"
 
+// ActorFleet is the control plane calling a worker's API (M7b). On a worker
+// that executes sandboxes, the control plane authenticates with the node's
+// own API token (see Middleware.SetFleetToken) and acts as an admin. Its
+// name is fixed so handlers can recognise fleet-forwarded requests.
+const (
+	ActorFleet     = "fleet"
+	FleetActorName = "control-plane"
+)
+
 // WithActor stores an Actor in ctx.
 func WithActor(ctx context.Context, a Actor) context.Context {
 	return context.WithValue(ctx, actorCtxKey{}, a)
@@ -66,6 +75,8 @@ type Middleware struct {
 	resolver CredentialResolver
 	audit    AuditWriter
 	log      *slog.Logger
+	// fleetToken (string) is the control plane's credential on a worker (M7b).
+	fleetToken atomic.Value
 }
 
 // NewMiddleware constructs the middleware around an initial config. resolver may
@@ -78,6 +89,10 @@ func NewMiddleware(initial *Config, resolver CredentialResolver, audit AuditWrit
 
 // Reload atomically swaps the config — the SIGHUP token-rotation path.
 func (m *Middleware) Reload(c *Config) { m.cfg.Store(c) }
+
+// SetFleetToken sets the credential the control plane uses to call this
+// node's API (M7b, worker executor mode). Empty disables it.
+func (m *Middleware) SetFleetToken(tok string) { m.fleetToken.Store(tok) }
 
 // Snapshot returns the current config; callers treat it as read-only.
 func (m *Middleware) Snapshot() *Config { return m.cfg.Load() }
@@ -195,6 +210,11 @@ func (m *Middleware) resolve(r *http.Request, cfg *Config, ip string) (Actor, bo
 	}
 	// 2. bearer API key — DB-stored, then env-configured.
 	if tok := bearerToken(r); tok != "" {
+		// The control plane calling this worker (M7b). Held outside the
+		// reloadable Config so a SIGHUP never drops it.
+		if ft, _ := m.fleetToken.Load().(string); ft != "" && matchWorkerToken(tok, []string{ft}) {
+			return Actor{Kind: ActorFleet, Name: FleetActorName, IP: ip, User: FleetActorName, Role: RoleAdmin}, true
+		}
 		// Worker fleet token (M6): identifies a fleet member, valid
 		// only for the /internal surface (enforced in Wrap).
 		if matchWorkerToken(tok, cfg.WorkerTokens) {

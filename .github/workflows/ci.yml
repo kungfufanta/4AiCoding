@@ -108,6 +108,12 @@ jobs:
           SANDBOXD_BIN: ${{ runner.temp }}/sandboxd
         run: sudo --preserve-env=SANDBOXD_IMAGE,SANDBOXD_BIN bash scripts/e2e-fleet.sh
 
+      - name: fleet exec e2e (sandboxes run on an executor worker)
+        env:
+          SANDBOXD_IMAGE: sandboxd-e2e:ci
+          SANDBOXD_BIN: ${{ runner.temp }}/sandboxd
+        run: sudo --preserve-env=SANDBOXD_IMAGE,SANDBOXD_BIN bash scripts/e2e-fleet-exec.sh
+
       - name: leftover containers
         if: always()
         run: docker ps -a --filter "label=sandboxd.managed=true"
@@ -133,7 +139,10 @@ jobs:
           version: v3.16.3
 
       - name: helm lint
-        run: helm lint deploy/helm/sandboxd-worker --set controlPlane.url=http://cp:9000 --set workerToken.value=t
+        run: |
+          helm lint deploy/helm/sandboxd-worker --set controlPlane.url=http://cp:9000 --set workerToken.value=t
+          helm lint deploy/helm/sandboxd-worker --set controlPlane.url=http://cp:9000 --set workerToken.value=t \
+            --set executor.enabled=true --set executor.sandboxImage=sandboxd-base:0.3.0
 
       - name: build sandboxd
         run: cd control-plane && go build -o "$RUNNER_TEMP/sandboxd" ./cmd/sandboxd
@@ -149,7 +158,7 @@ jobs:
             INSTALL_K3S_EXEC="--disable traefik --disable metrics-server --write-kubeconfig-mode 644" sh -
           docker save sandboxd:ci | sudo k3s ctr images import -
 
-      - name: k3s e2e (worker pod joins the fleet)
+      - name: k3s e2e (worker pod joins the fleet, executor runs a sandbox)
         env:
           SANDBOXD_IMAGE: sandboxd-e2e:ci
           SANDBOXD_BIN: ${{ runner.temp }}/sandboxd
