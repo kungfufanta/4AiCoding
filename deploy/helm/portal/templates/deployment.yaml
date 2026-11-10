@@ -1,0 +1,101 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "portal.fullname" . }}
+  labels:
+    {{- include "portal.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "portal.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        app.kubernetes.io/name: {{ include "portal.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "portal.serviceAccountName" . }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: portal
+          image: {{ include "portal.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: PORTAL_ADDR
+              value: ":8080"
+            - name: PORTAL_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ default (include "portal.fullname" .) .Values.database.existingSecret }}
+                  key: {{ default "database-url" .Values.database.existingSecretKey }}
+            {{- if .Values.publicURL }}
+            - name: PORTAL_PUBLIC_URL
+              value: {{ .Values.publicURL | quote }}
+            {{- end }}
+            {{- if .Values.oidc.issuer }}
+            - name: PORTAL_OIDC_ISSUER
+              value: {{ .Values.oidc.issuer | quote }}
+            {{- end }}
+            {{- if .Values.oidc.clientID }}
+            - name: PORTAL_OIDC_CLIENT_ID
+              value: {{ .Values.oidc.clientID | quote }}
+            {{- end }}
+            {{- if .Values.oidc.clientSecret }}
+            - name: PORTAL_OIDC_CLIENT_SECRET
+              value: {{ .Values.oidc.clientSecret | quote }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          {{- with .Values.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

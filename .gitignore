@@ -18,6 +18,12 @@
 .DS_Store
 *.swp
 .idea/
+
+# Portal build artifacts (the committed placeholder stays)
+/portal/web/node_modules/
+/portal/web/dist/
+/portal/internal/webfs/dist/*
+!/portal/internal/webfs/dist/index.html
 .vscode/
 
 # Stray dev/generated files — never commit

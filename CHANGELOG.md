@@ -6,6 +6,26 @@ All notable changes to 4AiCoding. The project started from
 
 ## Unreleased
 
+### Portal S0 — project skeleton (docs/PORTAL_PLAN.md 6/S0)
+- New `portal/` Go module (`cmd/portal`): reads `PORTAL_*` env config
+  (`PORTAL_ADDR`, required `PORTAL_DATABASE_URL`, `PORTAL_DEBUG`,
+  `PORTAL_PUBLIC_URL`, `PORTAL_SESSION_TTL`, OIDC placeholders for S1),
+  connects to Postgres via pgx, applies its own embedded migrations
+  (`portal/migrations/NNNN_*.sql`, advisory-locked, idempotent) and
+  serves `/healthz`, `/readyz` (Postgres ping) plus the embedded SPA
+  with CSP / `X-Frame-Options: DENY` headers. JSON logging with
+  request ids mirrors control-plane/internal/logging.
+- `portal/web/`: Vite + React 19 + TypeScript SPA skeleton (health
+  cards); embedded into the binary through `internal/webfs` so the
+  dashboard shares one origin with the future BFF (plan 3.1).
+- `docker-compose.portal.yml` for dev: Postgres 16 + Portal, Zitadel
+  behind the `idp` profile.
+- `deploy/helm/portal`: Deployment + Service + optional Ingress,
+  DSN via `database.url` (chart Secret) or `database.existingSecret`,
+  non-root distroless pod, /healthz + /readyz probes.
+- CI: `portal-unit` (gofmt/vet/build/test against a postgres:16
+  service + helm lint/template) and `portal-console` (SPA build).
+
 ### M7b — sandboxes run on workers
 - Executor mode: a sandboxd with `SANDBOXD_CONTROL_PLANE_URL` (+
   `SANDBOXD_WORKER_TOKEN`, `SANDBOXD_NODE_ID`, `SANDBOXD_NODE_ADDRESS`) runs

@@ -1,0 +1,74 @@
+# Portal dev stack (docs/PORTAL_PLAN.md 6/S0).
+#
+#   docker compose -f docker-compose.portal.yml up --build
+#
+#   postgres :16        Portal's own database (RLS comes in S1)
+#   portal   :8080      http://localhost:8080 — /healthz, /readyz
+#
+# The identity provider (Zitadel, PORTAL_PLAN 3.1) is opt-in so the
+# default `up` stays green even without pulling its large image:
+#
+#   docker compose -f docker-compose.portal.yml --profile idp up
+#
+#   zitadel  :8081      http://localhost:8081 (init masterkey is dev-only)
+#
+# It stores its data in the same postgres instance (database `zitadel`,
+# created by start-from-init with the postgres superuser).
+
+name: portal
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: portal
+      POSTGRES_PASSWORD: portal
+      POSTGRES_DB: portal
+    ports:
+      # Host port 5433 so it can run next to the main docker-compose.yml.
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - portal_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U portal -d portal"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  portal:
+    build: ./portal
+    image: portal:dev
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PORTAL_ADDR: ":8080"
+      PORTAL_DATABASE_URL: postgres://portal:portal@postgres:5432/portal
+      PORTAL_DEBUG: ${PORTAL_DEBUG:-}
+    ports:
+      - "8080:8080"
+    read_only: true
+    tmpfs: [/tmp]
+
+  zitadel:
+    image: ghcr.io/zitadel/zitadel:latest
+    profiles: [idp]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: start-from-init --masterkey "$ZITADEL_MASTERKEY" --config /zitadel-config.yaml
+    environment:
+      ZITADEL_MASTERKEY: ${ZITADEL_MASTERKEY:-MasterkeyNeedsToHave32Characters}
+      ZITADEL_DATABASE_POSTGRES_HOST: postgres
+      ZITADEL_DATABASE_POSTGRES_PORT: 5432
+      ZITADEL_DATABASE_POSTGRES_DATABASE: zitadel
+      ZITADEL_DATABASE_POSTGRES_USER_USERNAME: zitadel
+      ZITADEL_DATABASE_POSTGRES_USER_PASSWORD: zitadel
+      ZITADEL_DATABASE_POSTGRES_ADMIN_USERNAME: postgres
+      ZITADEL_DATABASE_POSTGRES_ADMIN_PASSWORD: portal
+      ZITADEL_EXTERNALSECURE: "false"
+    ports:
+      - "8081:8080"
+
+volumes:
+  portal_pgdata:
