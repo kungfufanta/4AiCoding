@@ -100,6 +100,18 @@ export function SandboxDetailPage({ id }: { id: string }) {
             )}{" "}
             <span className="muted">({sb.visibility})</span>
           </dd>
+          <dt>Network</dt>
+          <dd>
+            <Link to={`/sandboxes/${id}/network`}>{sb.egress_mode ?? "allowlist"}</Link>
+            <span className="muted">
+              {" "}
+              {sb.egress_mode === "open"
+                ? `(everything except ${sb.egress_deny?.length ?? 0} blocked)`
+                : sb.egress_mode === "none"
+                  ? "(no outbound traffic)"
+                  : `(${sb.egress.length} allowed host${sb.egress.length === 1 ? "" : "s"})`}
+            </span>
+          </dd>
           <dt>Env</dt>
           <dd className="mono small">
             {sb.env && Object.keys(sb.env).length ? Object.entries(sb.env).map(([k, v]) => <div key={k}>{`${k}=${v}`}</div>) : "—"}

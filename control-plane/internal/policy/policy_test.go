@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"net/netip"
 	"strings"
 	"testing"
 )
@@ -95,5 +96,49 @@ func TestHostAllowed(t *testing.T) {
 		if got := HostAllowed(allow, h); got != want {
 			t.Errorf("HostAllowed(%q) = %v", h, got)
 		}
+	}
+}
+
+func TestEgressModes(t *testing.T) {
+	p := Default()
+	if d := Decide(p, Request{Action: ActionEgress, EgressMode: NetOpen}); d.Allow || !strings.Contains(d.Reason, "permissive") {
+		t.Fatalf("open under strict: %+v", d)
+	}
+	p.Approvals = []string{ApproveEgressOutside}
+	if d := Decide(p, Request{Action: ActionEgress, EgressMode: NetOpen}); d.Allow || d.NeedsApproval != ApproveEgressOutside {
+		t.Fatalf("open gated: %+v", d)
+	}
+	d := Decide(p, Request{Action: ActionEgress, EgressMode: NetNone, EgressDeny: []string{"B.com", "a.com", "10.1.2.0/8"}})
+	if !d.Allow || d.EgressMode != NetNone || strings.Join(d.EgressDeny, ",") != "10.0.0.0/8,a.com,b.com" {
+		t.Fatalf("deny list: %+v", d)
+	}
+	if d := Decide(p, Request{Action: ActionEgress, EgressMode: "x"}); d.Allow {
+		t.Fatal("unknown mode")
+	}
+	p.Egress.Mode = EgressPermissive
+	if d := Decide(p, Request{Action: ActionEgress, EgressMode: NetOpen}); !d.Allow || d.EgressMode != NetOpen {
+		t.Fatalf("open under permissive: %+v", d)
+	}
+}
+
+func TestEgressRulesCheck(t *testing.T) {
+	r := EgressRules{Mode: NetOpen, Deny: []string{"evil.com", "10.0.0.0/8"}}
+	for host, want := range map[string]bool{"github.com": true, "api.evil.com": false, "10.2.3.4": false, "1.1.1.1": true} {
+		if got, _ := r.Check(host); got != want {
+			t.Errorf("open Check(%s) = %v", host, got)
+		}
+	}
+	r = EgressRules{Mode: NetAllowlist, Allow: []string{"github.com"}, Deny: []string{"gist.github.com"}}
+	for host, want := range map[string]bool{"github.com": true, "api.github.com": true, "gist.github.com": false, "x.com": false} {
+		if got, _ := r.Check(host); got != want {
+			t.Errorf("allowlist Check(%s) = %v", host, got)
+		}
+	}
+	if ok, _ := (EgressRules{Mode: NetNone, Allow: []string{"github.com"}}).Check("github.com"); ok {
+		t.Error("none must deny")
+	}
+	r.Deny = []string{"10.0.0.0/8"}
+	if !r.AddrDenied(netip.MustParseAddr("10.9.9.9")) || r.AddrDenied(netip.MustParseAddr("11.0.0.1")) {
+		t.Error("AddrDenied CIDR")
 	}
 }

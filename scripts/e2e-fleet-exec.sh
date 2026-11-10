@@ -153,6 +153,19 @@ ka_on() { [ "$(req "$CP" token POST "/v1/sandboxes/$SID/keep-alive")" = "200" ];
 wait_for 15 ka_on || fail "keep-alive still refused after the policy change: $(cat "$DD/body")"
 log "policy sync ✓"
 
+# 4b. Network rules and live activity of a remote sandbox go through the CP.
+log "remote network rules"
+expect 403 "$CP" token PUT "/v1/sandboxes/$SID/network/egress" '{"mode":"open"}'
+expect 200 "$CP" token PUT /v1/policy/egress '{"mode":"permissive","allow":[]}'
+put_open() { [ "$(req "$CP" token PUT "/v1/sandboxes/$SID/network/egress" '{"mode":"open","deny":["tracker.example"]}')" = "200" ]; }
+wait_for 15 put_open || fail "open mode still refused after the policy change: $(cat "$DD/body")"
+expect 200 "$CP" token PUT "/v1/sandboxes/$SID/network/egress" '{"allow":["github.com"]}'
+grep -q '"mode":"open"' "$DD/body" && grep -q 'tracker.example' "$DD/body" || fail "egress merge on the worker lost fields: $(cat "$DD/body")"
+expect 200 "$CP" token GET "/v1/sandboxes/$SID/network/activity"
+grep -q '"rules"' "$DD/body" || fail "no activity from the worker: $(cat "$DD/body")"
+expect 200 "$CP" token PUT /v1/policy/egress '{"mode":"strict","allow":[]}'
+log "remote network rules ✓"
+
 # 5. Deleting the keep-alive sandbox needs an admin's approval (on the CP).
 log "approval for a remote delete"
 expect 200 "$CP" token PUT /v1/policy/approvals '["sandbox.delete_keep_alive"]'

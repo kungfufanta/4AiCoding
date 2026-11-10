@@ -163,6 +163,36 @@ via_proxy "$ID" "$GW:18099" | grep -q " 200" || fail "allowlisted destination de
 connect_proxy "$ID" "$GW:18099" | grep -q " 200" || fail "allowlisted CONNECT denied"
 connect_proxy "$ID" "169.254.169.254:80" | grep -q " 403" || fail "cloud metadata must stay blocked even when allowlisted"
 via_proxy "$ID" "example.com:80" | grep -q " 403" || fail "non-allowlisted host must be denied"
+
+# Network modes + block list + live activity.
+put_egress() { # body -> http code
+  curl -s -m10 -o "$DD/last.body" -w '%{http_code}' -XPUT "$API/v1/sandboxes/$ID/network/egress" -H 'content-type: application/json' -d "$1"
+}
+code="$(put_egress "{\"deny\":[\"$GW\"]}")"; [ "$code" = "200" ] || fail "deny list returned $code"
+via_proxy "$ID" "$GW:18099" | grep -q " 403" || fail "block list must win over the allow list"
+code="$(put_egress '{"mode":"none","deny":[]}')"; [ "$code" = "200" ] || fail "mode none returned $code"
+via_proxy "$ID" "$GW:18099" | grep -q " 403" || fail "mode none must deny everything"
+code="$(put_egress '{"mode":"open"}')"; [ "$code" = "403" ] || fail "mode open under a strict policy returned $code, want 403"
+code="$(curl -s -m10 -o "$DD/last.body" -w '%{http_code}' -XPUT "$API/v1/policy/egress" -H 'content-type: application/json' -d "{\"mode\":\"permissive\",\"allow\":[]}")"
+[ "$code" = "200" ] || fail "policy permissive returned $code"
+code="$(put_egress '{"mode":"open"}')"; [ "$code" = "200" ] || fail "mode open returned $code: $(cat "$DD/last.body")"
+via_proxy "$ID" "$GW:18099" | grep -q " 200" || fail "open mode denied a destination the allow list names"
+connect_proxy "$ID" "169.254.169.254:80" | grep -q " 403" || fail "cloud metadata must stay blocked in open mode"
+code="$(put_egress "{\"deny\":[\"$GW/32\"]}")"; [ "$code" = "200" ] || fail "CIDR deny returned $code"
+via_proxy "$ID" "$GW:18099" | grep -q " 403" || fail "CIDR block list must deny in open mode"
+act="$(curl -s -m10 "$API/v1/sandboxes/$ID/network/activity")"
+echo "$act" | python3 -c '
+import json, sys
+a = json.load(sys.stdin); gw = sys.argv[1]
+h = {x["host"]: x for x in a["hosts"]}
+assert a["recording"], "activity is not recording"
+assert gw in h and h[gw]["allowed"] >= 1 and h[gw]["denied"] >= 1, h.get(gw)
+assert any(e["host"] == gw and not e["allowed"] for e in a["events"]), "no denied event"
+assert a["rules"]["mode"] == "open", a["rules"]
+' "$GW" || fail "network activity is wrong: $act"
+code="$(curl -s -m10 -o "$DD/last.body" -w '%{http_code}' -XPUT "$API/v1/policy/egress" -H 'content-type: application/json' -d "{\"mode\":\"strict\",\"allow\":[\"$GW\",\"169.254.169.254\"]}")"
+[ "$code" = "200" ] || fail "policy back to strict returned $code"
+code="$(put_egress '{"mode":"allowlist","deny":[]}')"; [ "$code" = "200" ] || fail "back to allowlist returned $code"
 kill "$WWW_PID" 2>/dev/null || true
 log "egress proxy ✓"
 

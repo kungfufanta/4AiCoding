@@ -82,14 +82,63 @@ export interface Sandbox {
   resources: { cpus: number; memory_mb: number };
   lifecycle: { idle_timeout_secs: number; keep_alive: boolean };
   egress: string[];
+  egress_mode?: NetMode;
+  egress_deny?: string[];
   ports: number[];
   preview?: { url: string; port?: number; status: string };
   visibility: string;
   idle_policy: string;
+  external?: { user_id?: string; project_id?: string };
   error_message?: string;
   last_active_at?: string;
   created_at: string;
 }
+
+/** Per-sandbox network mode: nothing out, only the allow list, or everything but the block list. */
+export type NetMode = "none" | "allowlist" | "open";
+
+export interface EgressRules {
+  mode: NetMode;
+  allow: string[];
+  deny: string[];
+}
+
+export interface NetEvent {
+  seq: number;
+  time: string;
+  method: string;
+  host: string;
+  port: string;
+  ip?: string;
+  allowed: boolean;
+  reason?: string;
+}
+
+export interface NetHost {
+  host: string;
+  ips: string[];
+  ports: string[];
+  allowed: number;
+  denied: number;
+  bytes_up: number;
+  bytes_down: number;
+  first_seen: string;
+  last_seen: string;
+  last_allowed: boolean;
+  last_reason?: string;
+}
+
+export interface NetActivity {
+  sandbox_id: string;
+  recording: boolean;
+  rules: EgressRules;
+  cursor: string;
+  events: NetEvent[];
+  hosts: NetHost[];
+}
+
+/** project_id that marks the one-click default sandbox. */
+export const DEFAULT_SANDBOX_TAG = "default";
 
 export interface AuthStatus {
   enabled: boolean;

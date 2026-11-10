@@ -22,22 +22,27 @@ type Spec struct {
 	// Egress is the hostnames the sandbox may reach through the egress
 	// proxy; empty = none (deny-by-default).
 	Egress []string
+	// EgressMode is "none", "allowlist" or "open"; "" = allowlist.
+	EgressMode string
+	// EgressDeny is always refused, in every mode (hosts, IPs, CIDRs).
+	EgressDeny []string
 }
 
 // IsZero reports whether the spec carries nothing beyond the defaults.
 func (sp Spec) IsZero() bool {
 	return sp.Image == "" && len(sp.Command) == 0 && len(sp.Env) == 0 && sp.CPUs == 0 && sp.MemoryMB == 0 &&
-		sp.IdleTimeoutSecs == 0 && len(sp.Egress) == 0
+		sp.IdleTimeoutSecs == 0 && len(sp.Egress) == 0 &&
+		sp.EgressMode == "" && len(sp.EgressDeny) == 0
 }
 
 func (s *Store) specFor(ctx context.Context, id string) (Spec, error) {
 	var sp Spec
-	var image, cmdJSON, envJSON, egressJSON sql.NullString
+	var image, cmdJSON, envJSON, egressJSON, egressMode, denyJSON sql.NullString
 	var cpus sql.NullFloat64
 	var mem, idle sql.NullInt64
 	err := s.db.QueryRowContext(ctx,
-		`SELECT image, command_json, env_json, cpus, memory_mb, idle_timeout_secs, egress_json FROM sandbox_spec WHERE sandbox_id = ?`, id).
-		Scan(&image, &cmdJSON, &envJSON, &cpus, &mem, &idle, &egressJSON)
+		`SELECT image, command_json, env_json, cpus, memory_mb, idle_timeout_secs, egress_json, egress_mode, egress_deny_json FROM sandbox_spec WHERE sandbox_id = ?`, id).
+		Scan(&image, &cmdJSON, &envJSON, &cpus, &mem, &idle, &egressJSON, &egressMode, &denyJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		return sp, nil
 	}
@@ -48,6 +53,12 @@ func (s *Store) specFor(ctx context.Context, id string) (Spec, error) {
 	sp.CPUs = cpus.Float64
 	sp.MemoryMB = int(mem.Int64)
 	sp.IdleTimeoutSecs = int(idle.Int64)
+	sp.EgressMode = egressMode.String
+	if denyJSON.Valid && denyJSON.String != "" {
+		if err := json.Unmarshal([]byte(denyJSON.String), &sp.EgressDeny); err != nil {
+			return sp, err
+		}
+	}
 	if egressJSON.Valid && egressJSON.String != "" {
 		if err := json.Unmarshal([]byte(egressJSON.String), &sp.Egress); err != nil {
 			return sp, err
@@ -114,18 +125,27 @@ func putSpec(ctx context.Context, tx *sql.Tx, id string, sp Spec) error {
 		}
 		egressJSON = sql.NullString{String: string(b), Valid: true}
 	}
+	var denyJSON sql.NullString
+	if len(sp.EgressDeny) > 0 {
+		b, err := json.Marshal(sp.EgressDeny)
+		if err != nil {
+			return err
+		}
+		denyJSON = sql.NullString{String: string(b), Valid: true}
+	}
 	_, err := tx.ExecContext(ctx, `
-		INSERT INTO sandbox_spec (sandbox_id, image, command_json, env_json, cpus, memory_mb, idle_timeout_secs, egress_json)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO sandbox_spec (sandbox_id, image, command_json, env_json, cpus, memory_mb, idle_timeout_secs, egress_json, egress_mode, egress_deny_json)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(sandbox_id) DO UPDATE SET
 		    image = excluded.image, command_json = excluded.command_json,
 		    env_json = excluded.env_json, cpus = excluded.cpus, memory_mb = excluded.memory_mb,
-		    idle_timeout_secs = excluded.idle_timeout_secs, egress_json = excluded.egress_json`,
+		    idle_timeout_secs = excluded.idle_timeout_secs, egress_json = excluded.egress_json,
+		    egress_mode = excluded.egress_mode, egress_deny_json = excluded.egress_deny_json`,
 		id, sql.NullString{String: sp.Image, Valid: sp.Image != ""}, cmdJSON, envJSON,
 		sql.NullFloat64{Float64: sp.CPUs, Valid: sp.CPUs > 0},
 		sql.NullInt64{Int64: int64(sp.MemoryMB), Valid: sp.MemoryMB > 0},
 		sql.NullInt64{Int64: int64(sp.IdleTimeoutSecs), Valid: sp.IdleTimeoutSecs > 0},
-		egressJSON)
+		egressJSON, sql.NullString{String: sp.EgressMode, Valid: sp.EgressMode != ""}, denyJSON)
 	return err
 }
 

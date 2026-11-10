@@ -369,14 +369,24 @@ func (s *Server) forwardRemote(w http.ResponseWriter, r *http.Request, rs *store
 		}
 	case r.Method == http.MethodPut && r.URL.Path == "/v1/sandboxes/"+id+"/network/egress":
 		// Same gate as v1PutEgress, decided here with the control plane's
-		// policy; the worker applies exactly the normalised list.
-		var req struct {
-			Allow []string `json:"allow"`
+		// policy on the worker's current rules; the worker applies exactly
+		// the normalised result.
+		req, ok := decodeEgressReq(w, r)
+		if !ok {
+			return
 		}
-		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16*1024))
-		dec.DisallowUnknownFields()
-		if err := dec.Decode(&req); err != nil {
-			writeV1Err(w, http.StatusBadRequest, "invalid_request", "invalid json: "+err.Error())
+		code, raw, err := s.nodeDo(r.Context(), en, http.MethodGet, "/v1/sandboxes/"+id+"/network/egress", nil, nil)
+		if err != nil {
+			writeNodeUnreachable(w, en.ID, err)
+			return
+		}
+		if code != http.StatusOK {
+			relayV1Error(w, code, raw)
+			return
+		}
+		var cur policy.EgressRules
+		if err := json.Unmarshal(raw, &cur); err != nil {
+			writeV1Err(w, http.StatusBadGateway, "node_unreachable", "node "+en.ID+" returned unreadable egress rules")
 			return
 		}
 		p, err := s.policy(r.Context())
@@ -384,18 +394,18 @@ func (s *Server) forwardRemote(w http.ResponseWriter, r *http.Request, rs *store
 			writeV1Err(w, http.StatusInternalServerError, "internal", err.Error())
 			return
 		}
-		d := policy.Decide(p, policy.Request{Action: policy.ActionEgress, Egress: req.Allow})
+		d := egressDecide(p, req.merge(cur))
 		if !d.Allow {
 			if d.NeedsApproval == "" {
 				writePolicyErr(w, &policyError{d: d})
 				return
 			}
-			if s.requestApproval(w, r, d.NeedsApproval, "sandbox:"+id+":egress", d.Egress) {
+			if s.requestApproval(w, r, d.NeedsApproval, "sandbox:"+id+":egress", egressApprovalPayload(d)) {
 				return
 			}
 			grant = d.NeedsApproval
 		}
-		body, _ = json.Marshal(map[string]any{"allow": d.Egress})
+		body, _ = json.Marshal(egressApprovalPayload(d))
 	}
 
 	sw := &statusCapture{ResponseWriter: w, status: http.StatusOK}

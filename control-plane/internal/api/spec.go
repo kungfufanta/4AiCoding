@@ -135,6 +135,8 @@ type specInput struct {
 	MemoryMB    int
 	Ports       []int
 	Egress      []string
+	EgressMode  string
+	EgressDeny  []string
 	KeepAlive   bool
 	IdleTimeout int
 }
@@ -180,6 +182,7 @@ func (s *Server) buildSpec(ctx context.Context, in specInput) (store.Spec, polic
 	d := policy.Decide(p, policy.Request{
 		Action: policy.ActionCreate, InstanceImage: s.Image, Image: in.Image, Ports: in.Ports,
 		CPUs: in.CPUs, MemoryMB: in.MemoryMB, Egress: in.Egress, KeepAlive: in.KeepAlive, IdleTimeout: in.IdleTimeout,
+		EgressMode: in.EgressMode, EgressDeny: in.EgressDeny,
 	})
 	if !d.Allow {
 		return sp, d, &policyError{d: d}
@@ -193,6 +196,11 @@ func (s *Server) buildSpec(ctx context.Context, in specInput) (store.Spec, polic
 	sp.MemoryMB = d.EffectiveMemoryMB
 	sp.IdleTimeoutSecs = d.EffectiveIdleTimeout
 	sp.Egress = d.Egress
+	sp.EgressDeny = d.EgressDeny
+	if in.EgressMode != "" {
+		// Keep "" for a create that never chose a mode (= allowlist).
+		sp.EgressMode = d.EgressMode
+	}
 	return sp, d, nil
 }
 
