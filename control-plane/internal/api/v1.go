@@ -1,20 +1,22 @@
-// v1.go — the narrow public /v1 API.
-// It is a thin translation layer over the internal machinery:
-// sandbox create/delete delegate to the existing internal handlers.
-// The internal /sandbox API is left untouched.
+// v1.go — the public /v1 sandbox lifecycle API.
+// It is a thin translation layer over the internal machinery: create,
+// delete, exec and wake delegate to the internal /sandbox handlers, so
+// both surfaces share one implementation. The legacy /sandbox routes
+// stay available until they are deprecated.
 package api
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"time"
 
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/audit"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/events"
-	"github.com/tastyeffectco/sandboxd/control-plane/internal/preset"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/store"
 )
 
@@ -22,27 +24,33 @@ import (
 // arrive in M3a; until then the image is instance-wide (SANDBOXD_IMAGE).
 const errPerAppImage = "per-sandbox image selection is not supported yet; set SANDBOXD_IMAGE instance-wide"
 
-// defaultTemplate is the one fixed snapshot variant in v1.
-const defaultTemplate = "react-standard"
-
 // --- v1 response shapes ---------------------------------------------
 
 type v1Preview struct {
-	URL               string `json:"url"`
-	Port              int    `json:"port,omitempty"` // A1.5a: the resolved web port the URL routes to
-	Status            string `json:"status"`
-	LastHTTPStatus    int    `json:"last_http_status,omitempty"`
-	LastCheckedAt     string `json:"last_checked_at,omitempty"`
-	BuildErrorMessage string `json:"build_error_message,omitempty"`
+	URL    string `json:"url"`
+	Port   int    `json:"port,omitempty"` // the resolved web port the URL routes to
+	Status string `json:"status"`         // running | down
+}
+
+type v1External struct {
+	UserID    string `json:"user_id,omitempty"`
+	ProjectID string `json:"project_id,omitempty"`
 }
 
 type v1Sandbox struct {
-	ID        string    `json:"id"`
-	Status    string    `json:"status"`
-	Preview   v1Preview `json:"preview"`
-	Template  string    `json:"template"`
-	CreatedAt string    `json:"created_at"`
-	UpdatedAt string    `json:"updated_at,omitempty"`
+	ID             string      `json:"id"`
+	Status         string      `json:"status"`
+	Image          string      `json:"image"`
+	Ports          []int       `json:"ports"`
+	Preview        *v1Preview  `json:"preview,omitempty"` // only when the sandbox exposes ports
+	Visibility     string      `json:"visibility"`
+	IdlePolicy     string      `json:"idle_policy"`
+	External       *v1External `json:"external,omitempty"`
+	ErrorMessage   string      `json:"error_message,omitempty"`
+	LastActiveAt   string      `json:"last_active_at,omitempty"`
+	KeepaliveUntil string      `json:"keepalive_until,omitempty"`
+	CreatedAt      string      `json:"created_at"`
+	UpdatedAt      string      `json:"updated_at,omitempty"`
 }
 
 // --- helpers --------------------------------------------------------
@@ -148,13 +156,34 @@ func (s *Server) previewURL(id string, webPort int) string {
 // v1SandboxFromRow reshapes a stored sandbox to the v1 object.
 func (s *Server) v1SandboxFromRow(_ *http.Request, sb *store.Sandbox) v1Sandbox {
 	out := v1Sandbox{
-		ID:        sb.ID,
-		Status:    sb.Status,
-		Template:  defaultTemplate,
-		CreatedAt: sb.CreatedAt.UTC().Format(time.RFC3339),
-		UpdatedAt: sb.UpdatedAt.UTC().Format(time.RFC3339),
+		ID:         sb.ID,
+		Status:     sb.Status,
+		Image:      sb.Image,
+		Ports:      sb.Ports,
+		Visibility: sb.Visibility,
+		IdlePolicy: sb.IdlePolicy,
+		CreatedAt:  sb.CreatedAt.UTC().Format(time.RFC3339),
+		UpdatedAt:  sb.UpdatedAt.UTC().Format(time.RFC3339),
 	}
-	out.Preview = s.v1PreviewView(sb.ID, sb.Status, webPortOf(sb))
+	if out.Ports == nil {
+		out.Ports = []int{}
+	}
+	if len(sb.Ports) > 0 {
+		p := s.v1PreviewView(sb.ID, sb.Status, webPortOf(sb))
+		out.Preview = &p
+	}
+	if sb.ExternalUserID.Valid || sb.ExternalProjectID.Valid {
+		out.External = &v1External{UserID: sb.ExternalUserID.String, ProjectID: sb.ExternalProjectID.String}
+	}
+	if sb.ErrorMessage.Valid {
+		out.ErrorMessage = sb.ErrorMessage.String
+	}
+	if !sb.LastActiveAt.IsZero() {
+		out.LastActiveAt = sb.LastActiveAt.UTC().Format(time.RFC3339)
+	}
+	if sb.KeepaliveUntil.Valid && sb.KeepaliveUntil.Int64 > 0 {
+		out.KeepaliveUntil = time.Unix(sb.KeepaliveUntil.Int64, 0).UTC().Format(time.RFC3339)
+	}
 	return out
 }
 
@@ -175,30 +204,75 @@ func (s *Server) v1PreviewView(id, rowStatus string, webPort int) v1Preview {
 	return prev
 }
 
+// v1Lookup loads a sandbox row and writes the v1 404/500 on failure.
+func (s *Server) v1Lookup(w http.ResponseWriter, r *http.Request, id string) (*store.Sandbox, bool) {
+	sb, err := s.Store.Get(r.Context(), id)
+	if errors.Is(err, store.ErrNotFound) {
+		writeV1Err(w, http.StatusNotFound, "not_found", "no such sandbox")
+		return nil, false
+	}
+	if err != nil {
+		writeV1Err(w, http.StatusInternalServerError, "internal", err.Error())
+		return nil, false
+	}
+	return sb, true
+}
+
+// --- GET /v1/sandboxes ----------------------------------------------
+
+// v1ListSandboxes lists sandboxes, newest first, optionally filtered by
+// external identity (?external_user_id= / ?external_project_id=) and by
+// ?status=.
+func (s *Server) v1ListSandboxes(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	euid, epid, status := q.Get("external_user_id"), q.Get("external_project_id"), q.Get("status")
+	var rows []*store.Sandbox
+	var err error
+	if euid != "" || epid != "" {
+		rows, err = s.Store.ListFiltered(r.Context(), euid, epid)
+	} else {
+		rows, err = s.Store.List(r.Context())
+	}
+	if err != nil {
+		writeV1Err(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	out := make([]v1Sandbox, 0, len(rows))
+	for _, sb := range rows {
+		if status != "" && sb.Status != status {
+			continue
+		}
+		out = append(out, s.v1SandboxFromRow(r, sb))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"sandboxes": out})
+}
+
 // --- POST /v1/sandboxes ---------------------------------------------
 
 type v1CreateReq struct {
-	Project struct {
-		ID     string `json:"id"`
-		UserID string `json:"user_id"`
-	} `json:"project"`
-	Visibility string `json:"visibility,omitempty"`
-	Template   string `json:"template,omitempty"`
-	// FromSnapshot, when set, clones the new sandbox's workspace from a
-	// snapshot the caller's tenant owns
-	// instead of the default template. Mutually exclusive with Template.
+	// Ports the sandbox serves; each gets a preview route. Empty = no preview.
+	Ports      []int             `json:"ports,omitempty"`
+	Env        map[string]string `json:"env,omitempty"`
+	Visibility string            `json:"visibility,omitempty"`  // public | private (default private)
+	IdlePolicy string            `json:"idle_policy,omitempty"` // sleep | always_on
+	External   v1External        `json:"external,omitempty"`
+	// FromSnapshot clones the workspace from a snapshot the caller owns.
 	FromSnapshot string `json:"from_snapshot,omitempty"`
-	// RuntimePreset selects a runtime preset (react-vite, nextjs, …). Applied
-	// by runtimed on first boot; takes precedence over Template.
-	RuntimePreset string `json:"runtime_preset,omitempty"`
-	// Image is rejected — per-app image selection is not supported (instance-wide
-	// via SANDBOXD_IMAGE). Declared so we 400 it instead of silently dropping it.
+	// Workspace clones a public git repository into the workspace.
+	Workspace *struct {
+		RepoURL string `json:"repo_url"`
+		Branch  string `json:"branch,omitempty"`
+	} `json:"workspace,omitempty"`
+	// Image is rejected until per-sandbox images land (M3a). Declared so we
+	// 400 it instead of silently dropping it.
 	Image *string `json:"image,omitempty"`
 }
 
 func (s *Server) v1CreateSandbox(w http.ResponseWriter, r *http.Request) {
 	var req v1CreateReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
 		writeV1Err(w, http.StatusBadRequest, "invalid_request", "invalid json: "+err.Error())
 		return
 	}
@@ -206,34 +280,29 @@ func (s *Server) v1CreateSandbox(w http.ResponseWriter, r *http.Request) {
 		writeV1Err(w, http.StatusBadRequest, "invalid_request", errPerAppImage)
 		return
 	}
-	if req.Project.ID == "" || req.Project.UserID == "" {
-		writeV1Err(w, http.StatusBadRequest, "invalid_request", "project.id and project.user_id are required")
-		return
-	}
-
-	// Idempotent per project: an existing non-error sandbox for this
-	// project is returned as-is (one durable sandbox per project).
-	if rows, err := s.Store.ListFiltered(r.Context(), "", req.Project.ID); err == nil {
-		for _, sb := range rows {
-			if sb.Status != "error" {
-				writeJSON(w, http.StatusOK, s.v1SandboxFromRow(r, sb))
-				return
-			}
-		}
-	}
-
-	if req.FromSnapshot != "" && req.Template != "" {
-		writeV1Err(w, http.StatusBadRequest, "invalid_request", "template and from_snapshot are mutually exclusive")
+	if req.FromSnapshot != "" && req.Workspace != nil {
+		writeV1Err(w, http.StatusBadRequest, "invalid_request", "from_snapshot and workspace are mutually exclusive")
 		return
 	}
 	vis := req.Visibility
 	if vis == "" {
-		vis = "public"
+		vis = "private"
 	}
 	createBody := map[string]any{
-		"ports":      []int{3000},
+		"ports":      req.Ports,
 		"visibility": vis,
-		"external":   map[string]string{"user_id": req.Project.UserID, "project_id": req.Project.ID},
+		"env":        req.Env,
+		"external":   map[string]string{"user_id": req.External.UserID, "project_id": req.External.ProjectID},
+	}
+	if req.IdlePolicy != "" {
+		createBody["idle_policy"] = req.IdlePolicy
+	}
+	if req.Workspace != nil {
+		if req.Workspace.RepoURL == "" {
+			writeV1Err(w, http.StatusBadRequest, "invalid_request", "workspace.repo_url is required")
+			return
+		}
+		createBody["git"] = map[string]string{"repo_url": req.Workspace.RepoURL, "branch": req.Workspace.Branch}
 	}
 	if req.FromSnapshot != "" {
 		// Resolve + authorize the snapshot under the caller's tenant,
@@ -253,25 +322,12 @@ func (s *Server) v1CreateSandbox(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		createBody["template_path"] = snap.ImagePath
-	} else if req.RuntimePreset != "" {
-		if !preset.Valid(req.RuntimePreset) {
-			writeV1Err(w, http.StatusBadRequest, "invalid_request", "unknown runtime_preset")
-			return
-		}
-		createBody["runtime_preset"] = req.RuntimePreset
-	} else if req.Template != "" {
-		// An explicit template clones that golden workspace. With no
-		// template the sandbox is provisioned empty (handleCreate seeds
-		// the /opt/sandbox-skel home), so the public create path works
-		// out of the box without a pre-seeded template image on the host.
-		createBody["template"] = req.Template
 	}
 	internal, _ := json.Marshal(createBody)
 	code, body := s.delegate(r, s.handleCreate, http.MethodPost, "/sandbox", nil, internal)
 	if code != http.StatusCreated {
 		// Capacity pushback (503) carries a Retry-After on the internal
-		// handler; the delegate's recorder drops it, so re-assert it here
-		// to honour the documented backpressure contract (llm.txt §3/§5.1).
+		// handler; the delegate's recorder drops it, so re-assert it here.
 		if code == http.StatusServiceUnavailable {
 			w.Header().Set("Retry-After", "30")
 		}
@@ -294,13 +350,8 @@ func (s *Server) v1CreateSandbox(w http.ResponseWriter, r *http.Request) {
 // --- GET /v1/sandboxes/{id} -----------------------------------------
 
 func (s *Server) v1GetSandbox(w http.ResponseWriter, r *http.Request) {
-	sb, err := s.Store.Get(r.Context(), r.PathValue("id"))
-	if errors.Is(err, store.ErrNotFound) {
-		writeV1Err(w, http.StatusNotFound, "not_found", "The specified sandbox ID does not exist.")
-		return
-	}
-	if err != nil {
-		writeV1Err(w, http.StatusInternalServerError, "internal", err.Error())
+	sb, ok := s.v1Lookup(w, r, r.PathValue("id"))
+	if !ok {
 		return
 	}
 	writeJSON(w, http.StatusOK, s.v1SandboxFromRow(r, sb))
@@ -310,13 +361,8 @@ func (s *Server) v1GetSandbox(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) v1StopSandbox(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	sb, err := s.Store.Get(r.Context(), id)
-	if errors.Is(err, store.ErrNotFound) {
-		writeV1Err(w, http.StatusNotFound, "not_found", "no such sandbox")
-		return
-	}
-	if err != nil {
-		writeV1Err(w, http.StatusInternalServerError, "internal", err.Error())
+	sb, ok := s.v1Lookup(w, r, id)
+	if !ok {
 		return
 	}
 	if sb.Status == "stopped" {
@@ -324,37 +370,39 @@ func (s *Server) v1StopSandbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if sb.Status != "running" {
-		writeV1Err(w, http.StatusConflict, "conflict", "sandbox is not running")
+		writeV1Err(w, http.StatusConflict, "conflict", "sandbox is "+sb.Status+" — cannot stop")
 		return
 	}
+	if !s.stopSandbox(w, r, id) {
+		return
+	}
+	sb, _ = s.Store.Get(r.Context(), id)
+	writeJSON(w, http.StatusOK, s.v1SandboxFromRow(r, sb))
+}
+
+// stopSandbox stops a running sandbox's container and records it. Writes the
+// v1 error and returns false on failure.
+func (s *Server) stopSandbox(w http.ResponseWriter, r *http.Request, id string) bool {
 	if err := s.Docker.Stop(r.Context(), "s-"+id, 10); err != nil {
 		writeV1Err(w, http.StatusInternalServerError, "internal", "docker stop: "+err.Error())
-		return
+		return false
 	}
 	if err := s.Store.MarkStoppedAt(r.Context(), id, time.Now().UTC()); err != nil {
 		s.loggerFor(r, id).Warn("v1 stop: MarkStoppedAt failed", "err", err.Error())
 	}
 	s.auditAction(r, audit.Entry{Action: "sandbox.stop", Target: id})
-	sb, _ = s.Store.Get(r.Context(), id)
 	s.recordEvent(r, events.Event{Type: events.SandboxStopped, Severity: events.SeverityInfo,
-		Message: "Sandbox stopped", AppID: sb.AppID.String, SandboxID: id})
-	writeJSON(w, http.StatusOK, s.v1SandboxFromRow(r, sb))
+		Message: "Sandbox stopped", SandboxID: id})
+	return true
 }
 
 // --- POST /v1/sandboxes/{id}/start ----------------------------------
 
-// v1StartSandbox wakes a stopped sandbox. It is the public counterpart
-// of /stop, so a console (API-only) need not reach the internal wake
-// path. Idempotent when already running.
+// v1StartSandbox wakes a stopped sandbox. Idempotent when already running.
 func (s *Server) v1StartSandbox(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	sb, err := s.Store.Get(r.Context(), id)
-	if errors.Is(err, store.ErrNotFound) {
-		writeV1Err(w, http.StatusNotFound, "not_found", "no such sandbox")
-		return
-	}
-	if err != nil {
-		writeV1Err(w, http.StatusInternalServerError, "internal", err.Error())
+	sb, ok := s.v1Lookup(w, r, id)
+	if !ok {
 		return
 	}
 	if sb.Status == "running" {
@@ -365,27 +413,160 @@ func (s *Server) v1StartSandbox(w http.ResponseWriter, r *http.Request) {
 		writeV1Err(w, http.StatusConflict, "conflict", "sandbox is "+sb.Status+" — cannot start")
 		return
 	}
+	s.startAndRespond(w, r, id)
+}
+
+// startAndRespond wakes a stopped sandbox via the internal wake path and
+// writes the v1 object.
+func (s *Server) startAndRespond(w http.ResponseWriter, r *http.Request, id string) {
 	code, body := s.delegate(r, s.handleWakeJSON, http.MethodPost, "/wake/"+id,
 		map[string]string{"id": id}, nil)
 	if code != http.StatusOK {
 		relayV1Error(w, code, body) // 503 -> sandbox_capacity, etc.
 		return
 	}
-	if sb, err = s.Store.Get(r.Context(), id); err != nil {
+	sb, err := s.Store.Get(r.Context(), id)
+	if err != nil {
 		writeV1Err(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
+	s.auditAction(r, audit.Entry{Action: "sandbox.start", Target: id})
 	s.recordEvent(r, events.Event{Type: events.SandboxStarted, Severity: events.SeverityInfo,
-		Message: "Sandbox started", AppID: sb.AppID.String, SandboxID: id})
+		Message: "Sandbox started", SandboxID: id})
 	writeJSON(w, http.StatusOK, s.v1SandboxFromRow(r, sb))
+}
+
+// --- POST /v1/sandboxes/{id}/restart --------------------------------
+
+// v1RestartSandbox stops (if running) then starts the sandbox.
+func (s *Server) v1RestartSandbox(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	sb, ok := s.v1Lookup(w, r, id)
+	if !ok {
+		return
+	}
+	switch sb.Status {
+	case "running":
+		if !s.stopSandbox(w, r, id) {
+			return
+		}
+	case "stopped":
+	default:
+		writeV1Err(w, http.StatusConflict, "conflict", "sandbox is "+sb.Status+" — cannot restart")
+		return
+	}
+	s.startAndRespond(w, r, id)
+}
+
+// --- POST /v1/sandboxes/{id}/exec -----------------------------------
+
+type v1ExecReq struct {
+	Cmd []string `json:"cmd"`
+}
+
+// v1ExecSandbox runs a one-shot command in a running sandbox and returns
+// stdout, stderr and the exit code. A non-zero exit code is still a 200.
+func (s *Server) v1ExecSandbox(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	sb, ok := s.v1Lookup(w, r, id)
+	if !ok {
+		return
+	}
+	if sb.Status != "running" {
+		writeV1Err(w, http.StatusConflict, "conflict", "sandbox is "+sb.Status+" — start it first")
+		return
+	}
+	var req v1ExecReq
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		writeV1Err(w, http.StatusBadRequest, "invalid_request", "invalid json: "+err.Error())
+		return
+	}
+	if len(req.Cmd) == 0 || req.Cmd[0] == "" {
+		writeV1Err(w, http.StatusBadRequest, "invalid_request", "cmd is required")
+		return
+	}
+	body, _ := json.Marshal(execReq{Cmd: req.Cmd})
+	code, out := s.delegate(r, s.handleExec, http.MethodPost, "/sandbox/"+id+"/exec",
+		map[string]string{"id": id}, body)
+	if code != http.StatusOK {
+		relayV1Error(w, code, out)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(out)
+}
+
+// --- GET /v1/sandboxes/{id}/logs ------------------------------------
+
+const (
+	defaultLogTail = 200
+	maxLogTail     = 10000
+)
+
+// v1SandboxLogs returns the container's stdout+stderr. ?tail=N limits the
+// backlog (default 200, max 10000). ?follow=true streams new lines as
+// Server-Sent Events (one `data:` line per log line) until the client
+// disconnects; otherwise the response is text/plain.
+func (s *Server) v1SandboxLogs(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if _, ok := s.v1Lookup(w, r, id); !ok {
+		return
+	}
+	tail := defaultLogTail
+	if v := r.URL.Query().Get("tail"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			writeV1Err(w, http.StatusBadRequest, "invalid_request", "tail must be a positive integer")
+			return
+		}
+		tail = min(n, maxLogTail)
+	}
+	follow := r.URL.Query().Get("follow") == "true"
+	rc, err := s.Docker.Logs(r.Context(), "s-"+id, tail, follow)
+	if err != nil {
+		writeV1Err(w, http.StatusInternalServerError, "internal", "docker logs: "+err.Error())
+		return
+	}
+	defer rc.Close()
+	if !follow {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		var buf bytes.Buffer
+		_, _ = buf.ReadFrom(rc)
+		_, _ = w.Write(buf.Bytes())
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	flusher, _ := w.(http.Flusher)
+	if flusher != nil {
+		flusher.Flush()
+	}
+	sc := bufio.NewScanner(rc)
+	sc.Buffer(make([]byte, 64*1024), 1024*1024)
+	for sc.Scan() {
+		if _, err := w.Write([]byte("data: " + sc.Text() + "\n\n")); err != nil {
+			return
+		}
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+	_, _ = w.Write([]byte("event: end\ndata: {}\n\n"))
+	if flusher != nil {
+		flusher.Flush()
+	}
 }
 
 // --- DELETE /v1/sandboxes/{id} --------------------------------------
 
 // v1DeleteSandbox is a full destroy. It delegates to the internal
-// purge (container + workspace .img + row), not the internal soft
-// DELETE — the soft DELETE preserves the .img for id-reuse, which is
-// not the v1 "destroy the project's sandbox" contract.
+// purge (container + workspace + row), not the internal soft DELETE —
+// the soft DELETE preserves the workspace for id-reuse.
 func (s *Server) v1DeleteSandbox(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	code, body := s.delegate(r, s.handlePurgeSandbox, http.MethodPost, "/sandbox/"+id+"/purge",

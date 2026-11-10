@@ -37,8 +37,8 @@ func fileStore(t *testing.T) *store.Store {
 }
 
 // newSandboxRowServer returns a Server backed by a file store holding one
-// running sandbox row.
-func newSandboxRowServer(t *testing.T) (*Server, string) {
+// running sandbox row exposing the given ports.
+func newSandboxRowServer(t *testing.T, ports ...int) (*Server, string) {
 	t.Helper()
 	st := fileStore(t)
 	t.Cleanup(func() { st.Close() })
@@ -46,7 +46,7 @@ func newSandboxRowServer(t *testing.T) (*Server, string) {
 	lm.Root = t.TempDir()
 	s := &Server{Store: st, Loopback: lm, Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	id := newULID()
-	if err := st.Create(context.Background(), &store.Sandbox{ID: id, Status: "running", ExternalUserID: nullStr("local")}); err != nil {
+	if err := st.Create(context.Background(), &store.Sandbox{ID: id, Status: "running", Ports: ports, ExternalUserID: nullStr("local")}); err != nil {
 		t.Fatal(err)
 	}
 	return s, id

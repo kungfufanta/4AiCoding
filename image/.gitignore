@@ -1,3 +1,0 @@
-# Build artifact: the runtimed binary is compiled into the image
-# context by build.sh and is never committed.
-bin/

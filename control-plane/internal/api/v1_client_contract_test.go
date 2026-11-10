@@ -14,7 +14,7 @@ import (
 
 // GET /v1/sandboxes/{id} → the object the console's app-detail screen reads.
 func TestV1SandboxResponseShape(t *testing.T) {
-	s, id := newSandboxRowServer(t)
+	s, id := newSandboxRowServer(t, 3000)
 	r := httptest.NewRequest("GET", "/v1/sandboxes/"+id, nil)
 	r.SetPathValue("id", id)
 	w := httptest.NewRecorder()
@@ -26,7 +26,7 @@ func TestV1SandboxResponseShape(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &m); err != nil {
 		t.Fatalf("invalid json: %v", err)
 	}
-	for _, k := range []string{"id", "status", "preview", "template", "created_at"} {
+	for _, k := range []string{"id", "status", "image", "ports", "preview", "visibility", "idle_policy", "created_at"} {
 		if _, ok := m[k]; !ok {
 			t.Errorf("v1 sandbox response missing %q: %s", k, w.Body)
 		}

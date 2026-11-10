@@ -52,7 +52,7 @@ services:
       context: ./control-plane
       args:
         # Stamped into the binary (sandboxd version / telemetry / settings).
-        # upgrade.sh & install.sh export these from `git describe`; default dev.
+        # Set SANDBOXD_VERSION / SANDBOXD_GIT_COMMIT (e.g. from `git describe`); default dev.
         VERSION: ${SANDBOXD_VERSION:-dev}
         GIT_COMMIT: ${SANDBOXD_GIT_COMMIT:-unknown}
     # The installer records verified release image names in .env; source
@@ -107,43 +107,5 @@ services:
       SANDBOXD_API_TOKENS: ${SANDBOXD_API_TOKENS:-}
       # --- idle lifecycle (override if you like) ---
       SANDBOXD_IDLE_THRESHOLD_SECONDS: ${SANDBOXD_IDLE_THRESHOLD_SECONDS:-2100}
-    networks:
-      - sandboxd_net
-
-  # Optional web console:  docker compose --profile console up
-  # Builds the Vite SPA and serves it from nginx, proxying the public /v1
-  # API to sandboxd. API-only — it never touches the DB or workspaces.
-  #
-  # Routed through the SAME Traefik as the previews, by Host header:
-  #   console.<PREVIEW_DOMAIN>  -> this console
-  #   *.preview.<PREVIEW_DOMAIN> -> sandbox previews
-  # one entrypoint (:${HTTP_PORT}), Traefik picks by the router rule.
-  # Reachable at http://console.${PREVIEW_DOMAIN:-localhost}:${HTTP_PORT}.
-  # CONSOLE_HOST overrides the hostname (e.g. console--<tag>.<domain> with
-  # PREVIEW_HOST_STYLE=flat and a PREVIEW_HOST_TAG).
-  #
-  # AUTH: the control plane is the login authority. The console serves a login /
-  # first-run "create password" screen and authenticates every /v1 call with an
-  # HttpOnly session cookie — no Traefik basic-auth, no htpasswd, no `$$` in
-  # .env. Programmatic access uses API keys (Settings → Security) or the
-  # bootstrap key the installer prints (SANDBOXD_API_TOKENS).
-  console:
-    profiles: [console]
-    build:
-      context: ./console
-    image: ${SANDBOXD_CONSOLE_IMAGE:-sandboxd-console:0.3.0}
-    restart: unless-stopped
-    depends_on:
-      - sandboxd
-      - traefik
-    labels:
-      - "sandboxd.managed=true" # satisfies the traefik docker-provider constraint
-      - "traefik.enable=true"
-      - "traefik.http.routers.console.rule=Host(`${CONSOLE_HOST:-console.${PREVIEW_DOMAIN:-localhost}}`)"
-      - "traefik.http.routers.console.entrypoints=web"
-      # No Traefik gate — the control plane authenticates the console (login /
-      # first-run password → session cookie). The SPA + its /v1 proxy sit behind
-      # that app-level login.
-      - "traefik.http.services.console.loadbalancer.server.port=80"
     networks:
       - sandboxd_net

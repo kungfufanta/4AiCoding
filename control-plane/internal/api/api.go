@@ -162,15 +162,19 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /preview-auth", s.observe("GET /preview-auth", s.handlePreviewAuth))
 	mux.HandleFunc("GET /forward-auth", s.observe("GET /forward-auth", s.handleForwardAuth))
 
-	// Public v1 API — a narrow
-	// translation layer over the internal machinery + runtimed.
+	// Public v1 sandbox lifecycle API — a translation layer over the
+	// internal handlers above.
+	mux.HandleFunc("GET /v1/sandboxes", s.observe("GET /v1/sandboxes", s.v1ListSandboxes))
 	mux.HandleFunc("POST /v1/sandboxes", s.observe("POST /v1/sandboxes", s.v1CreateSandbox))
 	mux.HandleFunc("GET /v1/sandboxes/{id}", s.observe("GET /v1/sandboxes/{id}", s.v1GetSandbox))
 	mux.HandleFunc("POST /v1/sandboxes/{id}/stop", s.observe("POST /v1/sandboxes/{id}/stop", s.v1StopSandbox))
 	mux.HandleFunc("POST /v1/sandboxes/{id}/start", s.observe("POST /v1/sandboxes/{id}/start", s.v1StartSandbox))
+	mux.HandleFunc("POST /v1/sandboxes/{id}/restart", s.observe("POST /v1/sandboxes/{id}/restart", s.v1RestartSandbox))
+	mux.HandleFunc("POST /v1/sandboxes/{id}/exec", s.observe("POST /v1/sandboxes/{id}/exec", s.v1ExecSandbox))
+	mux.HandleFunc("GET /v1/sandboxes/{id}/logs", s.observe("GET /v1/sandboxes/{id}/logs", s.v1SandboxLogs))
 	mux.HandleFunc("DELETE /v1/sandboxes/{id}", s.observe("DELETE /v1/sandboxes/{id}", s.v1DeleteSandbox))
 
-	// Durable apps above sandboxes (Phase 1).
+	// Instance settings.
 	mux.HandleFunc("GET /v1/settings", s.observe("GET /v1/settings", s.v1GetSettings))
 	mux.HandleFunc("PATCH /v1/settings", s.observe("PATCH /v1/settings", s.v1PatchSettings))
 

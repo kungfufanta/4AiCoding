@@ -71,7 +71,10 @@ jobs:
         env:
           SANDBOXD_IMAGE: sandboxd-e2e:ci
           SANDBOXD_BIN: ${{ runner.temp }}/sandboxd
-        run: bash scripts/e2e.sh
+        # sandboxd runs as root in production (it must delete workspace files
+        # written by the sandbox user, uid 1000). As the runner user, DELETE
+        # fails with "remove workspace: permission denied".
+        run: sudo --preserve-env=SANDBOXD_IMAGE,SANDBOXD_BIN bash scripts/e2e.sh
 
       - name: leftover containers
         if: always()

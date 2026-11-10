@@ -1,13 +1,11 @@
 // Package sandboxspec builds the docker RunSpec for a sandbox from its stored
 // row, so a container can be (re)created from the database alone.
 //
-// Why this exists: the sandbox base image carries `runtimed` (the in-sandbox
-// supervisor). Upgrading sandboxd rebuilds that image, but a container created
-// from the OLD image keeps running the OLD runtimed until it is recreated —
-// so new agent/model support silently never reaches long-lived sandboxes
-// ("Model X is not supported" on an otherwise up-to-date install). Recreating
-// is safe because ALL durable state lives in the workspace bind mount, never
-// in the container's writable layer (the rootfs is read-only).
+// Why this exists: when the instance image changes, a container created from
+// the OLD image keeps running it until it is recreated, so long-lived sandboxes
+// would never pick up the new image. Recreating is safe because ALL durable
+// state lives in the workspace bind mount, never in the container's writable
+// layer (the rootfs is read-only).
 package sandboxspec
 
 import (
@@ -32,8 +30,6 @@ type Env struct {
 	PreviewHostTag    string // optional instance tag, flat style only
 	PreviewEntrypoint string
 	PreviewTLS        bool
-	RuntimePreset     string   // from the owning app, when known
-	AgentAuthMounts   []string // only when the auth proxy is disabled
 }
 
 // Build returns the RunSpec for `sb`. It reproduces the create path's flags:
@@ -43,11 +39,8 @@ func Build(sb *store.Sandbox, e Env) docker.RunSpec {
 	name := "s-" + sb.ID
 
 	env := []string{}
-	if e.RuntimePreset != "" {
-		env = append(env, "RUNTIMED_RUNTIME_PRESET="+e.RuntimePreset)
-	}
 
-	volumes := append([]string{sb.WorkspaceMnt + ":/home/sandbox"}, e.AgentAuthMounts...)
+	volumes := []string{sb.WorkspaceMnt + ":/home/sandbox"}
 	if e.DNSResolvConf != "" {
 		volumes = append(volumes, e.DNSResolvConf+":/etc/resolv.conf:ro")
 	}
@@ -102,7 +95,7 @@ func Build(sb *store.Sandbox, e Env) docker.RunSpec {
 
 // NeedsRecreate reports whether a container should be replaced before start:
 // it was built from a different image than the one the instance now runs.
-// After an upgrade this is what carries a new runtimed into old sandboxes.
+// After an image change this is what moves old sandboxes onto the new image.
 func NeedsRecreate(containerImage, currentImage string) bool {
 	return containerImage != "" && currentImage != "" && containerImage != currentImage
 }

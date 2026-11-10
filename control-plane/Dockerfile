@@ -11,8 +11,8 @@
 
 # --- Stage 1: build sandboxd (CGO) -----------------------------------
 FROM golang:1.27-bookworm AS builder
-# Version stamping — fed by docker-compose build args (see upgrade.sh/install.sh,
-# which derive them from `git describe`). Default to dev/unknown for a bare build.
+# Version stamping — fed by docker-compose build args (typically from
+# `git describe`). Default to dev/unknown for a bare build.
 ARG VERSION=dev
 ARG GIT_COMMIT=unknown
 WORKDIR /src

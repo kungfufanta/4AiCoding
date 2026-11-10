@@ -49,11 +49,14 @@ Sau này agent (nếu có) chỉ là **một client khác** của API, không c�
 - **Route trong `internal/api`**: các nhóm `tasks`, `agents`, `agent-instances`, `agent-catalog`, `apps`, `model-providers`, `files`, `git`, `git-credentials`, `terminal`, `claude-login`, `presets`, `runtime/*`, `upgrade`, `export`, `processes/*/logs`.
 - **Non-Go**: `desktop/`, `examples/`, `image/templates/`, workflow `desktop*.yml`, job `agent-providers` trong CI. Agent CLI và `runtimed` cũng được gỡ khỏi `image/Dockerfile`.
 
-### ⏳ Còn lại để dọn ở M2
-- Bảng `apps`/`tasks` trong `store` và migrations (code còn tham chiếu `AppID`).
-- Field `template` và `runtime_preset` của create request (vốn dành cho `runtimed`).
-- Scope API key `upgrade` trong `internal/auth/scopes.go` (route upgrade đã bị xoá).
-- `console/` (UI agent cũ), `install.sh`, `upgrade.sh`, `release-images.yml`, `image/upgrader`, và các tài liệu agent trong `docs/`.
+### ❌ Đã bỏ ở M2
+- Bảng `app`, `task`, `agent_instance`, `app_config`, `git_credential`, `model_provider` và các cột `app_id`/`task_id` (migration `0027_drop_agent_tables.sql`); code `store` tương ứng.
+- Field `template`, `runtime_preset` và `app_id` của create request. Git chỉ clone repo public (`credential_id` bị từ chối 400).
+- Scope API key `upgrade`, thay bằng scope `health` (`/healthz`, `/readyz`, `/version`, `/v1/auth/status`).
+- `console/` (UI agent cũ), `install.sh`, `install.ps1`, `uninstall.sh`, `upgrade.sh`, `release.sh`, `deploy/`, `image/upgrader`, `release-images.yml` và các tài liệu agent trong `docs/`.
+
+### ⏳ Còn sót (dọn dần ở các milestone sau)
+- Một số tài liệu trong `docs/` và `image/README` (isolation, gvisor, base image, HOME_LAYOUT) vẫn nhắc `runtimed`/agent ở vài chỗ.
 
 ### 🆕 Xây mới
 Image theo từng sandbox, chuẩn hoá route `/v1/*`, session login, port policy, domain manager, policy engine, lifecycle API, metrics theo sandbox, các lớp bảo mật ở mục 8, GUI, CI/e2e, và worker mode.
@@ -172,7 +175,7 @@ React 19 + TypeScript, không SSR, không có WebSocket cho agent. Mọi form á
 
 Mọi thứ chạy trong sandbox, kể cả một agent "toàn quyền" sau này, đều bị coi là không đáng tin. Lớp kiểm soát nằm ở control plane và được thực thi bằng code, không dựa vào prompt.
 
-| # | Kiểm soát | Hiện trạng (sau M1) | Milestone |
+| # | Kiểm soát | Hiện trạng (sau M2) | Milestone |
 |---|---|---|---|
 | 1 | **Không bao giờ mount `docker.sock`** hoặc host path tuỳ ý vào sandbox | Đúng: sandbox chỉ được mount workspace | Thêm test chặn ở M3a |
 | 2 | Root filesystem read-only, `--cap-drop=ALL`, `no-new-privileges`, giới hạn pids/memory, tmpfs | **Đã có** (e2e đã kiểm tra) | — |
@@ -186,7 +189,7 @@ Mọi thứ chạy trong sandbox, kể cả một agent "toàn quyền" sau này
 | 10 | **Policy Decision Point tập trung**: mọi create/exec/network/port đi qua một hàm `policy.Decide()` duy nhất, và sandbox không có đường gọi tới API admin | Chưa có | M3b |
 | 11 | **Human-in-the-loop**: hành động rủi ro cao (xoá sandbox có `keep_alive`, đổi policy, mở egress ngoài allowlist, expose port public) bị đưa vào hàng đợi `approvals`. Mỗi phê duyệt chỉ dùng được **một lần** cho đúng payload hash, và có hạn | Chưa có | M3c (mới) |
 | 12 | **Audit tamper-evident**: `audit_log` ghi ai, làm gì, khi nào, theo policy nào, kết quả ra sao, nối với nhau bằng hash chain; có endpoint kiểm tra chuỗi | Có audit log, chưa có hash chain | M3b |
-| 13 | Control plane API không bao giờ lắng nghe trên network mà sandbox truy cập được (`sandboxd_net`) | Cần xác minh | M3a |
+| 13 | Control plane API không bao giờ lắng nghe trên network mà sandbox truy cập được (`sandboxd_net`) | **Đang vi phạm**: trong `docker-compose.yml`, service `sandboxd` nằm chung `sandboxd_net` với sandbox, nên sandbox gọi được `http://sandboxd:9000` (vẫn cần token) | M3a |
 
 ## 9. Milestone
 
@@ -194,7 +197,7 @@ Mọi thứ chạy trong sandbox, kể cả một agent "toàn quyền" sau này
 |---|---|---|---|
 | **M0** | Chép `sandboxd` vào gốc `4AiCoding`, commit baseline | Code gốc | ✅ |
 | **M1** | Xoá package/thư mục/route trong danh sách bỏ, sửa `go.mod`, base image không còn runtimed, CI mới (unit + integration Docker thật) | `go build`, `go vet`, `go test -race` xanh; e2e lifecycle xanh | ✅ |
-| **M2** | Dọn phần còn lại (mục 3), chuẩn hoá `/v1/*` (thêm `GET /v1/sandboxes`, `restart`, `exec`, `logs`), giữ nhóm legacy | Route khớp mục 4 (phần lifecycle), e2e pass | ⏳ |
+| **M2** | Dọn phần còn lại (mục 3), chuẩn hoá `/v1/*` (thêm `GET /v1/sandboxes`, `restart`, `exec`, `logs`), giữ nhóm legacy | Route khớp mục 4 (phần lifecycle), e2e pass | ✅ |
 | **M3a** | Image theo từng sandbox, `command`, `network/ports`, `metrics`, `volumes`; bảo mật mục 8 #1, #3, #7, #13 | Curl được, có unit test và e2e | |
 | **M3b** | `domain`, `policy` + PDP, session login + bootstrap admin, `lifecycle/keep-alive`, egress deny-by-default, API key TTL/scope, audit hash chain | Curl được, có unit test | |
 | **M3c** | Hàng đợi phê duyệt (human-in-the-loop) | API approvals + e2e | |

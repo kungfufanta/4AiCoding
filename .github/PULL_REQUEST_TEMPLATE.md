@@ -1,4 +1,4 @@
-<!-- Thanks for contributing to sandboxd! -->
+<!-- Thanks for contributing to 4AiCoding! -->
 
 ## What & why
 
@@ -8,9 +8,9 @@
 
 <!-- Tick all that apply -->
 
-- [ ] **sandboxd core** — control plane / API / `runtimed` / engine
+- [ ] **control plane** — API / lifecycle / policy / engine
 - [ ] **console** — the web client (a client of `/v1`, not the core)
-- [ ] App Store recipe / runtime detection
+- [ ] sandbox base image
 - [ ] docs
 - [ ] CI / tooling
 
@@ -21,7 +21,8 @@
 ## Checklist
 
 - [ ] Tests added/updated (`make test`)
-- [ ] `make lint` / `gofmt` clean; console typechecks
+- [ ] `make lint` / `gofmt` clean
+- [ ] `make e2e` passes if lifecycle behaviour changed
 - [ ] Docs updated if behavior or the API changed (incl. `docs/openapi.yaml`)
 - [ ] CHANGELOG entry under **Unreleased** if user-facing
 

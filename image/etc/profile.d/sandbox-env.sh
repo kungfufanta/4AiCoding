@@ -27,7 +27,7 @@ export BUN_INSTALL_CACHE_DIR="$HOME/.cache/bun"
 # Global npm prefix: the default (/usr) is root-owned and unwritable by the sandbox
 # user, so `npm install -g <pkg>` fails. Point it at a user-writable home dir and put
 # its bin on PATH so global-CLI installs (e.g. ghost-cli) just work — without root.
-# Set in the login profile only (runtimed runs app/agent commands via `bash -lc`), so
+# Set in the login profile only (commands are typically run via `bash -lc`), so
 # the image's build-time root global installs still land in /usr.
 export NPM_CONFIG_PREFIX="$HOME/.npm-global"
 export PATH="$NPM_CONFIG_PREFIX/bin:$PNPM_HOME:$HOME/.local/bin:$HOME/.bun/bin:$PATH"

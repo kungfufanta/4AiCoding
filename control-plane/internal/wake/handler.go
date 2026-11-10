@@ -67,10 +67,8 @@ type Handler struct {
 
 	// Recreate rebuilds a sandbox container from its stored row when the
 	// container is missing, or was created from an older base image than the
-	// instance now runs (an upgrade rebuilt the image, and with it runtimed —
-	// the in-sandbox supervisor). Without this, long-lived sandboxes keep an
-	// old runtimed forever and miss new agent/model support. nil-safe: when
-	// unset the wake path behaves exactly as before.
+	// instance now runs. Without this, long-lived sandboxes keep an old image
+	// forever. nil-safe: when unset the wake path behaves exactly as before.
 	Recreate RecreateFunc
 
 	// Image is the base image the instance currently runs; a container built
@@ -314,9 +312,8 @@ func (h *Handler) serve(r *http.Request, w http.ResponseWriter, id, port string,
 	// bind mount, so this is lossless):
 	//   - the container is gone (pruned, or removed by hand)
 	//   - it was created from an older base image than we run now, i.e. an
-	//     upgrade rebuilt the image and its runtimed. Starting it as-is would
-	//     silently keep the OLD in-sandbox supervisor and miss new agent/model
-	//     support ("Model X is not supported" on an up-to-date install).
+	//     the instance image changed. Starting it as-is would silently keep
+	//     the OLD image.
 	//   - PREVIEW_DOMAIN changed since it was created: its Traefik routers
 	//     still answer to the old host, so the new preview URL never resolves.
 	if h.Recreate != nil {

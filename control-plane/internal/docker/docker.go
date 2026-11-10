@@ -15,11 +15,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
+	"io"
 	"os/exec"
+	"strconv"
 	"strings"
-
-	"github.com/creack/pty"
 )
 
 // ErrNotFound is returned when `docker inspect` reports the target
@@ -131,6 +130,12 @@ func (c *Client) Run(ctx context.Context, spec RunSpec) (string, error) {
 	args = append(args, spec.Cmd...)
 	out, err := c.run(ctx, args...)
 	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
+			// Surface the daemon's reason (bad image, rlimit, …) instead of a
+			// bare "exit status 125".
+			return "", fmt.Errorf("%w: %s", err, strings.TrimSpace(string(exitErr.Stderr)))
+		}
 		return "", err
 	}
 	full := strings.TrimSpace(string(out))
@@ -289,7 +294,7 @@ type ExecResult struct {
 }
 
 // Exec runs a non-interactive command inside the named container.
-// v1 deliberately has no PTY / TTY / stdin support.
+// There is deliberately no PTY / TTY / stdin support.
 func (c *Client) Exec(ctx context.Context, name string, cmd []string) (ExecResult, error) {
 	args := append([]string{"exec", name}, cmd...)
 	cmdEx := exec.CommandContext(ctx, c.Bin, args...)
@@ -309,28 +314,40 @@ func (c *Client) Exec(ctx context.Context, name string, cmd []string) (ExecResul
 	return res, err
 }
 
-// ExecTTY starts an INTERACTIVE command in the named container over a PTY and
-// returns the PTY master + the running *exec.Cmd. `-i -t` gives the in-container
-// process a real terminal; user/workdir scope it (e.g. uid-1000 "sandbox" in the
-// app workspace). The caller streams the PTY to a client, resizes it with
-// pty.Setsize, and MUST Close the PTY and Kill the process when the session ends.
-// This is the interactive counterpart to Exec (which is deliberately one-shot).
-func (c *Client) ExecTTY(name, user, workdir string, argv []string) (*os.File, *exec.Cmd, error) {
-	args := []string{"exec", "-i", "-t"}
-	if user != "" {
-		args = append(args, "-u", user)
+// Logs streams the container's stdout+stderr (`docker logs`), merged in the
+// order docker emits them. tail <= 0 means all lines. With follow the reader
+// stays open until ctx is cancelled or the container stops. The caller MUST
+// Close the returned reader; Close also reaps the docker CLI process.
+func (c *Client) Logs(ctx context.Context, name string, tail int, follow bool) (io.ReadCloser, error) {
+	args := []string{"logs"}
+	if tail > 0 {
+		args = append(args, "--tail", strconv.Itoa(tail))
 	}
-	if workdir != "" {
-		args = append(args, "-w", workdir)
+	if follow {
+		args = append(args, "--follow")
 	}
 	args = append(args, name)
-	args = append(args, argv...)
-	cmd := exec.Command(c.Bin, args...)
-	ptmx, err := pty.Start(cmd)
-	if err != nil {
-		return nil, nil, err
+	cmd := exec.CommandContext(ctx, c.Bin, args...)
+	pr, pw := io.Pipe()
+	cmd.Stdout = pw
+	cmd.Stderr = pw
+	if err := cmd.Start(); err != nil {
+		return nil, err
 	}
-	return ptmx, cmd, nil
+	go func() { pw.CloseWithError(cmd.Wait()) }()
+	return &logsReader{PipeReader: pr, cmd: cmd}, nil
+}
+
+type logsReader struct {
+	*io.PipeReader
+	cmd *exec.Cmd
+}
+
+func (l *logsReader) Close() error {
+	if l.cmd.Process != nil {
+		_ = l.cmd.Process.Kill()
+	}
+	return l.PipeReader.Close()
 }
 
 // ListByNamePrefix returns the names of all containers (any state)

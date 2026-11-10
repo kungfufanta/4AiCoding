@@ -27,7 +27,7 @@ func TestImageFieldRejected(t *testing.T) {
 	}
 
 	check("v1CreateSandbox", s.v1CreateSandbox, "/v1/sandboxes",
-		`{"project":{"id":"p","user_id":"u"},"image":"sandboxd-go:test"}`)
+		`{"image":"sandboxd-go:test"}`)
 	check("handleCreate", s.handleCreate, "/sandbox",
 		`{"ports":[3000],"image":"sandboxd-go:test"}`)
 }

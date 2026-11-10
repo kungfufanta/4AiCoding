@@ -120,15 +120,6 @@ func (i *Idle) tick(ctx context.Context) error {
 		if sb.KeepaliveUntil.Valid && sb.KeepaliveUntil.Int64 > now.Unix() {
 			continue
 		}
-		// Skip rule 2b: an active coding task — reaping mid-task would
-		// interrupt the agent run.
-		if has, err := i.Store.SandboxHasRunningTask(ctx, sb.ID); err != nil {
-			i.Log.Warn("idle reaper: running-task check failed (continuing)",
-				"sandbox_id", sb.ID, "err", err.Error())
-		} else if has {
-			i.Log.Info("idle reaper: skipping — active task", "sandbox_id", sb.ID)
-			continue
-		}
 		// Skip rule 3 (the open-connection signal) is handled by the
 		// access-log tailer / poller bumping last_active_at within
 		// the WakeGrace window. The DB already reflects it via the

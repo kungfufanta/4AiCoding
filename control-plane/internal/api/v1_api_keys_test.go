@@ -98,19 +98,19 @@ func TestAPIKeyScopes(t *testing.T) {
 	if len(full.Scopes) != 0 {
 		t.Fatalf("full key scopes = %v", full.Scopes)
 	}
-	upg := mint(`{"name":"updater","scopes":["upgrade"]}`)
-	if len(upg.Scopes) != 1 || upg.Scopes[0] != "upgrade" {
-		t.Fatalf("scoped key scopes = %v", upg.Scopes)
+	mon := mint(`{"name":"monitor","scopes":["health"]}`)
+	if len(mon.Scopes) != 1 || mon.Scopes[0] != "health" {
+		t.Fatalf("scoped key scopes = %v", mon.Scopes)
 	}
 
 	// list reports scopes
 	w = doAuth(t, h, "GET", "/v1/api-keys", "", cookie, "")
-	if w.Code != 200 || !strings.Contains(w.Body.String(), `"scopes":["upgrade"]`) || !strings.Contains(w.Body.String(), `"scopes":[]`) {
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"scopes":["health"]`) || !strings.Contains(w.Body.String(), `"scopes":[]`) {
 		t.Fatalf("list: %d %s", w.Code, w.Body.String())
 	}
 
 	// the scoped key reaches its allowed routes …
-	if w := doAuth(t, h, "GET", "/v1/auth/status", "", "", upg.Key); w.Code != 200 {
+	if w := doAuth(t, h, "GET", "/v1/auth/status", "", "", mon.Key); w.Code != 200 {
 		t.Fatalf("scoped GET /v1/auth/status: want 200 got %d %s", w.Code, w.Body.String())
 	}
 	// … and nothing else.
@@ -118,11 +118,11 @@ func TestAPIKeyScopes(t *testing.T) {
 		{"GET", "/v1/sandboxes"}, {"GET", "/v1/api-keys"},
 		{"POST", "/v1/api-keys"}, {"DELETE", "/v1/api-keys/" + full.ID},
 	} {
-		w := doAuth(t, h, rt[0], rt[1], "", "", upg.Key)
+		w := doAuth(t, h, rt[0], rt[1], "", "", mon.Key)
 		if w.Code != 403 {
 			t.Fatalf("scoped %s %s: want 403 got %d", rt[0], rt[1], w.Code)
 		}
-		if !strings.Contains(w.Body.String(), `"code":"forbidden"`) || !strings.Contains(w.Body.String(), "limited to: upgrade") {
+		if !strings.Contains(w.Body.String(), `"code":"forbidden"`) || !strings.Contains(w.Body.String(), "limited to: health") {
 			t.Fatalf("scoped %s %s body: %s", rt[0], rt[1], w.Body.String())
 		}
 	}

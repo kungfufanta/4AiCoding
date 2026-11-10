@@ -38,7 +38,7 @@ check "python distutils (node-gyp)" python3 -c 'import distutils.version; distut
 check "python setuptools"           python3 -c 'import setuptools'
 
 # Global npm prefix must be user-writable (default /usr is root-owned). Checked under
-# a LOGIN shell (`bash -lc`) because runtimed runs app/agent commands that way, which
+# a LOGIN shell (`bash -lc`) because sandbox commands are typically run that way, which
 # is where NPM_CONFIG_PREFIX is set.
 npm_prefix="$(bash -lc 'npm config get prefix' 2>/dev/null)"
 if [ "$npm_prefix" != "/usr" ] && [ -n "$npm_prefix" ]; then ok "npm global prefix is $npm_prefix (not /usr)"; else bad "npm global prefix is '$npm_prefix' (root-owned /usr)"; fi
