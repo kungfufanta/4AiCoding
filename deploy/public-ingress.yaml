@@ -1,0 +1,78 @@
+# Public HTTPS edge for the Docker-based 4AiCoding control plane on PVE1.
+# Traffic terminates at the existing K3s Traefik ingress and is forwarded
+# privately to 192.168.1.188:80.  The wildcard also serves sandbox previews.
+apiVersion: v1
+kind: Service
+metadata:
+  name: 4aicoding-control-plane
+  namespace: 4aicoding
+spec:
+  ports:
+    - name: http
+      port: 80
+      protocol: TCP
+      targetPort: 80
+---
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: 4aicoding-control-plane
+  namespace: 4aicoding
+subsets:
+  - addresses:
+      - ip: 192.168.1.188
+    ports:
+      - name: http
+        port: 80
+        protocol: TCP
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: 4aicoding-public-tls
+  namespace: 4aicoding
+spec:
+  secretName: 4aicoding-public-tls
+  issuerRef:
+    kind: ClusterIssuer
+    name: letsencrypt-production
+  dnsNames:
+    - 4aicoding.devhub.vn
+    - '*.4aicoding.devhub.vn'
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: 4aicoding-public
+  namespace: 4aicoding
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts:
+        - 4aicoding.devhub.vn
+        - '*.4aicoding.devhub.vn'
+      secretName: 4aicoding-public-tls
+  rules:
+    - host: 4aicoding.devhub.vn
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: 4aicoding-control-plane
+                port:
+                  number: 80
+    - host: '*.4aicoding.devhub.vn'
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: 4aicoding-control-plane
+                port:
+                  number: 80
