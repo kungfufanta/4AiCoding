@@ -1,0 +1,32 @@
+# Production worker configuration for the independent 4AiCoding instance.
+controlPlane:
+  url: "http://192.168.1.188:9090"
+
+workerToken:
+  existingSecret: 4aicoding-worker-auth
+  existingSecretKey: worker-token
+
+image:
+  repository: ghcr.io/kungfufanta/4aicoding-worker
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets:
+  - name: ghcr-4aicoding-pull
+
+nodeSelector:
+  kubernetes.io/hostname: k3s-1
+
+capacity:
+  cpus: 1
+  memoryMB: 1024
+  diskMB: 40960
+
+heartbeatIntervalSeconds: 10
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 64Mi
+  limits:
+    memory: 128Mi

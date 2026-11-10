@@ -1,0 +1,77 @@
+name: deploy-k3s-1
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "control-plane/**"
+      - "deploy/**"
+      - ".github/workflows/deploy-k3s-1.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: deploy-k3s-1
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/kungfufanta/4aicoding-worker
+  NAMESPACE: 4aicoding
+  RELEASE: 4aicoding-worker
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: control-plane
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.IMAGE }}:main
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: k3s-1
+    steps:
+      - uses: actions/checkout@v7
+      - uses: azure/setup-helm@v4
+      - name: Configure scoped kubeconfig
+        env:
+          KUBECONFIG_B64: ${{ secrets.K3S_4AICODING_KUBECONFIG_B64 }}
+        run: |
+          set -eu
+          test -n "$KUBECONFIG_B64"
+          echo "$KUBECONFIG_B64" | base64 --decode > "$RUNNER_TEMP/kubeconfig"
+          chmod 600 "$RUNNER_TEMP/kubeconfig"
+          echo "KUBECONFIG=$RUNNER_TEMP/kubeconfig" >> "$GITHUB_ENV"
+      - name: Deploy hardened worker
+        run: |
+          set -eu
+          helm upgrade --install "$RELEASE" deploy/helm/sandboxd-worker \
+            --namespace "$NAMESPACE" \
+            --values deploy/k3s-1-values.yaml \
+            --set image.repository="$IMAGE" \
+            --set image.tag="${{ github.sha }}" \
+            --wait --timeout 5m
+      - name: Verify applied pod hardening
+        run: |
+          set -eu
+          pod="$(kubectl -n "$NAMESPACE" get pods -l app.kubernetes.io/instance="$RELEASE" -o jsonpath='{.items[0].metadata.name}')"
+          test -n "$pod"
+          kubectl -n "$NAMESPACE" get pod "$pod" -o jsonpath='{.spec.automountServiceAccountToken}' | grep -qx false
+          kubectl -n "$NAMESPACE" get pod "$pod" -o jsonpath='{.spec.containers[0].securityContext.readOnlyRootFilesystem}' | grep -qx true
+          kubectl -n "$NAMESPACE" get pod "$pod" -o jsonpath='{.spec.containers[0].securityContext.allowPrivilegeEscalation}' | grep -qx false
+          kubectl -n "$NAMESPACE" get pod "$pod" -o jsonpath='{.spec.containers[0].securityContext.capabilities.drop[0]}' | grep -qx ALL
