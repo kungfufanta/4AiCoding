@@ -43,7 +43,7 @@ jobs:
           sudo docker compose up -d --build --remove-orphans
           for attempt in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:9090/healthz >/dev/null; then
-              echo "control-plane healthy at ${SHA}"
+              echo "control-plane healthy at ${GITHUB_SHA}"
               exit 0
             fi
             sleep 2
