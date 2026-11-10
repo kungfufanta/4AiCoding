@@ -28,7 +28,7 @@ See [PLAN.md](PLAN.md) for the roadmap and the security baseline.
 
 | Console | Web UI at `http://console.<domain>`: sandboxes, logs, exec, metrics, network, policy, approvals, nodes, users, API keys, audit, domain |
 
-Planned next (see PLAN.md): executing sandboxes on the registered workers (k3s) and a Kubernetes runtime.
+Planned next (see PLAN.md): executing sandboxes on the registered workers (M7b) and a Kubernetes runtime (M8).
 
 ## Quickstart (single host)
 
@@ -106,7 +106,23 @@ curl -s -H "$AUTH" -X POST $API/v1/nodes/$ID/drain    # admin: refuse NEW sandbo
 curl -s -H "$AUTH" -X POST $API/v1/nodes/$ID/undrain  # admin: back to the pool
 ```
 
-Every sandbox response carries its `node` (its placement). Draining the `local` node blocks sandbox creation on the control plane itself; draining a worker is preparation for moving work onto it — execution lands on workers from M7 (k3s). The console shows the fleet in **Admin → Nodes**, refreshed live.
+Every sandbox response carries its `node` (its placement). Draining the `local` node blocks sandbox creation on the control plane itself; draining a worker is preparation for moving work onto it — execution lands on workers in M7b. The console shows the fleet in **Admin → Nodes**, refreshed live.
+
+### Workers on Kubernetes / k3s (M7a)
+
+`deploy/helm/sandboxd-worker` runs `sandboxd worker` as a DaemonSet: every Kubernetes node joins the fleet under its node name, so the id survives pod restarts. Build the image from `control-plane/` (it is the control plane image; the chart starts it with `worker`), make it available to the cluster, then:
+
+```bash
+docker build -t sandboxd:0.1.0 control-plane
+docker save sandboxd:0.1.0 | sudo k3s ctr images import -   # or push to your registry
+
+helm install sandboxd-worker deploy/helm/sandboxd-worker \
+  --namespace sandboxd --create-namespace \
+  --set controlPlane.url=http://<control-plane>:9000 \
+  --set workerToken.value="$SANDBOXD_WORKER_TOKEN"   # or workerToken.existingSecret
+```
+
+The pod runs as a non-root user with a read-only root filesystem, no capabilities and no service account token, and mounts nothing from the host: in M7a the worker only registers, heartbeats and honours drain. Running sandboxes on the worker (with the node's container runtime) is M7b. `kind=Deployment` with a fixed `nodeId` runs a single worker instead; see `values.yaml` for capacity, scheduling and image options.
 
 ## Repository layout
 
@@ -116,6 +132,7 @@ console/            Web console (React 19 + TypeScript, Vite; served by nginx)
 image/              Sandbox base image (toolchains, no supervisor)
 traefik/            Edge router config (preview routes, wake, forward-auth)
 scripts/e2e.sh      Lifecycle e2e against a real Docker daemon
+deploy/helm/        Helm chart for k3s / Kubernetes workers
 docs/               OpenAPI contract and operator notes
 PLAN.md             Roadmap and security baseline
 ```
@@ -128,12 +145,13 @@ make lint   # gofmt + go vet
 make e2e    # build sandboxd + a tiny test image, then run scripts/e2e.sh
 make e2e-auth     # same, with auth on: login, roles, keys, keep-alive, approvals, audit
 make e2e-fleet    # same, plus 2 workers registering, draining and going offline
+make e2e-k3s      # Helm chart worker on a local k3s joins the fleet (needs k3s + helm)
 make preview      # full docker compose stack + browser smoke of the console
 make console      # typecheck + build the console
 make console-dev  # console dev server against a local sandboxd on 127.0.0.1:9090
 ```
 
-CI (`.github/workflows/ci.yml`) runs the Go unit job, the console build and the Docker integration jobs (lifecycle, access-control and fleet e2e) on every push and pull request. The `preview` workflow builds the whole compose stack on each pull request, drives the console in a browser through Traefik, and attaches screenshots of every screen to the run.
+CI (`.github/workflows/ci.yml`) runs the Go unit job, the console build and the Docker integration jobs (lifecycle, access-control and fleet e2e) and a k3s job that installs the worker chart on a real k3s cluster on every push and pull request. The `preview` workflow builds the whole compose stack on each pull request, drives the console in a browser through Traefik, and attaches screenshots of every screen to the run.
 
 ## License
 

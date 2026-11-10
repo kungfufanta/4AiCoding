@@ -6,6 +6,23 @@ All notable changes to 4AiCoding. The project started from
 
 ## Unreleased
 
+### M7a — k3s worker: Helm chart, worker pod joins the fleet
+- New Helm chart `deploy/helm/sandboxd-worker`: runs `sandboxd worker` as a
+  DaemonSet (node id = Kubernetes node name, stable across restarts) or as a
+  single-replica Deployment with a fixed `nodeId`. The worker token comes from
+  a chart-made Secret or `workerToken.existingSecret`; capacity, heartbeat
+  interval, image and scheduling are values. The template fails without
+  `controlPlane.url`, a token, or (Deployment) a `nodeId`.
+- Hardened pod: non-root (65532), read-only root filesystem, no
+  capabilities, no privilege escalation, seccomp RuntimeDefault, no service
+  account token, no host mounts.
+- CI: new `k3s` job installs k3s, imports the image built from
+  `control-plane/Dockerfile`, lints and installs the chart and runs
+  `scripts/e2e-k3s.sh`: the pod registers under the node name with the
+  configured capacity, learns drain/undrain, keeps its id across a rollout
+  restart and goes offline after uninstall.
+- Makefile: `e2e-k3s`, `helm-lint`.
+
 ### M6 — worker fleet: registration, placement, drain
 - `sandboxd worker` subcommand: the same binary joins the control plane as a
   fleet member — `--control-plane-url`, `--worker-token`, `--node-id`,

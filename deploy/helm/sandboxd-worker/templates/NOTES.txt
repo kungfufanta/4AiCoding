@@ -1,0 +1,10 @@
+sandboxd worker installed as a {{ .Values.kind }}.
+
+Each pod registers with {{ .Values.controlPlane.url }} as node
+{{- if .Values.nodeId }} "{{ .Values.nodeId }}"{{ else }} <Kubernetes node name>{{ end }}.
+
+Check the fleet on the control plane:
+  curl -H "Authorization: Bearer $TOKEN" {{ .Values.controlPlane.url }}/v1/nodes
+
+Worker logs:
+  kubectl -n {{ .Release.Namespace }} logs -l app.kubernetes.io/instance={{ .Release.Name }}
