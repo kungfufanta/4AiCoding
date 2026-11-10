@@ -6,6 +6,20 @@ All notable changes to 4AiCoding. The project started from
 
 ## Unreleased
 
+### M5 — full CI and PR preview
+- `scripts/e2e-auth.sh` (CI integration job, `make e2e-auth`): the access
+  layer end to end with auth on — login, CSRF, roles, disabled users, API key
+  role/scope/TTL/binding/revocation, keep-alive policy, the approvals flow and
+  the audit chain.
+- `scripts/preview.sh` + `.github/workflows/preview.yml` (`make preview`):
+  builds the whole compose stack, checks the Traefik routes and console
+  headers, drives the console with Playwright and uploads screenshots.
+- Fix: the console's security headers (CSP, X-Frame-Options, …) were dropped
+  on pages and assets because nginx does not inherit `add_header` into
+  locations that set their own; they now live in an included snippet.
+- `SANDBOXD_SANDBOX_NOFILE` sets the sandbox open-files limit (default 65536;
+  lower it on nested Docker hosts whose own limit is smaller).
+
 ### M4 — web console
 - New `console/`: React 19 + TypeScript SPA built with Vite, no runtime
   dependencies besides React. Screens: login / first-run setup, sandbox list,

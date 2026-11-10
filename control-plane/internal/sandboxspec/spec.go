@@ -46,7 +46,13 @@ type Env struct {
 	// EgressProxy is the forward proxy URL every sandbox must use for
 	// outbound HTTP(S) (PLAN §8 #5); "" = not injected.
 	EgressProxy string
+	// Nofile is the open-files limit (soft = hard); 0 = DefaultNofile. Lower
+	// it where the daemon's own limit is smaller (nested Docker).
+	Nofile int
 }
+
+// DefaultNofile is the sandbox open-files limit when Env.Nofile is 0.
+const DefaultNofile = 65536
 
 // proxyEnv is what Build injects when an egress proxy is configured. Both
 // spellings, since tools disagree on which they read.
@@ -142,7 +148,7 @@ func Build(sb *store.Sandbox, e Env) docker.RunSpec {
 		Memory:      memStr,
 		MemorySwap:  memStr,
 		PidsLimit:   1024,
-		Ulimits:     []string{"nofile=65536:65536"},
+		Ulimits:     []string{nofile(e.Nofile)},
 		Tmpfs:       []string{"/tmp:size=512m", "/var/tmp:size=128m"},
 		Env:         env,
 		Volumes:     volumes,
@@ -207,4 +213,12 @@ func isProxyVar(k string) bool {
 		return true
 	}
 	return false
+}
+
+func nofile(n int) string {
+	if n <= 0 {
+		n = DefaultNofile
+	}
+	v := strconv.Itoa(n)
+	return "nofile=" + v + ":" + v
 }

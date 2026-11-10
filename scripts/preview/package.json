@@ -1,0 +1,8 @@
+{
+  "name": "sandboxd-preview-smoke",
+  "private": true,
+  "description": "Browser smoke test for the console (scripts/preview.sh)",
+  "dependencies": {
+    "playwright": "1.65.0"
+  }
+}

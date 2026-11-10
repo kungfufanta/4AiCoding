@@ -204,7 +204,7 @@ Mọi thứ chạy trong sandbox, kể cả một agent "toàn quyền" sau này
 | **M3b** | `domain`, `policy` + PDP, session login + bootstrap admin, `lifecycle/keep-alive`, egress deny-by-default, API key TTL/scope, audit hash chain | Curl được, có unit test; e2e egress | ✅ |
 | **M3c** | Hàng đợi phê duyệt (human-in-the-loop) | API approvals + unit test | ✅ |
 | **M4** | Viết lại `console/` (Login + 5 trang) | `pnpm build` xanh; smoke test trình duyệt với sandboxd thật | ✅ |
-| **M5** | CI đầy đủ (unit + e2e + console build) + PR preview workflow | CI xanh trên PR | |
+| **M5** | CI đầy đủ (unit + e2e + console build) + PR preview workflow | CI xanh trên PR | ✅ |
 | **M6** | Worker mode: `--control-plane-url`, đăng ký fleet, `/v1/nodes/*` | 2 worker đăng ký từ 2 máy | |
 | **M7** | k3s B1: worker pod + Helm chart tối giản | Worker k3s join fleet | |
 | **M8** | k3s B2 (tuỳ chọn): runtime adapter Pod/Service/NetworkPolicy | Sandbox = Pod | |
@@ -217,7 +217,12 @@ Sau mỗi milestone có một checkpoint: báo kết quả build/test, chờ duy
 - **unit**: `gofmt`, `go vet`, `go build`, `go test -race ./...`.
 - **integration**: build `sandboxd` và image test nhỏ (`scripts/e2e/Dockerfile`), sau đó `scripts/e2e.sh` gọi API thật trên Docker của runner. Các bước: create, kiểm tra container chạy và cờ hardening, exec, validation 400/404, stop/start, delete và xác nhận container đã biến mất. Luôn dọn dẹp trong `trap`.
 
-Từ M3a, e2e có thêm image theo request, clamp tài nguyên và từ chối port. Từ M3b có thêm egress proxy (cho phép, từ chối, chặn metadata) và policy. Login, keep-alive và approvals được unit test bao phủ (e2e chạy với auth tắt). M5 thêm job console.
+Từ M3a, e2e có thêm image theo request, clamp tài nguyên và từ chối port. Từ M3b có thêm egress proxy (cho phép, từ chối, chặn metadata) và policy.
+
+Từ M5:
+- **console**: `pnpm install --frozen-lockfile && pnpm build` (gồm `tsc --noEmit`).
+- **integration** chạy thêm `scripts/e2e-auth.sh` với auth bật: 401 khi không có credential, login bằng bootstrap admin, CSRF, role (viewer không ghi được, user bị disable mất session ngay), API key có role/scope/TTL/gắn sandbox và thu hồi, keep-alive bị policy chặn rồi được mở, luồng approvals (202 → admin duyệt → dùng một lần), audit có đủ action và hash chain hợp lệ, logout.
+- **preview** (`.github/workflows/preview.yml`, mỗi PR): build toàn bộ stack `docker compose` (Traefik + sandboxd + console), kiểm tra route qua Traefik, header CSP, network sandbox là `internal`, rồi chạy Playwright qua console thật và đính kèm ảnh chụp từng màn hình vào run.
 
 Nguyên tắc: mỗi milestone phải xanh CI; test bằng Docker thật, không mock; luôn có bước cleanup.
 
