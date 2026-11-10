@@ -41,7 +41,7 @@ BEAT=2             # worker heartbeat period for the test
 CP_PID=""
 W1_PID=""
 W2_PID=""
-SBX_ID=""
+declare -a SBX_IDS=()
 
 log() { echo "── $*"; }
 fail() {
@@ -55,7 +55,9 @@ fail() {
 }
 
 cleanup() {
-  [ -n "$SBX_ID" ] && curl -s -m30 -o /dev/null -XPOST "$API/sandbox/$SBX_ID/purge" >/dev/null 2>&1 || true
+  for id in "${SBX_IDS[@]:-}"; do
+    [ -n "$id" ] && curl -s -m30 -o /dev/null -XPOST "$API/sandbox/$id/purge" >/dev/null 2>&1 || true
+  done
   for p in "$W2_PID" "$W1_PID" "$CP_PID"; do
     [ -n "$p" ] && kill "$p" >/dev/null 2>&1 || true
   done
@@ -157,6 +159,7 @@ log "create -> placement on local"
 RESP="$(curl -s -m120 -XPOST "$API/v1/sandboxes" -H 'content-type: application/json' -d '{"ports":[3000]}')"
 SBX_ID="$(echo "$RESP" | jget id)"
 [ -n "$SBX_ID" ] || fail "create returned no id: $RESP"
+SBX_IDS+=("$SBX_ID")
 [ "$(echo "$RESP" | jget node)" = "local" ] || fail "create response node: $RESP"
 [ "$(node_field local used.sandboxes)" = "1" ] || fail "local used.sandboxes: $(nodes_json)"
 [ "$(node_field local used.cpus)" != "" ] || fail "local used.cpus empty"
@@ -172,8 +175,9 @@ code="$(curl -s -m30 -o "$DD/last.body" -w '%{http_code}' -XPOST "$API/v1/sandbo
 grep -q "draining" "$DD/last.body" || fail "503 body does not mention draining: $(cat "$DD/last.body")"
 code="$(http POST /v1/nodes/local/undrain 10)"
 [ "$code" = "200" ] || fail "undrain local = $code"
-code="$(curl -s -m30 -o /dev/null -w '%{http_code}' -XPOST "$API/v1/sandboxes" -H 'content-type: application/json' -d '{}')"
-[ "$code" = "201" ] || fail "create after undrain = $code, want 201"
+SBX2="$(curl -s -m30 -XPOST "$API/v1/sandboxes" -H 'content-type: application/json' -d '{}' | jget id)"
+[ -n "$SBX2" ] || fail "create after undrain returned no id"
+SBX_IDS+=("$SBX2")
 log "drain block ✓"
 
 # 7. Drain a WORKER: its heartbeat tells it so; creation is unaffected.
@@ -185,8 +189,9 @@ for _ in $(seq 1 10); do
   sleep 1
 done
 grep -q "DRAINED" "$DD/w1.log" || fail "w1 never learned it was drained: $(cat "$DD/w1.log")"
-code="$(curl -s -m30 -o /dev/null -w '%{http_code}' -XPOST "$API/v1/sandboxes" -H 'content-type: application/json' -d '{}')"
-[ "$code" = "201" ] || fail "create while a worker is drained = $code, want 201 (local still active)"
+SBX3="$(curl -s -m30 -XPOST "$API/v1/sandboxes" -H 'content-type: application/json' -d '{}' | jget id)"
+[ -n "$SBX3" ] || fail "create while a worker is drained returned no id"
+SBX_IDS+=("$SBX3")
 code="$(http POST /v1/nodes/w1/undrain 10)"
 [ "$code" = "200" ] || fail "undrain w1 = $code"
 for _ in $(seq 1 10); do
@@ -211,12 +216,14 @@ code="$(curl -s -m10 -o "$DD/last.body" -w '%{http_code}' -XPOST "$API/internal/
 [ "$code" = "404" ] || fail "unknown node heartbeat = $code, want 404"
 log "unknown node ✓"
 
-# 10. Cleanup: delete the sandbox; its placement goes with it.
-log "cleanup sandbox"
-code="$(http DELETE "/v1/sandboxes/$SBX_ID" 60)"
-[ "$code" = "204" ] || fail "delete = $code"
+# 10. Cleanup: delete every sandbox created above; their placements go too.
+log "cleanup sandboxes"
+for id in "${SBX_IDS[@]}"; do
+  code="$(http DELETE "/v1/sandboxes/$id" 60)"
+  [ "$code" = "204" ] || fail "delete $id returned $code"
+done
 [ "$(node_field local used.sandboxes)" = "" ] || [ "$(node_field local used.sandboxes)" = "0" ] || fail "placement survived delete: $(nodes_json)"
-SBX_ID=""
+SBX_IDS=()
 log "cleanup ✓"
 
 echo "✅ FLEET E2E PASSED"
