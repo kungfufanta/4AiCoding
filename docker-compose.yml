@@ -117,6 +117,9 @@ services:
       # --- routing (HTTP by default) ---
       PREVIEW_ENTRYPOINT: ${PREVIEW_ENTRYPOINT:-web}
       PREVIEW_TLS: ${PREVIEW_TLS:-false}
+      # Useful when TLS terminates upstream (for example at a Kubernetes ingress):
+      # routes here remain HTTP while generated public URLs stay HTTPS.
+      PREVIEW_URL_SCHEME: ${PREVIEW_URL_SCHEME:-}
       # Hostname layout under PREVIEW_DOMAIN (see .env.example).
       PREVIEW_HOST_STYLE: ${PREVIEW_HOST_STYLE:-nested}
       PREVIEW_HOST_TAG: ${PREVIEW_HOST_TAG:-}
