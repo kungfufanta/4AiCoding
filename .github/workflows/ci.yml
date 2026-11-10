@@ -1,0 +1,162 @@
+name: ci
+
+on:
+  push:
+    branches: [main, console, "release/**"]
+  pull_request:
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: control-plane
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: control-plane/go.mod
+
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-clean:"
+            echo "$unformatted"
+            echo "Run: gofmt -w ."
+            exit 1
+          fi
+
+      - name: vet
+        run: go vet ./...
+
+      - name: build
+        run: go build ./...
+
+      - name: test
+        run: go test ./...
+
+      - name: LiteLLM Codex instruction preservation
+        working-directory: .
+        run: python3 -m unittest discover -s examples/litellm-codex -p "test_*.py"
+
+  agent-providers:
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: control-plane/go.mod
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Install the tested agent releases
+        run: |
+          npm install --prefix "$RUNNER_TEMP/agent-tools" --ignore-scripts --no-audit --no-fund opencode-ai@1.19.5 @earendil-works/pi-coding-agent@1.4.0
+          node "$RUNNER_TEMP/agent-tools/node_modules/opencode-ai/postinstall.mjs"
+          echo "$RUNNER_TEMP/agent-tools/node_modules/.bin" >> "$GITHUB_PATH"
+      - name: Real agent tool calls through both provider protocols
+        working-directory: control-plane
+        env:
+          SANDBOXD_TEST_REAL_AGENTS: "1"
+          XDG_DATA_HOME: ${{ runner.temp }}/agent-data
+          XDG_CONFIG_HOME: ${{ runner.temp }}/agent-config
+          XDG_CACHE_HOME: ${{ runner.temp }}/agent-cache
+        run: go test ./cmd/runtimed -run TestRealProviderAgents -v -count=1 -timeout=10m
+
+  # End-to-end: build the base image + sandboxd and drive the real
+  # create -> seed -> install -> serve -> wake lifecycle on Docker. Also
+  # smoke-tests the image (agent CLIs + default template on PATH), so a
+  # change that drops OpenCode or the react-standard template fails here.
+  #
+  # Matrixed across amd64 and arm64 hosted runners — sandboxd's images are
+  # built natively (no cross-compilation), so arm64 (Apple Silicon, Graviton,
+  # etc.) only stays working if it's actually built and driven end-to-end
+  # here, not just assumed from multi-arch base images.
+  e2e:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: control-plane/go.mod
+
+      - name: build sandboxd
+        run: cd control-plane && go build -o /tmp/sandboxd ./cmd/sandboxd
+
+      - name: build base image
+        run: docker build -f image/Dockerfile -t sandboxd-base:ci .
+
+      - name: e2e
+        env:
+          SANDBOXD_IMAGE: sandboxd-base:ci
+          SANDBOXD_BIN: /tmp/sandboxd
+        run: bash scripts/e2e.sh
+
+  # Console is a /v1 client: typecheck, unit-test, and build it directly (not
+  # only via docker) so a TS/test/build break is caught with clear output.
+  console:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: console
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+      - name: enable pnpm
+        run: corepack enable && corepack prepare pnpm@9.15.0 --activate
+      - name: install (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+      - name: typecheck
+        run: pnpm exec tsc --noEmit
+      - name: unit tests
+        run: pnpm test
+      - name: browser setup
+        run: pnpm exec playwright install --with-deps chromium
+      - name: builder and model connection browser tests
+        run: pnpm exec playwright test --config playwright.providers.config.ts
+      - name: build
+        run: pnpm build
+      - name: build console image
+        working-directory: .
+        run: docker build -t sandboxd-console:ci ./console
+
+  # Installer smoke test on BOTH Linux and real macOS (macos-latest is Apple
+  # hardware). Docker can't run macOS, so this exercises install.sh's shell
+  # logic with docker stubbed — catching BSD/GNU (sed, mktemp), bash-3.2, and
+  # the Darwin data-dir portability issues on the actual OS.
+  install:
+    name: install-smoke
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: parse install.sh
+        run: bash -n install.sh
+      - name: install.sh platform logic (docker stubbed)
+        run: bash scripts/test-install.sh
+      - name: parse upgrade.sh + release.sh
+        run: bash -n upgrade.sh release.sh
+      - name: upgrade.sh release notes + breaking-changes prompt (curl stubbed)
+        run: bash scripts/test-upgrade-notes.sh
+      - name: verified release image selection (Docker and cosign stubbed)
+        run: bash scripts/test-install-images.sh

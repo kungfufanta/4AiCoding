@@ -1,0 +1,169 @@
+# sandboxd — full stack, runs entirely on Docker.
+#
+#   traefik   edge router; turns each sandbox's labels into an HTTPS-or-
+#             HTTP preview route and wakes stopped sandboxes on demand.
+#   sandboxd  control plane; creates/stops/destroys sandbox containers by
+#             shelling out to the host Docker daemon over the mounted
+#             socket, stores state in SQLite, runs the idle/pressure
+#             reapers and the wake path.
+#
+# Per-sandbox containers are NOT services here — sandboxd launches them
+# at runtime from the prebuilt ${SANDBOXD_IMAGE}. They join the same
+# ${SANDBOXD_NETWORK} so Traefik can route to them.
+#
+# Everything is parameterised from .env (see .env.example).
+
+networks:
+  sandboxd_net:
+    # Explicit name so the literal string also works as the --network
+    # value sandboxd passes to `docker run` for each sandbox.
+    name: ${SANDBOXD_NETWORK:-sandboxd_net}
+
+services:
+  traefik:
+    image: traefik:v3
+    restart: unless-stopped
+    # Run the edge + control plane in the HOST user namespace. They are
+    # infrastructure that needs host-level access to the Docker socket and
+    # (for sandboxd) to the data dir that sandboxes bind-mount. On a
+    # daemon WITHOUT userns-remap this is a no-op; on one WITH it enabled
+    # it keeps these two containers working. Per-sandbox containers are
+    # NOT listed here, so they keep the daemon's default isolation.
+    userns_mode: "host"
+    command:
+      - "--configfile=/etc/traefik/traefik.yml"
+    ports:
+      # Plain HTTP by default. Browsers resolve *.localhost to 127.0.0.1,
+      # so http://s-<id>-<port>.preview.localhost:${HTTP_PORT} just works.
+      - "${HTTP_PORT:-80}:80"
+      # Uncomment for a TLS deployment (set PREVIEW_TLS=true and supply a
+      # cert to the default store via traefik/dynamic/).
+      # - "${HTTPS_PORT:-443}:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./traefik/dynamic:/etc/traefik/dynamic:ro
+      - ${SANDBOXD_LOG_DIR:-/var/lib/sandboxd/log}:${SANDBOXD_LOG_DIR:-/var/lib/sandboxd/log}
+    networks:
+      - sandboxd_net
+
+  sandboxd:
+    build:
+      context: ./control-plane
+      args:
+        # Stamped into the binary (sandboxd version / telemetry / settings).
+        # upgrade.sh & install.sh export these from `git describe`; default dev.
+        VERSION: ${SANDBOXD_VERSION:-dev}
+        GIT_COMMIT: ${SANDBOXD_GIT_COMMIT:-unknown}
+    # The installer records verified release image names in .env; source
+    # builds keep local defaults or the operator's explicit image names.
+    image: ${SANDBOXD_CONTROL_PLANE_IMAGE:-sandboxd-control-plane:0.3.0}
+    restart: unless-stopped
+    userns_mode: "host"  # see traefik above
+    # Reachable on the internal network as http://sandboxd:9000. The API
+    # is also published to the loopback for local use / the upstream
+    # backend; change SANDBOXD_API_BIND in .env if 127.0.0.1:9090 clashes.
+    ports:
+      - "${SANDBOXD_API_BIND:-127.0.0.1:9090}:9000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Symmetric data-dir mount: the path sandboxd writes is ALSO a valid
+      # host path, so the sibling `docker run -v <workspace>:/home/sandbox`
+      # resolves on the host daemon. Do not change one side without the other.
+      - ${SANDBOXD_DATA_DIR:-/var/lib/sandboxd}:${SANDBOXD_DATA_DIR:-/var/lib/sandboxd}
+      - ${SANDBOXD_LOG_DIR:-/var/lib/sandboxd/log}:${SANDBOXD_LOG_DIR:-/var/lib/sandboxd/log}
+    environment:
+      # --- core ---
+      PREVIEW_DOMAIN: ${PREVIEW_DOMAIN:-localhost}
+      SANDBOXD_IMAGE: ${SANDBOXD_IMAGE:-sandboxd-base:0.3.0}
+      SANDBOXD_NETWORK: ${SANDBOXD_NETWORK:-sandboxd_net}
+      SANDBOXD_USERNS: ${SANDBOXD_USERNS:-host}
+      # Default coding agent for tasks that don't specify one. Explicit
+      # agent:"claude-code" tasks work regardless (creds are mounted per provider).
+      SANDBOXD_DEFAULT_AGENT: ${SANDBOXD_DEFAULT_AGENT:-opencode}
+      # Anonymous telemetry (docs/telemetry.md). Opt out with SANDBOXD_TELEMETRY=off
+      # or DO_NOT_TRACK=1 in .env; point at your own collector with the two below.
+      SANDBOXD_TELEMETRY: ${SANDBOXD_TELEMETRY:-}
+      DO_NOT_TRACK: ${DO_NOT_TRACK:-}
+      SANDBOXD_POSTHOG_HOST: ${SANDBOXD_POSTHOG_HOST:-}
+      SANDBOXD_POSTHOG_KEY: ${SANDBOXD_POSTHOG_KEY:-}
+      SANDBOXD_INSTALL_METHOD: ${SANDBOXD_INSTALL_METHOD:-unknown}
+      # Set by sandboxd Cloud to join privacy-safe usage buckets to the
+      # subscriber funnel. It is empty for ordinary self-hosted installs.
+      SANDBOXD_CLOUD_ORG: ${SANDBOXD_CLOUD_ORG:-}
+      # Which OpenCode Zen endpoint opencode routes through the auth proxy:
+      # "zen" (pay-as-you-go, full catalog) or "zengo" (Zen "go" subscription).
+      SANDBOXD_OPENCODE_ZEN_PATH: ${SANDBOXD_OPENCODE_ZEN_PATH:-zen}
+      # Sandbox container runtime: empty = docker default (runc); "runsc" = gVisor
+      # (stronger per-sandbox kernel isolation). SANDBOXD_DNS overrides resolv.conf
+      # for gVisor sandboxes (netstack can't reach Docker's embedded DNS).
+      SANDBOXD_RUNTIME: ${SANDBOXD_RUNTIME:-}
+      SANDBOXD_DNS: ${SANDBOXD_DNS:-}
+      SANDBOXD_DATA_DIR: ${SANDBOXD_DATA_DIR:-/var/lib/sandboxd}
+      # In-place upgrades from the console: host path of this checkout (set by
+      # install.sh) and the upgrader image built alongside the control plane.
+      SANDBOXD_SRC_DIR: ${SANDBOXD_SRC_DIR:-}
+      SANDBOXD_UPGRADER_IMAGE: ${SANDBOXD_UPGRADER_IMAGE:-sandboxd-upgrader:${SANDBOXD_VERSION:-dev}}
+      SANDBOXD_LOG_DIR: ${SANDBOXD_LOG_DIR:-/var/lib/sandboxd/log}
+      SANDBOXD_ACCESS_LOG: ${SANDBOXD_LOG_DIR:-/var/lib/sandboxd/log}/traefik-access.log
+      # --- routing (HTTP by default) ---
+      PREVIEW_ENTRYPOINT: ${PREVIEW_ENTRYPOINT:-web}
+      PREVIEW_TLS: ${PREVIEW_TLS:-false}
+      # Hostname layout under PREVIEW_DOMAIN (see .env.example).
+      PREVIEW_HOST_STYLE: ${PREVIEW_HOST_STYLE:-nested}
+      PREVIEW_HOST_TAG: ${PREVIEW_HOST_TAG:-}
+      # Host-facing port previews/console are reached on; appended to preview
+      # URLs unless it's the scheme default (80/443). Matches HTTP_PORT so a
+      # shared-host deploy (e.g. 18080) returns a reachable URL.
+      SANDBOXD_PUBLIC_HTTP_PORT: ${HTTP_PORT:-80}
+      # --- portability toggles ---
+      SANDBOXD_SET_MEMORY_HIGH: ${SANDBOXD_SET_MEMORY_HIGH:-false}
+      # --- auth (open by default for local use; set tokens for prod) ---
+      # Auth is ON by default — every /v1 request needs a console session or an
+      # API key (no loopback bypass). The installer seeds a bootstrap key in
+      # SANDBOXD_API_TOKENS. Set SANDBOXD_API_AUTH_DISABLED=true only as an
+      # explicit rollback (it trips the "your API is open" warning).
+      SANDBOXD_API_AUTH_DISABLED: ${SANDBOXD_API_AUTH_DISABLED:-false}
+      SANDBOXD_API_TOKENS: ${SANDBOXD_API_TOKENS:-}
+      # --- idle lifecycle (override if you like) ---
+      SANDBOXD_IDLE_THRESHOLD_SECONDS: ${SANDBOXD_IDLE_THRESHOLD_SECONDS:-2100}
+    networks:
+      - sandboxd_net
+
+  # Optional web console:  docker compose --profile console up
+  # Builds the Vite SPA and serves it from nginx, proxying the public /v1
+  # API to sandboxd. API-only — it never touches the DB or workspaces.
+  #
+  # Routed through the SAME Traefik as the previews, by Host header:
+  #   console.<PREVIEW_DOMAIN>  -> this console
+  #   *.preview.<PREVIEW_DOMAIN> -> sandbox previews
+  # one entrypoint (:${HTTP_PORT}), Traefik picks by the router rule.
+  # Reachable at http://console.${PREVIEW_DOMAIN:-localhost}:${HTTP_PORT}.
+  # CONSOLE_HOST overrides the hostname (e.g. console--<tag>.<domain> with
+  # PREVIEW_HOST_STYLE=flat and a PREVIEW_HOST_TAG).
+  #
+  # AUTH: the control plane is the login authority. The console serves a login /
+  # first-run "create password" screen and authenticates every /v1 call with an
+  # HttpOnly session cookie — no Traefik basic-auth, no htpasswd, no `$$` in
+  # .env. Programmatic access uses API keys (Settings → Security) or the
+  # bootstrap key the installer prints (SANDBOXD_API_TOKENS).
+  console:
+    profiles: [console]
+    build:
+      context: ./console
+    image: ${SANDBOXD_CONSOLE_IMAGE:-sandboxd-console:0.3.0}
+    restart: unless-stopped
+    depends_on:
+      - sandboxd
+      - traefik
+    labels:
+      - "sandboxd.managed=true" # satisfies the traefik docker-provider constraint
+      - "traefik.enable=true"
+      - "traefik.http.routers.console.rule=Host(`${CONSOLE_HOST:-console.${PREVIEW_DOMAIN:-localhost}}`)"
+      - "traefik.http.routers.console.entrypoints=web"
+      # No Traefik gate — the control plane authenticates the console (login /
+      # first-run password → session cookie). The SPA + its /v1 proxy sit behind
+      # that app-level login.
+      - "traefik.http.services.console.loadbalancer.server.port=80"
+    networks:
+      - sandboxd_net

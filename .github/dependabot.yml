@@ -1,0 +1,68 @@
+version: 2
+# Paused: open-pull-requests-limit 0 stops all version-update PRs. Set a
+# limit above 0 on an entry to turn its updates back on.
+updates:
+  # Go modules — one grouped PR/week for minor+patch; majors come separately.
+  - package-ecosystem: gomod
+    directory: /control-plane
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    groups:
+      go:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  # npm (console) — one grouped PR/week for minor+patch. TypeScript major is
+  # ignored (7.x is the new, breaking Go-based compiler — adopt deliberately).
+  - package-ecosystem: npm
+    directory: /console
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    groups:
+      npm:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
+
+  # Keep the Electron runtime and packaging tooling visible to security updates.
+  - package-ecosystem: npm
+    directory: /desktop
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    groups:
+      desktop:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  # GitHub Actions — group everything (action major bumps are low-risk).
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # Docker base images — group minor+patch. Node major is ignored (the console
+  # image doesn't build on Node 26 yet; bump deliberately when it does).
+  - package-ecosystem: docker
+    directories:
+      - /control-plane
+      - /console
+      - /image
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    groups:
+      docker:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "node"
+        update-types: ["version-update:semver-major"]

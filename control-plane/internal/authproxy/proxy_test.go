@@ -1,0 +1,362 @@
+package authproxy
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/tastyeffectco/sandboxd/control-plane/internal/agentauth"
+)
+
+func writeClaudeOAuth(t *testing.T, st *agentauth.Store, body string) {
+	t.Helper()
+	dir := filepath.Join(st.Dir("claude-code"), ".claude")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".credentials.json"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeAPIKey(t *testing.T, st *agentauth.Store, provider, key string) {
+	t.Helper()
+	if err := os.MkdirAll(st.Dir(provider), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(st.Dir(provider), agentauth.APIKeyFile), []byte(key), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// stubUpstream points a named upstream at a test server for the test's duration.
+func stubUpstream(t *testing.T, name string, h http.HandlerFunc) *httptest.Server {
+	t.Helper()
+	s := httptest.NewServer(h)
+	old := upstreams[name]
+	upstreams[name] = s.URL
+	t.Cleanup(func() { upstreams[name] = old; s.Close() })
+	return s
+}
+
+func TestMergeBeta(t *testing.T) {
+	if got := mergeBeta(""); got != oauthBeta {
+		t.Errorf("empty => %q; want %q", got, oauthBeta)
+	}
+	if got := mergeBeta("foo-2024"); got != "foo-2024,"+oauthBeta {
+		t.Errorf("append => %q", got)
+	}
+	if got := mergeBeta(oauthBeta); got != oauthBeta {
+		t.Errorf("already present must not duplicate => %q", got)
+	}
+}
+
+// Bad path (missing <agent>/<upstream>) → 400, never forwards.
+func TestServeBadPath(t *testing.T) {
+	p := New(agentauth.NewStore(t.TempDir()), nil)
+	w := httptest.NewRecorder()
+	p.ServeHTTP(w, httptest.NewRequest("POST", "/v1/messages", nil))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("got %d; want 400", w.Code)
+	}
+}
+
+// A valid path but no usable credential → 401 with an actionable message.
+func TestServeNoCredential(t *testing.T) {
+	p := New(agentauth.NewStore(t.TempDir()), nil)
+	w := httptest.NewRecorder()
+	p.ServeHTTP(w, httptest.NewRequest("POST", "/claude-code/anthropic/v1/messages", nil))
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("got %d; want 401", w.Code)
+	}
+}
+
+// A Claude subscription login is never stored or injected by the proxy (it
+// signs in to Claude Code inside the project), even if an old one is on disk.
+func TestNeverInjectsClaudeSubscription(t *testing.T) {
+	called := false
+	stubUpstream(t, "anthropic", func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(200)
+	})
+	st := agentauth.NewStore(t.TempDir())
+	writeClaudeOAuth(t, st, `{"claudeAiOauth":{"accessToken":"REAL-BEARER"}}`)
+	w := httptest.NewRecorder()
+	New(st, nil).ServeHTTP(w, httptest.NewRequest("POST", "/claude-code/anthropic/v1/messages", nil))
+	if called || w.Code != http.StatusUnauthorized {
+		t.Fatalf("upstream called=%v status=%d; want 401 without forwarding", called, w.Code)
+	}
+}
+
+// opencode API key → Zen upstream, injected as a Bearer, dummy stripped.
+func TestInjectsOpencodeZenKey(t *testing.T) {
+	var gotAuth, gotPath string
+	stubUpstream(t, "zen", func(w http.ResponseWriter, r *http.Request) {
+		gotAuth, gotPath = r.Header.Get("Authorization"), r.URL.Path
+		w.WriteHeader(200)
+	})
+	st := agentauth.NewStore(t.TempDir())
+	writeAPIKey(t, st, "opencode", "zen-REAL-KEY")
+	p := New(st, nil)
+
+	req := httptest.NewRequest("POST", "/opencode/zen/v1/chat/completions", nil)
+	req.Header.Set("Authorization", "Bearer sandboxd-proxy-injected")
+	w := httptest.NewRecorder()
+	p.ServeHTTP(w, req)
+
+	if gotAuth != "Bearer zen-REAL-KEY" {
+		t.Errorf("Authorization = %q; want the injected real key", gotAuth)
+	}
+	if gotPath != "/v1/chat/completions" {
+		t.Errorf("forwarded path = %q", gotPath)
+	}
+}
+
+// Anthropic API key uses the x-api-key header (not Bearer).
+func TestInjectsAnthropicAPIKeyHeader(t *testing.T) {
+	var gotKey string
+	stubUpstream(t, "anthropic", func(w http.ResponseWriter, r *http.Request) {
+		gotKey = r.Header.Get("X-Api-Key")
+		w.WriteHeader(200)
+	})
+	st := agentauth.NewStore(t.TempDir())
+	writeAPIKey(t, st, "claude-code", "sk-ant-REAL")
+	p := New(st, nil)
+
+	req := httptest.NewRequest("POST", "/claude-code/anthropic/v1/messages", nil)
+	w := httptest.NewRecorder()
+	p.ServeHTTP(w, req)
+	if gotKey != "sk-ant-REAL" {
+		t.Errorf("X-Api-Key = %q; want the injected key", gotKey)
+	}
+}
+
+// opencode with NO connected credential falls back to Zen's keyless free tier:
+// the proxy forwards to the zen upstream with NO auth (the sandbox's dummy key
+// stripped), rather than returning 401. This is what makes opencode work out of
+// the box with zero setup. It is opencode-only — every other agent still 401s
+// when unconnected (see TestServeNoCredential).
+func TestOpencodeFreeTierKeyless(t *testing.T) {
+	var gotAuth, gotKey, gotPath string
+	zenHit, zengoHit := false, false
+	stubUpstream(t, "zen", func(w http.ResponseWriter, r *http.Request) {
+		zenHit = true
+		gotAuth, gotKey, gotPath = r.Header.Get("Authorization"), r.Header.Get("X-Api-Key"), r.URL.Path
+		w.WriteHeader(200)
+	})
+	stubUpstream(t, "zengo", func(w http.ResponseWriter, _ *http.Request) { zengoHit = true; w.WriteHeader(200) })
+	p := New(agentauth.NewStore(t.TempDir()), nil) // nothing connected
+
+	// The sandbox requests the `zengo` path (operator pinned it), but the free
+	// models live on `zen` — the proxy must override the upstream to `zen`.
+	req := httptest.NewRequest("POST", "/opencode/zengo/v1/chat/completions", nil)
+	req.Header.Set("Authorization", "Bearer sandboxd-proxy-injected") // the dummy the sandbox sends
+	w := httptest.NewRecorder()
+	p.ServeHTTP(w, req)
+
+	if !zenHit || zengoHit {
+		t.Fatalf("free tier must route to zen, not zengo (zenHit=%v zengoHit=%v, status %d)", zenHit, zengoHit, w.Code)
+	}
+	if gotAuth != "" {
+		t.Errorf("Authorization leaked to upstream: %q (free tier must send none)", gotAuth)
+	}
+	if gotKey != "" {
+		t.Errorf("X-Api-Key leaked to upstream: %q (dummy must be stripped)", gotKey)
+	}
+	if gotPath != "/v1/chat/completions" {
+		t.Errorf("forwarded path = %q; want /v1/chat/completions", gotPath)
+	}
+}
+
+// A CONNECTED opencode key is NOT rerouted — it keeps the operator's chosen
+// upstream (here zengo) and gets the real key injected.
+func TestConnectedOpencodeKeepsZengo(t *testing.T) {
+	var gotAuth string
+	zengoHit := false
+	stubUpstream(t, "zengo", func(w http.ResponseWriter, r *http.Request) {
+		zengoHit = true
+		gotAuth = r.Header.Get("Authorization")
+		w.WriteHeader(200)
+	})
+	st := agentauth.NewStore(t.TempDir())
+	writeAPIKey(t, st, "opencode", "zen-REAL-KEY")
+	p := New(st, nil)
+
+	req := httptest.NewRequest("POST", "/opencode/zengo/v1/chat/completions", nil)
+	req.Header.Set("Authorization", "Bearer sandboxd-proxy-injected")
+	w := httptest.NewRecorder()
+	p.ServeHTTP(w, req)
+
+	if !zengoHit {
+		t.Fatalf("connected opencode should keep zengo; status %d", w.Code)
+	}
+	if gotAuth != "Bearer zen-REAL-KEY" {
+		t.Errorf("Authorization = %q; want the injected real key", gotAuth)
+	}
+}
+
+// A NON-opencode agent with no credential still returns 401 (no keyless tier).
+func TestCodexNoCredentialStill401(t *testing.T) {
+	p := New(agentauth.NewStore(t.TempDir()), nil)
+	w := httptest.NewRecorder()
+	p.ServeHTTP(w, httptest.NewRequest("POST", "/codex/openai/v1/chat/completions", nil))
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("codex unconnected = %d; want 401 (only opencode has a free tier)", w.Code)
+	}
+}
+
+// MiniMax is a credential-only upstream: the connected MiniMax API key is
+// injected (Bearer) regardless of which carrying agent is in the path, and the
+// global OpenAI-compatible base path (/v1) is preserved.
+func TestMiniMaxInjectsKeyGlobalOpenAI(t *testing.T) {
+	var gotAuth, gotKey, gotPath string
+	stubUpstream(t, "minimax", func(w http.ResponseWriter, r *http.Request) {
+		gotAuth, gotKey, gotPath = r.Header.Get("Authorization"), r.Header.Get("X-Api-Key"), r.URL.Path
+		w.WriteHeader(200)
+	})
+	st := agentauth.NewStore(t.TempDir())
+	writeAPIKey(t, st, "minimax", "minimax-REAL-KEY")
+	p := New(st, nil)
+
+	// Carried by opencode — the agent's own credential is irrelevant here.
+	req := httptest.NewRequest("POST", "/opencode/minimax/v1/chat/completions", nil)
+	req.Header.Set("Authorization", "Bearer sandboxd-proxy-injected") // the dummy
+	w := httptest.NewRecorder()
+	p.ServeHTTP(w, req)
+
+	if w.Code != 200 {
+		t.Fatalf("status %d; want 200", w.Code)
+	}
+	if gotAuth != "Bearer minimax-REAL-KEY" {
+		t.Errorf("Authorization = %q; want the injected MiniMax key", gotAuth)
+	}
+	if gotKey != "" {
+		t.Errorf("X-Api-Key leaked: %q (MiniMax uses Bearer)", gotKey)
+	}
+	if gotPath != "/v1/chat/completions" {
+		t.Errorf("forwarded path = %q; want /v1/chat/completions (base /v1 preserved)", gotPath)
+	}
+}
+
+// MiniMax with no connected key → 401 (a clear "connect it" error), even when
+// the carrying agent (opencode) would otherwise fall back to its keyless tier.
+func TestMiniMaxNoCredential401(t *testing.T) {
+	stubUpstream(t, "minimax", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) })
+	p := New(agentauth.NewStore(t.TempDir()), nil) // nothing connected
+	w := httptest.NewRecorder()
+	p.ServeHTTP(w, httptest.NewRequest("POST", "/opencode/minimax/v1/chat/completions", nil))
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("unconnected minimax = %d; want 401", w.Code)
+	}
+}
+
+// The China region upstream (minimax-cn) hits api.minimaxi.com and carries the
+// same injected key.
+func TestMiniMaxChinaEndpoint(t *testing.T) {
+	var gotAuth, gotPath string
+	stubUpstream(t, "minimax-cn", func(w http.ResponseWriter, r *http.Request) {
+		gotAuth, gotPath = r.Header.Get("Authorization"), r.URL.Path
+		w.WriteHeader(200)
+	})
+	st := agentauth.NewStore(t.TempDir())
+	writeAPIKey(t, st, "minimax", "minimax-REAL-KEY")
+	p := New(st, nil)
+
+	req := httptest.NewRequest("POST", "/opencode/minimax-cn/v1/chat/completions", nil)
+	w := httptest.NewRecorder()
+	p.ServeHTTP(w, req)
+	if gotAuth != "Bearer minimax-REAL-KEY" {
+		t.Errorf("Authorization = %q; want the injected MiniMax key", gotAuth)
+	}
+	if gotPath != "/v1/chat/completions" {
+		t.Errorf("forwarded path = %q; want /v1/chat/completions", gotPath)
+	}
+}
+
+// The Anthropic-compatible MiniMax endpoint (/anthropic base) is also reached
+// with the Bearer key (MiniMax's anthropic-compatible API accepts Bearer).
+func TestMiniMaxAnthropicEndpointBearer(t *testing.T) {
+	var gotAuth, gotKey, gotPath string
+	stubUpstream(t, "minimax-anthropic", func(w http.ResponseWriter, r *http.Request) {
+		gotAuth, gotKey, gotPath = r.Header.Get("Authorization"), r.Header.Get("X-Api-Key"), r.URL.Path
+		w.WriteHeader(200)
+	})
+	st := agentauth.NewStore(t.TempDir())
+	writeAPIKey(t, st, "minimax", "minimax-REAL-KEY")
+	p := New(st, nil)
+
+	req := httptest.NewRequest("POST", "/opencode/minimax-anthropic/anthropic/v1/messages", nil)
+	w := httptest.NewRecorder()
+	p.ServeHTTP(w, req)
+	if gotAuth != "Bearer minimax-REAL-KEY" {
+		t.Errorf("Authorization = %q; want Bearer (MiniMax anthropic-compat)", gotAuth)
+	}
+	if gotKey != "" {
+		t.Errorf("X-Api-Key set: %q; MiniMax anthropic-compat uses Bearer", gotKey)
+	}
+	if gotPath != "/anthropic/v1/messages" {
+		t.Errorf("forwarded path = %q; want /anthropic/v1/messages (base /anthropic preserved)", gotPath)
+	}
+}
+
+// isMiniMaxUpstream recognizes all four MiniMax direct upstream keys.
+func TestIsMiniMaxUpstream(t *testing.T) {
+	for _, up := range []string{"minimax", "minimax-cn", "minimax-anthropic", "minimax-anthropic-cn"} {
+		if !isMiniMaxUpstream(up) {
+			t.Errorf("%q should be a MiniMax upstream", up)
+		}
+	}
+	for _, up := range []string{"anthropic", "openai", "zen", "zengo", "", "minimaxx"} {
+		if isMiniMaxUpstream(up) {
+			t.Errorf("%q should NOT be a MiniMax upstream", up)
+		}
+	}
+}
+
+// A provider that says "quota exhausted" must fail the task immediately: agent
+// CLIs retry 401/429 for minutes, which surfaced as the misleading task error
+// "agent did not finish within the task timeout" long after the provider had
+// already given a precise answer.
+func TestTerminalProviderError(t *testing.T) {
+	cases := []struct {
+		name     string
+		status   int
+		body     string
+		terminal bool
+	}{
+		{"minimax quota exhausted", 429,
+			`{"error":{"message":"Token Plan usage limit reached: Upgrade your Token Plan or purchase Credits for more usage. (2056)"}}`, true},
+		{"openai insufficient quota", 429, `{"error":{"message":"You exceeded your current quota"}}`, true},
+		{"plain rate limit stays retryable", 429,
+			`{"error":{"message":"Rate limit reached for requests, please slow down"}}`, false},
+		{"bad credentials", 401, `{"error":{"message":"invalid api key"}}`, true},
+		{"payment required", 402, `{"error":{"message":"balance too low"}}`, true},
+		{"forbidden", 403, `{"error":{"message":"model not allowed for this key"}}`, true},
+		{"server error is retryable", 500, `oops`, false},
+		{"not found is not a credential problem", 404, `{"error":{"message":"no such model"}}`, false},
+	}
+	for _, tc := range cases {
+		reason, got := terminalProviderError(tc.status, tc.body)
+		if got != tc.terminal {
+			t.Errorf("%s: terminal = %v, want %v", tc.name, got, tc.terminal)
+		}
+		if got && reason == "" {
+			t.Errorf("%s: a terminal error must carry a plain-language reason", tc.name)
+		}
+	}
+}
+
+func TestProviderMessageExtractsTheProvidersOwnWords(t *testing.T) {
+	cases := []struct{ name, body, want string }{
+		{"error.message envelope", `{"error":{"message":"Token Plan usage limit reached"}}`, "Token Plan usage limit reached"},
+		{"top-level message", `{"message":"insufficient balance"}`, "insufficient balance"},
+		{"non-json falls back to the raw text", `upstream exploded`, "upstream exploded"},
+	}
+	for _, tc := range cases {
+		if got := providerMessage([]byte(tc.body)); got != tc.want {
+			t.Errorf("%s: providerMessage = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
