@@ -5,21 +5,39 @@ import (
 	"strings"
 )
 
-// ScopeHealth lets a key read liveness/readiness/version and nothing else —
-// the credential an external monitor should hold. Finer-grained,
-// resource-scoped keys arrive with the policy engine (PLAN.md M3b).
-// A key stored with a scope that no longer exists (e.g. the removed
-// "upgrade" scope) matches nothing, so it is denied everywhere.
-const ScopeHealth = "health"
+// Scopes narrow an API key below its role (PLAN §8 #9). A key with no scopes
+// may do whatever its role allows; a scoped key may only call the routes of
+// its scopes (and still within its role).
+const (
+	ScopeHealth          = "health"           // liveness / version only (monitors)
+	ScopeSandboxesRead   = "sandboxes:read"   // list / get / metrics / volumes / ports
+	ScopeSandboxesWrite  = "sandboxes:write"  // create / start / stop / restart / delete / ports / lifecycle
+	ScopeSandboxesExec   = "sandboxes:exec"   // exec + logs
+	ScopeSnapshots       = "snapshots"        // snapshot CRUD
+	ScopeSandboxesEgress = "sandboxes:egress" // read / change a sandbox's egress allowlist
+)
 
 // scopeRoutes is the single source of truth for what each scope permits, as
-// "METHOD /path" entries matched exactly against the request.
-var scopeRoutes = map[string]map[string]bool{
-	ScopeHealth: {
-		"GET /healthz":        true,
-		"GET /readyz":         true,
-		"GET /version":        true,
-		"GET /v1/auth/status": true,
+// route patterns (see matchRoute).
+var scopeRoutes = map[string][]string{
+	ScopeHealth: {"GET /healthz", "GET /readyz", "GET /version", "GET /v1/auth/status"},
+	ScopeSandboxesRead: {
+		"GET /v1/sandboxes", "GET /v1/sandboxes/*",
+		"GET /v1/sandboxes/*/metrics", "GET /v1/sandboxes/*/metrics/stream",
+		"GET /v1/sandboxes/*/volumes", "GET /v1/sandboxes/*/network/ports",
+		"GET /v1/sandboxes/*/lifecycle",
+	},
+	ScopeSandboxesWrite: {
+		"POST /v1/sandboxes", "DELETE /v1/sandboxes/*",
+		"POST /v1/sandboxes/*/start", "POST /v1/sandboxes/*/stop", "POST /v1/sandboxes/*/restart",
+		"PUT /v1/sandboxes/*/network/ports", "POST /v1/sandboxes/*/network/ports",
+		"DELETE /v1/sandboxes/*/network/ports/*",
+		"PATCH /v1/sandboxes/*/lifecycle", "POST /v1/sandboxes/*/keep-alive", "DELETE /v1/sandboxes/*/keep-alive",
+	},
+	ScopeSandboxesExec: {"POST /v1/sandboxes/*/exec", "GET /v1/sandboxes/*/logs"},
+	ScopeSnapshots:     {"GET /v1/snapshots", "POST /v1/snapshots", "GET /v1/snapshots/*", "DELETE /v1/snapshots/*"},
+	ScopeSandboxesEgress: {
+		"GET /v1/sandboxes/*/network/egress", "PUT /v1/sandboxes/*/network/egress",
 	},
 }
 
@@ -40,14 +58,14 @@ func ValidScope(name string) bool {
 }
 
 // ScopesAllow reports whether a request is permitted by at least one of the
-// scopes. An empty scope list means an unrestricted credential.
+// scopes. An empty scope list means no scope restriction. A stored scope that
+// no longer exists (e.g. the removed "upgrade") matches nothing.
 func ScopesAllow(scopes []string, method, path string) bool {
 	if len(scopes) == 0 {
 		return true
 	}
-	route := method + " " + path
 	for _, s := range scopes {
-		if scopeRoutes[s][route] {
+		if matchAny(scopeRoutes[s], method, path) {
 			return true
 		}
 	}

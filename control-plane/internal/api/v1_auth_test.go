@@ -40,6 +40,7 @@ func doAuth(t *testing.T, h http.Handler, method, path, body, cookie, bearer str
 	}
 	if cookie != "" {
 		r.AddCookie(&http.Cookie{Name: auth.SessionCookie, Value: cookie})
+		r.Header.Set(auth.CSRFHeader, "1") // what the console sends
 	}
 	if bearer != "" {
 		r.Header.Set("Authorization", "Bearer "+bearer)

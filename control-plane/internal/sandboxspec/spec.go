@@ -9,12 +9,23 @@
 package sandboxspec
 
 import (
+	"sort"
+	"strconv"
+	"strings"
+
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/docker"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/previewhost"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/store"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/traefik"
-	"strings"
 )
+
+// DefaultUser is the uid:gid every sandbox process runs as, whatever the
+// image's USER says (PLAN §8 #3: never root). The workspace is owned by it.
+const DefaultUser = "1000:1000"
+
+// DefaultMemoryMB is the hard memory limit when neither the spec nor the
+// instance sets one.
+const DefaultMemoryMB = 10240
 
 // Env carries the instance-level settings a sandbox container needs. These
 // mirror the values the create path passes; keeping them in one struct lets
@@ -30,15 +41,44 @@ type Env struct {
 	PreviewHostTag    string // optional instance tag, flat style only
 	PreviewEntrypoint string
 	PreviewTLS        bool
+	User              string // "" = DefaultUser
+	MemoryMB          int    // instance default hard limit; 0 = DefaultMemoryMB
+	// EgressProxy is the forward proxy URL every sandbox must use for
+	// outbound HTTP(S) (PLAN §8 #5); "" = not injected.
+	EgressProxy string
 }
 
-// Build returns the RunSpec for `sb`. It reproduces the create path's flags:
-// read-only rootfs, all capabilities dropped, no-new-privileges, tmpfs /tmp,
-// the workspace bind mount, and the Traefik preview labels.
+// proxyEnv is what Build injects when an egress proxy is configured. Both
+// spellings, since tools disagree on which they read.
+func proxyEnv(url string) []string {
+	if url == "" {
+		return nil
+	}
+	return []string{
+		"HTTP_PROXY=" + url, "HTTPS_PROXY=" + url,
+		"http_proxy=" + url, "https_proxy=" + url,
+		"NO_PROXY=localhost,127.0.0.1,::1", "no_proxy=localhost,127.0.0.1,::1",
+	}
+}
+
+// Build returns the RunSpec for `sb`. Both the create path and the
+// recreate (wake) path use it, so a sandbox always gets the same container:
+// read-only rootfs, all capabilities dropped, no-new-privileges, a fixed
+// non-root user, tmpfs /tmp, ONLY the workspace bind mount (never the docker
+// socket or another host path), ONLY the env declared in its spec (never the
+// control plane's own env), and the Traefik preview labels.
 func Build(sb *store.Sandbox, e Env) docker.RunSpec {
 	name := "s-" + sb.ID
 
-	env := []string{}
+	env := make([]string, 0, len(sb.Spec.Env)+6)
+	for k, v := range sb.Spec.Env {
+		if e.EgressProxy != "" && isProxyVar(k) {
+			continue // the instance proxy cannot be overridden by the spec
+		}
+		env = append(env, k+"="+v)
+	}
+	env = append(env, proxyEnv(e.EgressProxy)...)
+	sort.Strings(env) // deterministic flags (tests, diffing)
 
 	volumes := []string{sb.WorkspaceMnt + ":/home/sandbox"}
 	if e.DNSResolvConf != "" {
@@ -71,6 +111,23 @@ func Build(sb *store.Sandbox, e Env) docker.RunSpec {
 	}
 	labels := traefik.LabelsFor(e.Hosts(), sb.ID, ports, visibility, e.PreviewEntrypoint, e.PreviewTLS)
 
+	user := e.User
+	if user == "" {
+		user = DefaultUser
+	}
+	mem := sb.Spec.MemoryMB
+	if mem <= 0 {
+		mem = e.MemoryMB
+	}
+	if mem <= 0 {
+		mem = DefaultMemoryMB
+	}
+	memStr := strconv.Itoa(mem) + "m"
+	var cpus string
+	if sb.Spec.CPUs > 0 {
+		cpus = strconv.FormatFloat(sb.Spec.CPUs, 'f', -1, 64)
+	}
+
 	return docker.RunSpec{
 		Name:        name,
 		Hostname:    name,
@@ -81,16 +138,29 @@ func Build(sb *store.Sandbox, e Env) docker.RunSpec {
 		CapDrop:     []string{"ALL"},
 		SecurityOpt: []string{"no-new-privileges"},
 		CPUShares:   100,
-		Memory:      "10g",
-		MemorySwap:  "10g",
+		CPUs:        cpus,
+		Memory:      memStr,
+		MemorySwap:  memStr,
 		PidsLimit:   1024,
 		Ulimits:     []string{"nofile=65536:65536"},
 		Tmpfs:       []string{"/tmp:size=512m", "/var/tmp:size=128m"},
 		Env:         env,
 		Volumes:     volumes,
 		Labels:      labels,
-		Image:       e.Image,
+		User:        user,
+		Image:       DesiredImage(sb, e.Image),
+		Cmd:         append([]string(nil), sb.Spec.Command...),
 	}
+}
+
+// DesiredImage is the image a sandbox should run: its own image when the
+// spec pins one, otherwise the instance image (which it then follows across
+// image upgrades).
+func DesiredImage(sb *store.Sandbox, instanceImage string) string {
+	if sb.Spec.Image != "" {
+		return sb.Spec.Image
+	}
+	return instanceImage
 }
 
 // NeedsRecreate reports whether a container should be replaced before start:
@@ -129,4 +199,12 @@ func PreviewLabelsStale(labels map[string]string, hs previewhost.Scheme) bool {
 		}
 	}
 	return sawRouter
+}
+
+func isProxyVar(k string) bool {
+	switch strings.ToUpper(k) {
+	case "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY":
+		return true
+	}
+	return false
 }

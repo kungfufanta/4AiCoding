@@ -13,15 +13,24 @@ type stubResolver struct {
 	sessions map[string]string // cookie value -> owner
 	keys     map[string]string // presented key -> owner
 	scopes   map[string][]string
+	roles    map[string]string // cookie or key -> role (default admin)
+	bound    map[string]string // key -> sandbox id
 }
 
-func (s stubResolver) ResolveSession(_ context.Context, v string) (string, bool) {
-	o, ok := s.sessions[v]
-	return o, ok
+func (s stubResolver) role(v string) string {
+	if r, ok := s.roles[v]; ok {
+		return r
+	}
+	return RoleAdmin
 }
-func (s stubResolver) ResolveAPIKey(_ context.Context, v string) (string, []string, bool) {
+
+func (s stubResolver) ResolveSession(_ context.Context, v string) (Principal, bool) {
+	o, ok := s.sessions[v]
+	return Principal{Owner: o, User: "u-" + v, Role: s.role(v)}, ok
+}
+func (s stubResolver) ResolveAPIKey(_ context.Context, v string) (Principal, bool) {
 	o, ok := s.keys[v]
-	return o, s.scopes[v], ok
+	return Principal{Owner: o, User: "k-" + v, Role: s.role(v), Scopes: s.scopes[v], SandboxID: s.bound[v]}, ok
 }
 
 func newMW(disabled bool, res CredentialResolver) *Middleware {
@@ -125,8 +134,14 @@ func TestScopeTable(t *testing.T) {
 	if !ValidScope(ScopeHealth) || ValidScope("bogus") {
 		t.Error("ValidScope")
 	}
-	if got := KnownScopes(); len(got) != 1 || got[0] != ScopeHealth {
+	if got := KnownScopes(); len(got) != 6 {
 		t.Errorf("KnownScopes = %v", got)
+	}
+	if !ScopesAllow([]string{ScopeSandboxesExec}, "POST", "/v1/sandboxes/01ABC/exec") ||
+		ScopesAllow([]string{ScopeSandboxesExec}, "DELETE", "/v1/sandboxes/01ABC") ||
+		!ScopesAllow([]string{ScopeSandboxesRead}, "GET", "/v1/sandboxes/01ABC") ||
+		ScopesAllow([]string{ScopeSandboxesRead}, "GET", "/v1/sandboxes/01ABC/logs") {
+		t.Error("sandbox scope patterns")
 	}
 }
 
@@ -164,5 +179,83 @@ func TestMiddlewareScopedKey(t *testing.T) {
 		if tc.want == 200 && tc.bearer == "mon-key" && len(seen.Scopes) != 1 {
 			t.Fatalf("actor scopes not propagated: %+v", seen)
 		}
+	}
+}
+
+func TestRoleTable(t *testing.T) {
+	cases := []struct {
+		role, method, path string
+		want               bool
+	}{
+		{RoleAdmin, "PUT", "/v1/policy", true},
+		{RoleOperator, "PUT", "/v1/policy", false},
+		{RoleOperator, "GET", "/v1/policy", true},
+		{RoleOperator, "POST", "/v1/sandboxes", true},
+		{RoleOperator, "POST", "/v1/users", false},
+		{RoleOperator, "DELETE", "/v1/users/x", false},
+		{RoleOperator, "GET", "/v1/audit", false},
+		{RoleOperator, "POST", "/v1/approvals/a1/approve", false},
+		{RoleViewer, "GET", "/v1/sandboxes", true},
+		{RoleViewer, "POST", "/v1/sandboxes", false},
+		{RoleViewer, "POST", "/v1/sandboxes/x/exec", false},
+		{RoleViewer, "POST", "/v1/auth/logout", true},
+		{RoleViewer, "GET", "/v1/api-keys", false},
+		{"", "GET", "/v1/sandboxes", false},
+	}
+	for _, c := range cases {
+		if got := RoleAllows(c.role, c.method, c.path); got != c.want {
+			t.Errorf("RoleAllows(%q, %s %s) = %v, want %v", c.role, c.method, c.path, got, c.want)
+		}
+	}
+	if !SandboxBindingAllows("", "/v1/users") || !SandboxBindingAllows("S1", "/v1/sandboxes/S1/exec") ||
+		SandboxBindingAllows("S1", "/v1/sandboxes/S12") || SandboxBindingAllows("S1", "/v1/sandboxes") {
+		t.Error("sandbox binding")
+	}
+}
+
+func TestMiddlewareRolesBindingAndCSRF(t *testing.T) {
+	res := stubResolver{
+		sessions: map[string]string{"admin-ck": "default", "viewer-ck": "default"},
+		keys:     map[string]string{"bound-key": "default", "op-key": "default"},
+		roles:    map[string]string{"viewer-ck": RoleViewer, "op-key": RoleOperator},
+		bound:    map[string]string{"bound-key": "S1"},
+	}
+	mw := newMW(false, res)
+	cases := []struct {
+		name, method, path, cookie, bearer string
+		csrf                               bool
+		want                               int
+	}{
+		{"viewer can read", "GET", "/v1/sandboxes", "viewer-ck", "", false, 200},
+		{"viewer cannot create", "POST", "/v1/sandboxes", "viewer-ck", "", true, 403},
+		{"cookie POST without csrf header", "POST", "/v1/sandboxes", "admin-ck", "", false, 403},
+		{"cookie POST with csrf header", "POST", "/v1/sandboxes", "admin-ck", "", true, 200},
+		{"bearer POST needs no csrf header", "POST", "/v1/sandboxes", "", "op-key", false, 200},
+		{"operator cannot change policy", "PUT", "/v1/policy", "", "op-key", false, 403},
+		{"bound key on its sandbox", "POST", "/v1/sandboxes/S1/exec", "", "bound-key", false, 200},
+		{"bound key on another sandbox", "POST", "/v1/sandboxes/S2/exec", "", "bound-key", false, 403},
+		{"bound key cannot list", "GET", "/v1/sandboxes", "", "bound-key", false, 403},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var seen Actor
+			h := mw.Wrap(echoActor(&seen))
+			r := httptest.NewRequest(tc.method, tc.path, nil)
+			r.RemoteAddr = "203.0.113.9:5000"
+			if tc.cookie != "" {
+				r.AddCookie(&http.Cookie{Name: SessionCookie, Value: tc.cookie})
+			}
+			if tc.bearer != "" {
+				r.Header.Set("Authorization", "Bearer "+tc.bearer)
+			}
+			if tc.csrf {
+				r.Header.Set(CSRFHeader, "1")
+			}
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+			if w.Code != tc.want {
+				t.Fatalf("code = %d, want %d (%s)", w.Code, tc.want, w.Body)
+			}
+		})
 	}
 }

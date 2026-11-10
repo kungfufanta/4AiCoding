@@ -25,4 +25,4 @@ http:
       loadBalancer:
         passHostHeader: true
         servers:
-          - url: "http://sandboxd:9000"
+          - url: "http://sandboxd-ctl:9000"

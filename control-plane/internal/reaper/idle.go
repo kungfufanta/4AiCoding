@@ -101,9 +101,9 @@ func (i *Idle) tick(ctx context.Context) error {
 	}
 	metrics.IdleReaperRuns.Inc()
 	now := time.Now().UTC()
-	cutoff := now.Add(-i.threshold())
+	threshold := i.threshold()
 
-	candidates, err := i.Store.ListIdleCandidates(ctx, cutoff)
+	candidates, err := i.Store.ListIdleCandidates(ctx, now, threshold)
 	if err != nil {
 		return fmt.Errorf("list idle candidates: %w", err)
 	}
@@ -129,8 +129,12 @@ func (i *Idle) tick(ctx context.Context) error {
 		// is widened so that silent long-lived WS messages stay in the
 		// cutoff window between message-driven access-log bumps.)
 
-		// Skip rule 4 already encoded in the SQL ORDER BY — but
-		// double-check for safety in case clock drift moved cutoff.
+		// Skip rule 4 already encoded in the SQL — but double-check the
+		// per-sandbox cutoff for safety in case clock drift moved it.
+		cutoff := now.Add(-threshold)
+		if sb.Spec.IdleTimeoutSecs > 0 {
+			cutoff = now.Add(-time.Duration(sb.Spec.IdleTimeoutSecs) * time.Second)
+		}
 		if !sb.LastActiveAt.IsZero() && sb.LastActiveAt.After(cutoff) {
 			continue
 		}

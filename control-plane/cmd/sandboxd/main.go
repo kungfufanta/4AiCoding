@@ -19,6 +19,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -36,13 +37,16 @@ import (
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/audit"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/auth"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/docker"
+	domainpkg "github.com/tastyeffectco/sandboxd/control-plane/internal/domain"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/egress"
+	"github.com/tastyeffectco/sandboxd/control-plane/internal/egressproxy"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/events"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/idlock"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/instancecfg"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/logging"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/loopback"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/metrics"
+	"github.com/tastyeffectco/sandboxd/control-plane/internal/netguard"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/previewhost"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/reaper"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/reconcile"
@@ -197,6 +201,24 @@ func main() {
 			log.Error("shutdown: store close failed", "err", err.Error())
 		}
 	}()
+
+	// Domain manager (PUT /v1/domain): a stored domain / TLS mode overrides
+	// PREVIEW_DOMAIN / PREVIEW_TLS. Applied here, at start, because every
+	// preview route and URL derives from it.
+	domainTLSMode := ""
+	if dc, ok, derr := api.StoredDomain(st, ctx); derr != nil {
+		log.Warn("startup: stored domain unreadable; using PREVIEW_DOMAIN", "err", derr.Error())
+	} else if ok {
+		domain, previewTLS = dc.Domain, dc.TLS()
+		if previewTLS {
+			domainTLSMode = dc.TLSMode
+			if os.Getenv("PREVIEW_ENTRYPOINT") == "" {
+				previewEntrypoint = "websecure"
+			}
+		}
+		hosts, _ = previewhost.New(domain, previewHostStyle, previewHostTag)
+		log.Info("startup: using the stored domain", "domain", domain, "tls_mode", dc.TLSMode)
+	}
 
 	// Phase 5 — Backfill last_active_at for legacy running rows where
 	// the migration default (0) would otherwise make every existing
@@ -424,20 +446,46 @@ func main() {
 	// created from an older base image than we now run, so long-lived sandboxes
 	// move onto the current image. Lossless: everything durable is in the
 	// workspace bind mount, and the container rootfs is read-only by construction.
+	// One spec environment for every container sandboxd builds (create and
+	// recreate), so both paths produce the same hardened container.
+	// PLAN §8 #5: the egress proxy. SANDBOXD_EGRESS_PROXY_ADDR is where
+	// sandboxd listens for it (e.g. ":3128"; empty = off); the URL is what a
+	// sandbox is told to use (an alias of sandboxd on the sandbox network).
+	egressProxyAddr := os.Getenv("SANDBOXD_EGRESS_PROXY_ADDR")
+	egressProxyURL := ""
+	if egressProxyAddr != "" {
+		_, port, perr := net.SplitHostPort(egressProxyAddr)
+		if perr != nil || port == "" {
+			log.Error("startup: bad SANDBOXD_EGRESS_PROXY_ADDR", "value", egressProxyAddr)
+			os.Exit(1)
+		}
+		egressProxyURL = envDefault("SANDBOXD_EGRESS_PROXY_URL", "http://sandboxd-egress:"+port)
+	}
+	specEnv := sandboxspec.Env{
+		EgressProxy:       egressProxyURL,
+		Image:             image,
+		Network:           network,
+		Userns:            userns,
+		Runtime:           sbxRuntime,
+		DNSResolvConf:     dnsResolvConf,
+		PreviewDomain:     domain,
+		PreviewHostStyle:  hosts.Style,
+		PreviewHostTag:    hosts.Tag,
+		PreviewEntrypoint: previewEntrypoint,
+		PreviewTLS:        previewTLS,
+		User:              envDefault("SANDBOXD_SANDBOX_USER", sandboxspec.DefaultUser),
+		MemoryMB:          intFromEnv("SANDBOXD_DEFAULT_MEMORY_MB", sandboxspec.DefaultMemoryMB),
+	}
+	limits := api.Limits{
+		ImageAllowlist: splitList(os.Getenv("SANDBOXD_IMAGE_ALLOWLIST")),
+		MaxCPUs:        floatFromEnv("SANDBOXD_MAX_CPUS", 0),
+		MaxMemoryMB:    intFromEnv("SANDBOXD_MAX_MEMORY_MB", sandboxspec.DefaultMemoryMB),
+		MaxPorts:       intFromEnv("SANDBOXD_MAX_PORTS_PER_SANDBOX", 16),
+	}
 	wakeHandler.Image = image
+	wakeHandler.User = specEnv.User
 	wakeHandler.Recreate = func(ctx context.Context, sb *store.Sandbox) error {
-		spec := sandboxspec.Build(sb, sandboxspec.Env{
-			Image:             image,
-			Network:           network,
-			Userns:            userns,
-			Runtime:           sbxRuntime,
-			DNSResolvConf:     dnsResolvConf,
-			PreviewDomain:     domain,
-			PreviewHostStyle:  hosts.Style,
-			PreviewHostTag:    hosts.Tag,
-			PreviewEntrypoint: previewEntrypoint,
-			PreviewTLS:        previewTLS,
-		})
+		spec := sandboxspec.Build(sb, specEnv)
 		// Remove any existing container first so the name is free; ignore a
 		// not-found (the common case) and let Run surface a real failure.
 		if err := dockerClient.Remove(ctx, spec.Name); err != nil && err != docker.ErrNotFound {
@@ -490,7 +538,23 @@ func main() {
 			IdleReapEnabled:      idleInterval > 0,
 			IdleThresholdSeconds: int(idleThreshold.Seconds()),
 		},
-		Live: live,
+		Live:           live,
+		SpecEnv:        specEnv,
+		Limits:         limits,
+		APIKeyMaxTTL:   durationFromEnvSec("SANDBOXD_API_KEY_MAX_TTL_SECONDS", 0),
+		EgressProxyURL: egressProxyURL,
+		DomainTLSMode:  domainTLSMode,
+		Certs: &domainpkg.CertStore{
+			Dir:        os.Getenv("SANDBOXD_TRAEFIK_DYNAMIC_DIR"),
+			TraefikDir: envDefault("SANDBOXD_TRAEFIK_DYNAMIC_DIR_IN_TRAEFIK", "/etc/traefik/dynamic"),
+		},
+	}
+	// First admin from the environment (headless installs). No-op once any
+	// user exists, so the variable can stay set.
+	if created, name, berr := api.BootstrapAdmin(ctx, st, os.Getenv("SANDBOXD_BOOTSTRAP_ADMIN")); berr != nil {
+		log.Error("startup: bootstrap admin failed", "err", berr.Error())
+	} else if created {
+		log.Info("startup: bootstrap admin created", "username", name)
 	}
 
 	// Phase 5 — after reconcile, if MemAvailable is
@@ -517,6 +581,25 @@ func main() {
 	// sandbox's stopped-wake is gated inside the wake handler itself.
 	apiMux := authMw.Wrap(server.Handler())
 	root := hostDispatch(wakeHandler, apiMux, log)
+	// PLAN §8 #13: refuse anything that comes from the sandbox network, for
+	// the API and the wake catch-all alike. The edge router reaches us over
+	// the control network (see docker-compose.yml), never over this one.
+	var guard netguard.Guard
+	if network != "" && os.Getenv("SANDBOXD_ALLOW_API_FROM_SANDBOX_NETWORK") != "true" {
+		subnets, gateways, gerr := dockerClient.NetworkSubnets(ctx, network)
+		switch {
+		case gerr != nil:
+			log.Error("startup: cannot read the sandbox network subnets; API source guard is OFF",
+				"network", network, "err", gerr.Error())
+		default:
+			if bad := guard.Set(subnets, gateways); len(bad) > 0 {
+				log.Warn("startup: ignored unparsable network entries", "entries", bad)
+			}
+			log.Info("startup: API refuses requests from the sandbox network",
+				"network", network, "subnets", subnets, "exempt_gateways", gateways)
+		}
+	}
+	root = guard.Wrap(root)
 	root = logging.Middleware(log, root)
 
 	httpSrv := &http.Server{
@@ -524,6 +607,35 @@ func main() {
 		Handler:           root,
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       60 * time.Second,
+	}
+
+	// Egress proxy listener (separate from the API: sandboxes may reach this
+	// one, never the API).
+	var egressSrv *http.Server
+	if egressProxyAddr != "" {
+		elog := log.With("component", "egress-proxy")
+		px := &egressproxy.Proxy{
+			Log: elog,
+			Lookup: func(ctx context.Context, ip string) (string, []string, bool) {
+				sb, err := st.RunningByIP(ctx, ip)
+				if err != nil {
+					return "", nil, false
+				}
+				return sb.ID, sb.Spec.Egress, true
+			},
+			OnDecision: func(id, host string, allowed bool, reason string) {
+				elog.Info("egress", "sandbox_id", id, "host", host, "allowed", allowed, "reason", reason)
+			},
+		}
+		egressSrv = &http.Server{Addr: egressProxyAddr, Handler: px, ReadHeaderTimeout: 10 * time.Second}
+		go func() {
+			log.Info("egress proxy listening", "addr", egressProxyAddr, "url", egressProxyURL)
+			if err := egressSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Error("egress proxy stopped", "err", err.Error())
+			}
+		}()
+	} else {
+		log.Warn("startup: SANDBOXD_EGRESS_PROXY_ADDR unset — sandbox egress is NOT enforced by sandboxd")
 	}
 
 	// --- Phase 5 background goroutines ---------------------------------
@@ -703,6 +815,9 @@ func main() {
 	gcancel()
 	shutCtx, shutCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutCancel()
+	if egressSrv != nil {
+		_ = egressSrv.Shutdown(shutCtx)
+	}
 	if err := httpSrv.Shutdown(shutCtx); err != nil {
 		log.Error("shutdown: http server shutdown failed", "err", err.Error())
 	}
@@ -803,6 +918,15 @@ func uintFromEnv(k string, d uint64) uint64 {
 		return d
 	}
 	return n
+}
+
+// splitList parses a comma/space separated env list, dropping blanks.
+func splitList(v string) []string {
+	var out []string
+	for _, f := range strings.FieldsFunc(v, func(r rune) bool { return r == ',' || r == ' ' || r == '\n' }) {
+		out = append(out, f)
+	}
+	return out
 }
 
 func intFromEnv(k string, d int) int {

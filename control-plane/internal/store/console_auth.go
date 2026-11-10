@@ -18,66 +18,69 @@ type APIKey struct {
 	LastUsedAt *time.Time
 	// Scopes restricts what the key may call; empty = full access.
 	Scopes []string
-}
-
-// ── console password (single row id=1) ───────────────────────────────
-
-// GetPasswordHash returns the stored bcrypt hash, or ErrNotFound when the
-// console password has not been set yet (first-run).
-func (s *Store) GetPasswordHash(ctx context.Context) (string, error) {
-	var hash string
-	err := s.db.QueryRowContext(ctx, `SELECT password_hash FROM console_auth WHERE id = 1`).Scan(&hash)
-	if err == sql.ErrNoRows {
-		return "", ErrNotFound
-	}
-	return hash, err
-}
-
-// SetPasswordHash upserts the single console password row.
-func (s *Store) SetPasswordHash(ctx context.Context, hash string) error {
-	return s.submit(ctx, func(db *sql.DB) error {
-		_, err := db.ExecContext(ctx, `
-			INSERT INTO console_auth (id, password_hash, updated_at) VALUES (1, ?, ?)
-			ON CONFLICT(id) DO UPDATE SET password_hash = excluded.password_hash, updated_at = excluded.updated_at`,
-			hash, time.Now().Unix())
-		return err
-	})
-}
-
-// ClearPasswordHash removes the console password so the next visit is a
-// first-run "create your password" again (operator-driven recovery).
-func (s *Store) ClearPasswordHash(ctx context.Context) error {
-	return s.submit(ctx, func(db *sql.DB) error {
-		_, err := db.ExecContext(ctx, `DELETE FROM console_auth WHERE id = 1`)
-		return err
-	})
+	// Role caps what the key may do (admin | operator | viewer).
+	Role string
+	// ExpiresAt is when the key stops working; nil = never.
+	ExpiresAt *time.Time
+	// SandboxID binds the key to one sandbox; "" = any.
+	SandboxID string
 }
 
 // ── sessions ─────────────────────────────────────────────────────────
 
-// CreateSession inserts a session keyed by the sha256 hex of the cookie value.
-func (s *Store) CreateSession(ctx context.Context, tokenHash, owner string, createdAt, lastUsed, expires int64) error {
+// CreateSession inserts a session for a user, keyed by the sha256 hex of the
+// cookie value.
+func (s *Store) CreateSession(ctx context.Context, tokenHash, owner, userID string, createdAt, lastUsed, expires int64) error {
 	return s.submit(ctx, func(db *sql.DB) error {
 		_, err := db.ExecContext(ctx, `
-			INSERT INTO console_session (token_hash, owner_token, created_at, last_used_at, expires_at)
-			VALUES (?,?,?,?,?)`, tokenHash, owner, createdAt, lastUsed, expires)
+			INSERT INTO console_session (token_hash, owner_token, user_id, created_at, last_used_at, expires_at)
+			VALUES (?,?,?,?,?,?)`, tokenHash, owner, userID, createdAt, lastUsed, expires)
 		return err
 	})
 }
 
-// LookupSession returns the owner + expiry for a session hash. found=false when
-// there is no such session (expiry is enforced by the caller).
-func (s *Store) LookupSession(ctx context.Context, tokenHash string) (owner string, expires int64, found bool, err error) {
-	row := s.db.QueryRowContext(ctx,
-		`SELECT owner_token, expires_at FROM console_session WHERE token_hash = ?`, tokenHash)
-	switch err = row.Scan(&owner, &expires); err {
-	case nil:
-		return owner, expires, true, nil
-	case sql.ErrNoRows:
-		return "", 0, false, nil
-	default:
-		return "", 0, false, err
+// SessionInfo is what a session cookie resolves to.
+type SessionInfo struct {
+	Owner   string
+	Expires int64
+	User    *User
+}
+
+// LookupSession returns the session and its (enabled) user. found=false when
+// there is no such session, it has no user, or the user is disabled. Expiry
+// is enforced by the caller.
+func (s *Store) LookupSession(ctx context.Context, tokenHash string) (SessionInfo, bool, error) {
+	var si SessionInfo
+	var userID sql.NullString
+	err := s.db.QueryRowContext(ctx,
+		`SELECT owner_token, expires_at, user_id FROM console_session WHERE token_hash = ?`, tokenHash).
+		Scan(&si.Owner, &si.Expires, &userID)
+	if err == sql.ErrNoRows {
+		return si, false, nil
 	}
+	if err != nil {
+		return si, false, err
+	}
+	if !userID.Valid {
+		return si, false, nil
+	}
+	u, err := s.GetUser(ctx, userID.String)
+	if err == ErrNotFound || (err == nil && u.Disabled) {
+		return si, false, nil
+	}
+	if err != nil {
+		return si, false, err
+	}
+	si.User = u
+	return si, true, nil
+}
+
+// DeleteUserSessions signs a user out everywhere.
+func (s *Store) DeleteUserSessions(ctx context.Context, userID string) error {
+	return s.submit(ctx, func(db *sql.DB) error {
+		_, err := db.ExecContext(ctx, `DELETE FROM console_session WHERE user_id = ?`, userID)
+		return err
+	})
 }
 
 // TouchSession bumps last_used_at (best-effort; ignore the returned error at the
@@ -108,7 +111,7 @@ func (s *Store) DeleteAllSessions(ctx context.Context) error {
 
 // ── API keys ─────────────────────────────────────────────────────────
 
-const apiKeyMetaCols = `id, name, prefix, created_at, last_used_at, scopes`
+const apiKeyMetaCols = `id, name, prefix, created_at, last_used_at, scopes, role, expires_at, sandbox_id`
 
 // Scopes are stored comma-separated; ” round-trips to nil (full access).
 func joinScopes(scopes []string) string { return strings.Join(scopes, ",") }
@@ -125,9 +128,16 @@ func scanAPIKey(sc scanner) (*APIKey, error) {
 	var created int64
 	var lastUsed sql.NullInt64
 	var scopes string
-	if err := sc.Scan(&k.ID, &k.Name, &k.Prefix, &created, &lastUsed, &scopes); err != nil {
+	var expires sql.NullInt64
+	var sandboxID sql.NullString
+	if err := sc.Scan(&k.ID, &k.Name, &k.Prefix, &created, &lastUsed, &scopes, &k.Role, &expires, &sandboxID); err != nil {
 		return nil, err
 	}
+	if expires.Valid {
+		t := time.Unix(expires.Int64, 0).UTC()
+		k.ExpiresAt = &t
+	}
+	k.SandboxID = sandboxID.String
 	k.CreatedAt = time.Unix(created, 0).UTC()
 	if lastUsed.Valid {
 		t := time.Unix(lastUsed.Int64, 0).UTC()
@@ -137,14 +147,29 @@ func scanAPIKey(sc scanner) (*APIKey, error) {
 	return k, nil
 }
 
-// CreateAPIKey inserts a key. keyHash is the sha256 hex of the plaintext (the
-// store never sees plaintext). Empty scopes = full access. ErrConflict when the
-// name (or hash) already exists.
-func (s *Store) CreateAPIKey(ctx context.Context, id, name, keyHash, prefix string, scopes []string, createdAt int64) error {
+// NewAPIKey is what CreateAPIKey stores. KeyHash is the sha256 hex of the
+// plaintext (the store never sees plaintext). Empty Scopes = full access
+// (within Role). ExpiresAt 0 = never; SandboxID "" = any sandbox.
+type NewAPIKey struct {
+	ID, Name, KeyHash, Prefix string
+	Scopes                    []string
+	Role                      string
+	ExpiresAt                 int64
+	SandboxID                 string
+	CreatedAt                 int64
+}
+
+// CreateAPIKey inserts a key. ErrConflict when the name (or hash) exists.
+func (s *Store) CreateAPIKey(ctx context.Context, k NewAPIKey) error {
+	if k.Role == "" {
+		k.Role = "admin"
+	}
 	return s.submit(ctx, func(db *sql.DB) error {
 		_, err := db.ExecContext(ctx, `
-			INSERT INTO api_key (id, name, key_hash, prefix, scopes, created_at, last_used_at)
-			VALUES (?,?,?,?,?,?,NULL)`, id, name, keyHash, prefix, joinScopes(scopes), createdAt)
+			INSERT INTO api_key (id, name, key_hash, prefix, scopes, created_at, last_used_at, role, expires_at, sandbox_id)
+			VALUES (?,?,?,?,?,?,NULL,?,?,?)`, k.ID, k.Name, k.KeyHash, k.Prefix, joinScopes(k.Scopes), k.CreatedAt,
+			k.Role, sql.NullInt64{Int64: k.ExpiresAt, Valid: k.ExpiresAt > 0},
+			sql.NullString{String: k.SandboxID, Valid: k.SandboxID != ""})
 		if isUniqueViolation(err) {
 			return ErrConflict
 		}
@@ -171,19 +196,18 @@ func (s *Store) ListAPIKeys(ctx context.Context) ([]*APIKey, error) {
 	return out, rows.Err()
 }
 
-// LookupAPIKey returns the key id and scopes (nil = full access) for a
-// presented key's sha256 hash. found=false when no key matches.
-func (s *Store) LookupAPIKey(ctx context.Context, keyHash string) (id string, scopes []string, found bool, err error) {
-	var raw string
-	row := s.db.QueryRowContext(ctx, `SELECT id, scopes FROM api_key WHERE key_hash = ?`, keyHash)
-	switch err = row.Scan(&id, &raw); err {
-	case nil:
-		return id, splitScopes(raw), true, nil
-	case sql.ErrNoRows:
-		return "", nil, false, nil
-	default:
-		return "", nil, false, err
+// LookupAPIKey returns the key metadata for a presented key's sha256 hash.
+// found=false when no key matches. Expiry is enforced by the caller.
+func (s *Store) LookupAPIKey(ctx context.Context, keyHash string) (*APIKey, bool, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT `+apiKeyMetaCols+` FROM api_key WHERE key_hash = ?`, keyHash)
+	k, err := scanAPIKey(row)
+	if err == sql.ErrNoRows {
+		return nil, false, nil
 	}
+	if err != nil {
+		return nil, false, err
+	}
+	return k, true, nil
 }
 
 // TouchAPIKey bumps last_used_at (best-effort).

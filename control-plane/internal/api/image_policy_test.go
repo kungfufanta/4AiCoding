@@ -7,10 +7,10 @@ import (
 	"testing"
 )
 
-// Per-sandbox image selection is not supported yet (M3a) (the image is instance-wide via
-// SANDBOXD_IMAGE). Every create body must reject an `image` field with a clear
-// 400 instead of silently dropping it.
-func TestImageFieldRejected(t *testing.T) {
+// A sandbox may only name the instance image or one on the allowlist
+// (SANDBOXD_IMAGE_ALLOWLIST). Both create paths must reject any other image
+// with a clear 400 before anything touches docker.
+func TestImageOutsideAllowlistRejected(t *testing.T) {
 	s := &Server{Store: memStore(t)}
 
 	check := func(name string, h http.HandlerFunc, path, body string) {
@@ -20,7 +20,7 @@ func TestImageFieldRejected(t *testing.T) {
 			if w.Code != http.StatusBadRequest {
 				t.Fatalf("%s: got %d, want 400; body=%s", name, w.Code, w.Body.String())
 			}
-			if !strings.Contains(w.Body.String(), "per-sandbox image selection is not supported") {
+			if !strings.Contains(w.Body.String(), "is not allowed by policy") {
 				t.Errorf("%s: missing explanatory message: %s", name, w.Body.String())
 			}
 		})

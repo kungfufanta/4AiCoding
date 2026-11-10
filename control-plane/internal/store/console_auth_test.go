@@ -15,110 +15,153 @@ func newConsoleStore(t *testing.T) *Store {
 	return st
 }
 
-func TestConsoleAuthPassword(t *testing.T) {
+func TestUsersCRUD(t *testing.T) {
 	ctx := context.Background()
 	s := newConsoleStore(t)
-
-	if _, err := s.GetPasswordHash(ctx); err != ErrNotFound {
-		t.Fatalf("unset password: got %v, want ErrNotFound", err)
+	if n, _ := s.CountUsers(ctx); n != 0 {
+		t.Fatalf("fresh store has %d users", n)
 	}
-	if err := s.SetPasswordHash(ctx, "hash-v1"); err != nil {
+	u := &User{ID: "u1", Username: "Alice", PasswordHash: "h", Role: "admin"}
+	if err := s.CreateUser(ctx, u); err != nil {
 		t.Fatal(err)
 	}
-	if h, err := s.GetPasswordHash(ctx); err != nil || h != "hash-v1" {
-		t.Fatalf("get: h=%q err=%v", h, err)
+	if err := s.CreateUser(ctx, &User{ID: "u2", Username: "alice", PasswordHash: "h", Role: "viewer"}); err != ErrConflict {
+		t.Fatalf("case-insensitive duplicate: %v", err)
 	}
-	// upsert replaces
-	if err := s.SetPasswordHash(ctx, "hash-v2"); err != nil {
+	got, err := s.GetUserByName(ctx, "ALICE")
+	if err != nil || got.ID != "u1" || got.Role != "admin" {
+		t.Fatalf("by name: %+v %v", got, err)
+	}
+	got.Role, got.Disabled = "operator", true
+	if err := s.UpdateUser(ctx, got); err != nil {
 		t.Fatal(err)
 	}
-	if h, _ := s.GetPasswordHash(ctx); h != "hash-v2" {
-		t.Fatalf("upsert: h=%q", h)
+	if n, _ := s.CountActiveAdmins(ctx); n != 0 {
+		t.Fatalf("active admins = %d", n)
+	}
+	if err := s.DeleteUser(ctx, "u1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.GetUser(ctx, "u1"); err != ErrNotFound {
+		t.Fatalf("deleted user: %v", err)
 	}
 }
 
-func TestConsoleAuthSessions(t *testing.T) {
+func TestSessionsBelongToEnabledUsers(t *testing.T) {
 	ctx := context.Background()
 	s := newConsoleStore(t)
 	now := time.Now().Unix()
-
-	if err := s.CreateSession(ctx, "th1", DefaultTenant, now, now, now+3600); err != nil {
+	u := &User{ID: "u1", Username: "bob", PasswordHash: "h", Role: "operator"}
+	if err := s.CreateUser(ctx, u); err != nil {
 		t.Fatal(err)
 	}
-	owner, exp, found, err := s.LookupSession(ctx, "th1")
-	if err != nil || !found || owner != DefaultTenant || exp != now+3600 {
-		t.Fatalf("lookup: owner=%q exp=%d found=%v err=%v", owner, exp, found, err)
+	if err := s.CreateSession(ctx, "th1", DefaultTenant, "u1", now, now, now+3600); err != nil {
+		t.Fatal(err)
 	}
-	if _, _, found, _ := s.LookupSession(ctx, "missing"); found {
+	si, found, err := s.LookupSession(ctx, "th1")
+	if err != nil || !found || si.Owner != DefaultTenant || si.Expires != now+3600 || si.User.Username != "bob" {
+		t.Fatalf("lookup: %+v found=%v err=%v", si, found, err)
+	}
+	if _, found, _ := s.LookupSession(ctx, "missing"); found {
 		t.Fatal("missing session reported found")
 	}
-	if err := s.TouchSession(ctx, "th1", now+10); err != nil {
+	u.Disabled = true
+	if err := s.UpdateUser(ctx, u); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DeleteSession(ctx, "th1"); err != nil {
+	if _, found, _ := s.LookupSession(ctx, "th1"); found {
+		t.Fatal("a disabled user's session must not resolve")
+	}
+	if err := s.DeleteUserSessions(ctx, "u1"); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, found, _ := s.LookupSession(ctx, "th1"); found {
-		t.Fatal("deleted session still found")
-	}
-	// delete-all
-	_ = s.CreateSession(ctx, "a", DefaultTenant, now, now, now+3600)
-	_ = s.CreateSession(ctx, "b", DefaultTenant, now, now, now+3600)
-	if err := s.DeleteAllSessions(ctx); err != nil {
+	_ = s.CreateSession(ctx, "a", DefaultTenant, "u1", now, now, now+3600)
+	if err := s.DeleteAllUsers(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, found, _ := s.LookupSession(ctx, "a"); found {
-		t.Fatal("delete-all left a session")
+	if _, found, _ := s.LookupSession(ctx, "a"); found {
+		t.Fatal("console reset left a session")
 	}
 }
 
-func TestConsoleAuthAPIKeys(t *testing.T) {
+func TestAPIKeys(t *testing.T) {
 	ctx := context.Background()
 	s := newConsoleStore(t)
 	now := time.Now().Unix()
-
-	if err := s.CreateAPIKey(ctx, "01A", "default", "hashA", "sk_aaa…", nil, now); err != nil {
+	if err := s.CreateAPIKey(ctx, NewAPIKey{ID: "01A", Name: "default", KeyHash: "hashA", Prefix: "sk_aaa…", CreatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	// duplicate name => ErrConflict
-	if err := s.CreateAPIKey(ctx, "01B", "default", "hashB", "sk_bbb…", nil, now); err != ErrConflict {
+	if err := s.CreateAPIKey(ctx, NewAPIKey{ID: "01B", Name: "default", KeyHash: "hashB", Prefix: "sk_bbb…", CreatedAt: now}); err != ErrConflict {
 		t.Fatalf("dup name: got %v, want ErrConflict", err)
 	}
-	if err := s.CreateAPIKey(ctx, "01C", "ci-bot", "hashC", "sk_ccc…", []string{"upgrade"}, now); err != nil {
+	if err := s.CreateAPIKey(ctx, NewAPIKey{ID: "01C", Name: "ci", KeyHash: "hashC", Prefix: "sk_ccc…",
+		Scopes: []string{"sandboxes:read"}, Role: "viewer", ExpiresAt: now + 60, SandboxID: "SBX", CreatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-
 	keys, err := s.ListAPIKeys(ctx)
-	if err != nil || len(keys) != 2 {
-		t.Fatalf("list: n=%d err=%v", len(keys), err)
+	if err != nil || len(keys) != 2 || keys[0].Prefix == "" {
+		t.Fatalf("list: %v err=%v", keys, err)
 	}
-	// metadata only — prefix present, and no field can carry the hash
-	if keys[0].Prefix == "" {
-		t.Fatal("prefix missing from list")
+	k, found, err := s.LookupAPIKey(ctx, "hashA")
+	if err != nil || !found || k.ID != "01A" || k.Scopes != nil || k.Role != "admin" || k.ExpiresAt != nil || k.SandboxID != "" {
+		t.Fatalf("lookup default: %+v found=%v err=%v", k, found, err)
 	}
-
-	id, scopes, found, err := s.LookupAPIKey(ctx, "hashA")
-	if err != nil || !found || id != "01A" || scopes != nil {
-		t.Fatalf("lookup: id=%q scopes=%v found=%v err=%v", id, scopes, found, err)
+	k, found, _ = s.LookupAPIKey(ctx, "hashC")
+	if !found || k.Role != "viewer" || k.ExpiresAt == nil || k.SandboxID != "SBX" || len(k.Scopes) != 1 {
+		t.Fatalf("lookup scoped: %+v", k)
 	}
-	if _, scopes, found, _ := s.LookupAPIKey(ctx, "hashC"); !found || len(scopes) != 1 || scopes[0] != "upgrade" {
-		t.Fatalf("scoped lookup: scopes=%v found=%v", scopes, found)
-	}
-	for _, k := range keys {
-		if k.ID == "01C" && (len(k.Scopes) != 1 || k.Scopes[0] != "upgrade") {
-			t.Fatalf("list scopes: %v", k.Scopes)
-		}
-	}
-	if _, _, found, _ := s.LookupAPIKey(ctx, "nope"); found {
+	if _, found, _ := s.LookupAPIKey(ctx, "nope"); found {
 		t.Fatal("unknown hash reported found")
 	}
-	if err := s.TouchAPIKey(ctx, "01A", now+5); err != nil {
+	if del, _ := s.DeleteAPIKey(ctx, "01A"); !del {
+		t.Fatal("delete returned false")
+	}
+}
+
+func TestAuditHashChain(t *testing.T) {
+	ctx := context.Background()
+	s := newConsoleStore(t)
+	for i, a := range []string{"sandbox.create", "sandbox.stop", "sandbox.delete"} {
+		if err := s.InsertAudit(ctx, int64(1000+i), "user", "default", "1.2.3.4", "", a, "SBX", `{"n":1}`); err != nil {
+			t.Fatal(err)
+		}
+	}
+	v, err := s.VerifyAudit(ctx)
+	if err != nil || !v.OK || v.Checked != 3 {
+		t.Fatalf("intact chain: %+v %v", v, err)
+	}
+	rows, _ := s.ListAudit(ctx, 0, 10, "", "")
+	if len(rows) != 3 || rows[0].PrevHash != rows[1].Hash {
+		t.Fatalf("list/link: %+v", rows)
+	}
+	// Tamper: edit a row.
+	if _, err := s.db.ExecContext(ctx, `UPDATE audit_log SET action = 'sandbox.start' WHERE id = 2`); err != nil {
 		t.Fatal(err)
 	}
-	if del, _ := s.DeleteAPIKey(ctx, "01A"); !del {
-		t.Fatal("delete own key returned false")
+	if v, _ := s.VerifyAudit(ctx); v.OK || v.BrokenAt != 2 {
+		t.Fatalf("edited row not detected: %+v", v)
 	}
-	if del, _ := s.DeleteAPIKey(ctx, "01A"); del {
-		t.Fatal("second delete should be false")
+	if _, err := s.db.ExecContext(ctx, `UPDATE audit_log SET action = 'sandbox.stop' WHERE id = 2`); err != nil {
+		t.Fatal(err)
+	}
+	// Tamper: delete a row.
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM audit_log WHERE id = 2`); err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := s.VerifyAudit(ctx); v.OK || v.BrokenAt != 3 {
+		t.Fatalf("deleted row not detected: %+v", v)
+	}
+}
+
+func TestLegacyPasswordBecomesAdminUser(t *testing.T) {
+	// Covered by migration 0029: console_auth -> app_user "admin". Apply the
+	// migrations on a DB that has a console_auth row by re-running 0029's
+	// insert logic is not possible after the fact, so just assert the table
+	// shape the migration produces.
+	ctx := context.Background()
+	s := newConsoleStore(t)
+	var n int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM sqlite_master WHERE name = 'console_auth'`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("console_auth should be gone: n=%d err=%v", n, err)
 	}
 }

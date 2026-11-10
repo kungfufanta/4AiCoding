@@ -59,6 +59,10 @@ type Sandbox struct {
 	ExternalProjectID   sql.NullString
 	ExternalWorkspaceID sql.NullString
 	Visibility          string
+
+	// Spec (0028) is the per-sandbox runtime spec: image, command, env,
+	// resources. Zero value = instance defaults.
+	Spec Spec
 }
 
 // WorkspaceOwner is the durable sandbox_id -> upstream-identity
@@ -152,11 +156,9 @@ func (s *Store) Get(ctx context.Context, id string) (*Sandbox, error) {
 	if err != nil {
 		return nil, err
 	}
-	ports, err := s.portsFor(ctx, id)
-	if err != nil {
+	if err := s.fill(ctx, sb); err != nil {
 		return nil, err
 	}
-	sb.Ports = ports
 	return sb, nil
 }
 
@@ -183,11 +185,9 @@ func (s *Store) List(ctx context.Context) ([]*Sandbox, error) {
 		out = append(out, sb)
 	}
 	for _, sb := range out {
-		ports, err := s.portsFor(ctx, sb.ID)
-		if err != nil {
+		if err := s.fill(ctx, sb); err != nil {
 			return nil, err
 		}
-		sb.Ports = ports
 	}
 	return out, nil
 }
@@ -227,29 +227,19 @@ func (s *Store) ListByStatuses(ctx context.Context, statuses ...string) ([]*Sand
 		out = append(out, sb)
 	}
 	for _, sb := range out {
-		ports, err := s.portsFor(ctx, sb.ID)
-		if err != nil {
+		if err := s.fill(ctx, sb); err != nil {
 			return nil, err
 		}
-		sb.Ports = ports
 	}
 	return out, nil
 }
 
-// ListIdleCandidates returns rows whose status='running' AND
-// last_active_at < cutoff, ordered by last_active_at ascending
-// (oldest first). The idle reaper uses this; it must still apply
-// the inflight-exec / keepalive / open-connection skip rules in
-// memory before calling docker stop.
-func (s *Store) ListIdleCandidates(ctx context.Context, cutoff time.Time) ([]*Sandbox, error) {
+// ListPressureCandidates returns running, non-always_on sandboxes last
+// active before cutoff, least recently active first (memory-pressure reaper;
+// per-sandbox idle timeouts do not protect a sandbox from pressure).
+func (s *Store) ListPressureCandidates(ctx context.Context, cutoff time.Time) ([]*Sandbox, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, status, image, workspace_img, workspace_mnt,
-		       container_id, cgroup_path, memory_high, error_message,
-		       created_at, updated_at,
-		       last_active_at, stopped_at, keepalive_until,
-		       container_ip,
-		       external_user_id, external_project_id, external_workspace_id, visibility,
-		       idle_policy, web_port
+		SELECT `+sandboxSelectCols+`
 		  FROM sandbox
 		 WHERE status='running' AND last_active_at < ? AND idle_policy != 'always_on'
 		 ORDER BY last_active_at ASC`, cutoff.Unix())
@@ -263,6 +253,41 @@ func (s *Store) ListIdleCandidates(ctx context.Context, cutoff time.Time) ([]*Sa
 		if err != nil {
 			return nil, err
 		}
+		out = append(out, sb)
+	}
+	return out, nil
+}
+
+// ListIdleCandidates returns running, non-always_on sandboxes whose last
+// activity is older than their idle timeout (oldest first). The idle reaper
+// must still apply the inflight-exec / keepalive skip rules in memory.
+// The timeout is: the per-sandbox
+// sandbox_spec.idle_timeout_secs when set, else defaultThreshold.
+func (s *Store) ListIdleCandidates(ctx context.Context, now time.Time, defaultThreshold time.Duration) ([]*Sandbox, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT s.id, s.status, s.image, s.workspace_img, s.workspace_mnt,
+		       s.container_id, s.cgroup_path, s.memory_high, s.error_message,
+		       s.created_at, s.updated_at,
+		       s.last_active_at, s.stopped_at, s.keepalive_until,
+		       s.container_ip,
+		       s.external_user_id, s.external_project_id, s.external_workspace_id, s.visibility,
+		       s.idle_policy, s.web_port, COALESCE(sp.idle_timeout_secs, 0)
+		  FROM sandbox s LEFT JOIN sandbox_spec sp ON sp.sandbox_id = s.id
+		 WHERE s.status='running' AND s.idle_policy != 'always_on'
+		   AND s.last_active_at < ? - COALESCE(sp.idle_timeout_secs, ?)
+		 ORDER BY s.last_active_at ASC`, now.Unix(), int64(defaultThreshold.Seconds()))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*Sandbox
+	for rows.Next() {
+		var idle int
+		sb, err := scanSandboxExtra(rows, &idle)
+		if err != nil {
+			return nil, err
+		}
+		sb.Spec.IdleTimeoutSecs = idle
 		out = append(out, sb)
 	}
 	// Ports aren't needed for the idle decision; skip the per-row
@@ -291,10 +316,14 @@ type scanner interface {
 	Scan(dest ...any) error
 }
 
-func scanSandbox(s scanner) (*Sandbox, error) {
+func scanSandbox(s scanner) (*Sandbox, error) { return scanSandboxExtra(s) }
+
+// scanSandboxExtra scans the standard sandbox columns followed by extra
+// destinations (for queries that append computed columns).
+func scanSandboxExtra(s scanner, extra ...any) (*Sandbox, error) {
 	sb := &Sandbox{}
 	var createdUnix, updatedUnix, lastActiveUnix int64
-	err := s.Scan(
+	dest := []any{
 		&sb.ID, &sb.Status, &sb.Image, &sb.WorkspaceImg, &sb.WorkspaceMnt,
 		&sb.ContainerID, &sb.CgroupPath, &sb.MemoryHigh, &sb.ErrorMessage,
 		&createdUnix, &updatedUnix,
@@ -303,7 +332,8 @@ func scanSandbox(s scanner) (*Sandbox, error) {
 		&sb.ExternalUserID, &sb.ExternalProjectID, &sb.ExternalWorkspaceID, &sb.Visibility,
 		&sb.IdlePolicy,
 		&sb.WebPort,
-	)
+	}
+	err := s.Scan(append(dest, extra...)...)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -360,11 +390,9 @@ func (s *Store) ListFiltered(ctx context.Context, externalUserID, externalProjec
 		out = append(out, sb)
 	}
 	for _, sb := range out {
-		ports, err := s.portsFor(ctx, sb.ID)
-		if err != nil {
+		if err := s.fill(ctx, sb); err != nil {
 			return nil, err
 		}
-		sb.Ports = ports
 	}
 	return out, nil
 }
