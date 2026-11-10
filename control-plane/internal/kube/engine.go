@@ -31,6 +31,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -420,6 +421,7 @@ func (e *Engine) ListByNamePrefix(ctx context.Context, prefix string) ([]string,
 			names = append(names, p.Metadata.Name)
 		}
 	}
+	sort.Strings(names) // deterministic for the reconciler and tests
 	return names, nil
 }
 
