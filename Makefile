@@ -1,6 +1,6 @@
 # 4AiCoding — control plane (control-plane/, Go).
 .DEFAULT_GOAL := help
-.PHONY: help test lint fmt build e2e up down logs clean
+.PHONY: help test lint fmt build e2e console console-dev up down logs clean
 
 CP := control-plane
 
@@ -25,7 +25,13 @@ e2e: build ## Lifecycle e2e against the local Docker daemon
 	docker build -t sandboxd-e2e:local scripts/e2e
 	sudo SANDBOXD_IMAGE=sandboxd-e2e:local SANDBOXD_BIN=$(CURDIR)/bin/sandboxd bash scripts/e2e.sh
 
-up: ## Bring up control plane + edge
+console: ## Typecheck + build the web console (console/dist)
+	cd console && pnpm install --frozen-lockfile && pnpm build
+
+console-dev: ## Console dev server, proxying /v1 to 127.0.0.1:9090
+	cd console && pnpm install && pnpm dev
+
+up: ## Bring up control plane + edge + console
 	docker compose up -d --build
 
 down: ## Tear it down
@@ -35,4 +41,4 @@ logs: ## Tail the control plane
 	docker compose logs -f sandboxd
 
 clean: ## Remove local build artifacts
-	rm -rf bin
+	rm -rf bin console/dist

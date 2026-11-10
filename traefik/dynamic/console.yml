@@ -1,0 +1,18 @@
+# The web console (console/), reached at
+#   http://console.<domain>            (PREVIEW_HOST_STYLE=nested, default)
+#   http://console[--<tag>].<domain>   (PREVIEW_HOST_STYLE=flat)
+# e.g. http://console.localhost. The console container serves the SPA and
+# proxies /v1 to sandboxd on the same origin, so the session cookie needs no
+# CORS. Delete this file to make the console unreachable through Traefik.
+http:
+  routers:
+    console:
+      rule: "HostRegexp(`^console(--[a-z0-9-]+)?\\..+$`)"
+      entryPoints: [web]
+      service: console
+      priority: 100
+  services:
+    console:
+      loadBalancer:
+        servers:
+          - url: "http://sandboxd-console:8080"

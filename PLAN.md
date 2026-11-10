@@ -203,7 +203,7 @@ Mọi thứ chạy trong sandbox, kể cả một agent "toàn quyền" sau này
 | **M3a** | Image theo từng sandbox, `command`, `network/ports`, `metrics`, `volumes`; bảo mật mục 8 #1, #3, #7, #13 | Curl được, có unit test và e2e | ✅ |
 | **M3b** | `domain`, `policy` + PDP, session login + bootstrap admin, `lifecycle/keep-alive`, egress deny-by-default, API key TTL/scope, audit hash chain | Curl được, có unit test; e2e egress | ✅ |
 | **M3c** | Hàng đợi phê duyệt (human-in-the-loop) | API approvals + unit test | ✅ |
-| **M4** | Viết lại `console/` (Login + 5 trang) | `pnpm build` xanh | |
+| **M4** | Viết lại `console/` (Login + 5 trang) | `pnpm build` xanh; smoke test trình duyệt với sandboxd thật | ✅ |
 | **M5** | CI đầy đủ (unit + e2e + console build) + PR preview workflow | CI xanh trên PR | |
 | **M6** | Worker mode: `--control-plane-url`, đăng ký fleet, `/v1/nodes/*` | 2 worker đăng ký từ 2 máy | |
 | **M7** | k3s B1: worker pod + Helm chart tối giản | Worker k3s join fleet | |

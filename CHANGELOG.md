@@ -6,6 +6,19 @@ All notable changes to 4AiCoding. The project started from
 
 ## Unreleased
 
+### M4 — web console
+- New `console/`: React 19 + TypeScript SPA built with Vite, no runtime
+  dependencies besides React. Screens: login / first-run setup, sandbox list,
+  sandbox detail (logs with SSE follow, exec, live metrics, keep-alive,
+  delete), new sandbox (every spec field, with the matching curl), network
+  (preview ports, egress allowlist) and admin (policy, approvals, users,
+  API keys, audit log with chain verification, domain and certificates).
+- Every unsafe request sends `X-Sandboxd-CSRF`; actions that need approval
+  show the approval id and accept it on retry.
+- Served by an unprivileged, read-only nginx container that proxies `/v1` to
+  sandboxd on the same origin; Traefik routes `console.<domain>` to it.
+- CI builds the console (`console` job); `make console` / `make console-dev`.
+
 ### M3b/M3c — users, policy, egress, approvals, domain
 - Console users with roles `admin`, `operator` and `viewer` (migration `0029`
   turns the old single password into user `admin`). `SANDBOXD_BOOTSTRAP_ADMIN`
