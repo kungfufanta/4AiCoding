@@ -57,6 +57,12 @@ type Manager struct {
 	DockerBin string // "docker"; injectable for tests
 	Userns    string // --userns for the seed container ("host" by default)
 
+	// SeedFn (M8) replaces the docker seed container when the executor
+	// runs on the kubernetes engine: it seeds one workspace directory
+	// (host path) with the same skeleton + ownership the docker path
+	// produces. nil = the docker seed below.
+	SeedFn func(ctx context.Context, dir string) error
+
 	Log *slog.Logger // optional; ownership normalization is logged when set
 }
 
@@ -107,6 +113,13 @@ func (m *Manager) Provision(ctx context.Context, id string) error {
 	// as. No userns-remap in the OSS default, so host uid == container
 	// uid on the bind mount and the control plane (root) can always
 	// read/write the result.
+	if m.SeedFn != nil {
+		if err := m.SeedFn(ctx, dir); err != nil {
+			return fmt.Errorf("seed: %w", err)
+		}
+		return nil
+	}
+
 	seed := []string{
 		"run", "--rm",
 		"-v", dir + ":/target",

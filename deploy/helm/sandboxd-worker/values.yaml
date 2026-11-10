@@ -44,7 +44,22 @@ heartbeatIntervalSeconds: 10
 
 executor:
   enabled: false
-  # Sandbox image the node runs (must be available to the node's Docker).
+  # Sandbox executor engine (M8):
+  #   - docker: sandboxes are containers on the node's Docker daemon
+  #     (the default; needs executor.dockerSocket).
+  #   - kubernetes: sandboxes are Pods (+Service/NetworkPolicy/Ingress)
+  #     in executor.namespace, driven through the Kubernetes API. Needs
+  #     the ServiceAccount RBAC this chart renders for it.
+  engine: docker
+  # Kubernetes engine: namespace for sandbox pods ("" = the release
+  # namespace), Ingress hosts for preview URLs ("" = PREVIEW_DOMAIN on
+  # the executor), ingress class, and the pod label selector (k=v,k=v)
+  # sandbox egress may additionally reach (the egress proxy pods).
+  namespace: ""
+  ingressDomain: ""
+  ingressClass: ""
+  proxySelector: ""
+  # Sandbox image the node runs (must be pullable in the cluster).
   sandboxImage: ""
   # Port the node API listens on, on the node's IP (host network). The
   # control plane calls http://<node InternalIP>:<port>; only its node token

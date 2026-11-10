@@ -153,6 +153,7 @@ func Build(sb *store.Sandbox, e Env) docker.RunSpec {
 		Env:         env,
 		Volumes:     volumes,
 		Labels:      labels,
+		Ports:       ports,
 		User:        user,
 		Image:       DesiredImage(sb, e.Image),
 		Cmd:         append([]string(nil), sb.Spec.Command...),

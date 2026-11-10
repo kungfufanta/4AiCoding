@@ -59,7 +59,7 @@ type Server struct {
 	DomainResolver domain.Resolver
 
 	Store         *store.Store
-	Docker        *docker.Client
+	Docker        docker.Engine
 	Loopback      *loopback.Manager
 	Log           *slog.Logger
 	PreviewDomain string

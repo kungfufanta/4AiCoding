@@ -56,6 +56,7 @@ type Node struct {
 	Capacity     Capacity
 	Used         Capacity // worker-reported; zero value = derive from placements
 	DrainState   string
+	Engine       string // docker | kubernetes (M8); "" = docker
 	RegisteredAt time.Time
 	HeartbeatAt  time.Time
 }
@@ -90,7 +91,7 @@ func scanNode(sc scanner) (*Node, error) {
 	var capacityJSON, usedJSON string
 	var registered, heartbeat int64
 	err := sc.Scan(&n.NodeID, &n.Role, &n.Address, &n.Version,
-		&capacityJSON, &usedJSON, &n.DrainState, &registered, &heartbeat)
+		&capacityJSON, &usedJSON, &n.DrainState, &n.Engine, &registered, &heartbeat)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -102,12 +103,15 @@ func scanNode(sc scanner) (*Node, error) {
 	if n.DrainState == "" {
 		n.DrainState = DrainActive
 	}
+	if n.Engine == "" {
+		n.Engine = "docker"
+	}
 	n.RegisteredAt = time.Unix(registered, 0).UTC()
 	n.HeartbeatAt = time.Unix(heartbeat, 0).UTC()
 	return n, nil
 }
 
-const nodeSelectCols = `node_id, role, address, version, capacity_json, used_json, drain_state, registered_at, heartbeat_at`
+const nodeSelectCols = `node_id, role, address, version, capacity_json, used_json, drain_state, engine, registered_at, heartbeat_at`
 
 // GetNode returns one fleet member or ErrNotFound.
 func (s *Store) GetNode(ctx context.Context, nodeID string) (*Node, error) {
@@ -150,18 +154,23 @@ func (s *Store) UpsertNode(ctx context.Context, n *Node) error {
 			return err
 		}
 		now := time.Now().Unix()
+		engine := n.Engine
+		if engine == "" {
+			engine = "docker"
+		}
 		_, err = db.ExecContext(ctx, `
                         INSERT INTO nodes (node_id, role, address, version, capacity_json, used_json,
-                                           drain_state, registered_at, heartbeat_at)
-                        VALUES (?, ?, ?, ?, ?, '{}', ?, ?, ?)
+                                           drain_state, engine, registered_at, heartbeat_at)
+                        VALUES (?, ?, ?, ?, ?, '{}', ?, ?, ?, ?)
                         ON CONFLICT(node_id) DO UPDATE SET
                             role          = excluded.role,
                             address       = excluded.address,
                             version       = excluded.version,
                             capacity_json = excluded.capacity_json,
+                            engine        = excluded.engine,
                             heartbeat_at  = excluded.heartbeat_at`,
 			n.NodeID, n.Role, n.Address, n.Version, string(capJSON),
-			DrainActive, now, now)
+			DrainActive, engine, now, now)
 		return err
 	})
 }

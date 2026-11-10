@@ -21,7 +21,7 @@ import (
 // store.UpsertNode). Capacity defaults come from env (SANDBOXD_CAPACITY_*),
 // falling back to the machine: NumCPU and MemTotal. Unreportable
 // dimensions stay 0 (= unreported).
-func ensureLocalNode(ctx context.Context, st *store.Store, log *slog.Logger) string {
+func ensureLocalNode(ctx context.Context, st *store.Store, log *slog.Logger, engine string) string {
 	nodeID := envDefault("SANDBOXD_NODE_ID", "local")
 	if !store.ValidNodeID(nodeID) {
 		log.Error("startup: invalid SANDBOXD_NODE_ID; fleet placement disabled", "node_id", nodeID)
@@ -42,6 +42,7 @@ func ensureLocalNode(ctx context.Context, st *store.Store, log *slog.Logger) str
 		Role:     store.RoleLocal,
 		Version:  buildIdentString(),
 		Capacity: capacity,
+		Engine:   engine,
 	}
 	if err := st.UpsertNode(ctx, n); err != nil {
 		// Fleet rows are additive: a failure here must not keep the

@@ -36,7 +36,7 @@ import (
 //     no Host that matches preview shape) → JSON.
 type Handler struct {
 	Store  *store.Store
-	Docker *docker.Client
+	Docker docker.Engine
 	Hosts  previewhost.Scheme
 	Cfg    Config
 	Admit  AdmitConfig
@@ -115,7 +115,7 @@ type jsonErrResp struct {
 }
 
 // New returns a Handler. The host regex is compiled once.
-func New(s *store.Store, d *docker.Client, hosts previewhost.Scheme, cfg Config, admit AdmitConfig, eg *egress.Manager, locks *idlock.Registry, log *slog.Logger) (*Handler, error) {
+func New(s *store.Store, d docker.Engine, hosts previewhost.Scheme, cfg Config, admit AdmitConfig, eg *egress.Manager, locks *idlock.Registry, log *slog.Logger) (*Handler, error) {
 	if cfg.RefreshSeconds <= 0 {
 		cfg.RefreshSeconds = 2
 	}

@@ -143,6 +143,8 @@ jobs:
           helm lint deploy/helm/sandboxd-worker --set controlPlane.url=http://cp:9000 --set workerToken.value=t
           helm lint deploy/helm/sandboxd-worker --set controlPlane.url=http://cp:9000 --set workerToken.value=t \
             --set executor.enabled=true --set executor.sandboxImage=sandboxd-base:0.3.0
+          helm lint deploy/helm/sandboxd-worker --set controlPlane.url=http://cp:9000 --set workerToken.value=t \
+            --set executor.enabled=true --set executor.engine=kubernetes --set executor.sandboxImage=sandboxd-base:0.3.0
 
       - name: build sandboxd
         run: cd control-plane && go build -o "$RUNNER_TEMP/sandboxd" ./cmd/sandboxd
@@ -158,7 +160,7 @@ jobs:
             INSTALL_K3S_EXEC="--disable traefik --disable metrics-server --write-kubeconfig-mode 644" sh -
           docker save sandboxd:ci | sudo k3s ctr images import -
 
-      - name: k3s e2e (worker pod joins the fleet, executor runs a sandbox)
+      - name: k3s e2e (worker pod, docker executor, kubernetes engine sandbox=pod)
         env:
           SANDBOXD_IMAGE: sandboxd-e2e:ci
           SANDBOXD_BIN: ${{ runner.temp }}/sandboxd

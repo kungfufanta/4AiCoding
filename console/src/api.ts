@@ -210,6 +210,7 @@ export interface NodeInfo {
   role: "local" | "worker" | string;
   status: "online" | "offline" | string;
   drain_state: "active" | "drain" | string;
+  engine: "docker" | "kubernetes" | string;
   address?: string;
   version?: string;
   capacity: NodeAmount;

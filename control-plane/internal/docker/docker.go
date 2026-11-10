@@ -58,8 +58,13 @@ type RunSpec struct {
 	User        string   // --user uid:gid ("" = the image's user)
 	ShmSize     string   // --shm-size (e.g. 1g for a browser); "" = docker default
 	Restart     string   // --restart policy ("" = none)
-	Image       string   // last positional
-	Cmd         []string // optional CMD override
+	// Ports are the sandbox's preview ports (the resolved set incl. the
+	// web port). The docker engine ignores them (Traefik reaches the
+	// container over sandboxd_net via labels); the kubernetes engine
+	// exposes them on the sandbox's Service (M8).
+	Ports []int    // informational for docker; Service ports on kubernetes
+	Image string   // last positional
+	Cmd   []string // optional CMD override
 }
 
 // Run starts the container detached and returns its 12-char short ID.

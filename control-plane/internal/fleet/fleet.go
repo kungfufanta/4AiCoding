@@ -196,6 +196,9 @@ type RegisterRequest struct {
 	// this worker's API. Only executor workers send one; once stored, a
 	// re-register of the same node id must present the same token.
 	APIToken string `json:"api_token,omitempty"`
+	// Engine (M8) is the sandbox executor this node runs: "docker"
+	// (default) or "kubernetes" (sandboxes become Pods).
+	Engine string `json:"engine,omitempty"`
 }
 
 type RegisterResponse struct {

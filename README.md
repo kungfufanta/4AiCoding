@@ -134,6 +134,16 @@ A worker in **executor mode** is a full sandboxd on its own machine that runs sa
 - Approvals stay on the control plane: a gated request (public preview, deleting a keep-alive sandbox, egress outside the policy) is parked and approved there, then forwarded. The control plane's policy is pushed to every executor on each heartbeat.
 - Limits today: snapshots and `from_snapshot` creates stay on the control plane, and each executor serves previews through its own edge (set its `PREVIEW_DOMAIN`). Private preview auth across nodes is not wired yet.
 
+### Sandboxes as Kubernetes Pods (M8, k3s B2)
+
+An executor on Kubernetes does not have to drive Docker at all. Start it with `SANDBOXD_EXECUTOR_ENGINE=kubernetes` (or `--set executor.engine=kubernetes`) and every sandbox becomes a **Pod** in the worker's namespace, wrapped in a **Service** (its preview ports), a **NetworkPolicy** (egress deny-by-default: only cluster DNS, plus the pods named by `SANDBOXD_K8S_PROXY_SELECTOR` — where the egress proxy env already points sandboxes) and, when a preview domain is set, an **Ingress** rule per preview port (the same hosts the docker edge serves).
+
+- Hardening carries over from the docker path and is enforced by the pod spec: non-root (`1000:1000`), read-only rootfs, all capabilities dropped, no privilege escalation, `RuntimeDefault` seccomp, tmpfs as `emptyDir`, resource limits from the spec — and **no service-account token**: a sandbox can never reach the Kubernetes API.
+- Workspaces stay on the node (the executor's data dir is a hostPath), so the same workspace tree survives stop/start; the one-shot skeleton seed runs as a Kubernetes Job instead of a docker container.
+- `Stop` deletes the Pod and `Start`/wake recreates it from the spec the engine persisted — a "stopped" sandbox has no running cost on the cluster, exactly like a stopped container on Docker.
+- The chart renders the least-privilege Role the engine needs (pods/log/exec, services, networkpolicies, ingresses, seed Jobs) when `executor.engine=kubernetes`. Metrics (`/metrics`) answer "unsupported" on this engine until a cluster metrics backend is wired.
+- The engine speaks the raw Kubernetes REST API (in-cluster or `SANDBOXD_KUBECONFIG`) with a hand-rolled exec-over-WebSocket client — no client-go in the module.
+
 ## Repository layout
 
 ```
