@@ -172,7 +172,7 @@ code="$(curl -s -m30 -o "$DD/last.body" -w '%{http_code}' -XPOST "$API/v1/sandbo
 grep -q "draining" "$DD/last.body" || fail "503 body does not mention draining: $(cat "$DD/last.body")"
 code="$(http POST /v1/nodes/local/undrain 10)"
 [ "$code" = "200" ] || fail "undrain local = $code"
-code="$(http POST /v1/sandboxes 30)"
+code="$(curl -s -m30 -o /dev/null -w '%{http_code}' -XPOST "$API/v1/sandboxes" -H 'content-type: application/json' -d '{}')"
 [ "$code" = "201" ] || fail "create after undrain = $code, want 201"
 log "drain block ✓"
 
@@ -185,7 +185,7 @@ for _ in $(seq 1 10); do
   sleep 1
 done
 grep -q "DRAINED" "$DD/w1.log" || fail "w1 never learned it was drained: $(cat "$DD/w1.log")"
-code="$(http POST /v1/sandboxes 30)"
+code="$(curl -s -m30 -o /dev/null -w '%{http_code}' -XPOST "$API/v1/sandboxes" -H 'content-type: application/json' -d '{}')"
 [ "$code" = "201" ] || fail "create while a worker is drained = $code, want 201 (local still active)"
 code="$(http POST /v1/nodes/w1/undrain 10)"
 [ "$code" = "200" ] || fail "undrain w1 = $code"
