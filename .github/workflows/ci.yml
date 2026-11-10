@@ -1,0 +1,78 @@
+name: ci
+
+on:
+  push:
+    branches: [main, minimal, "claude/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Unit tests: fast, no Docker daemon needed.
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: control-plane
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: control-plane/go.mod
+          cache-dependency-path: control-plane/go.sum
+
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-clean:"
+            echo "$unformatted"
+            echo "Run: gofmt -w ."
+            exit 1
+          fi
+
+      - name: vet
+        run: go vet ./...
+
+      - name: build
+        run: go build ./...
+
+      - name: test
+        run: go test -race -count=1 ./...
+
+  # Integration: run the real sandboxd binary against the runner's Docker
+  # daemon and drive the sandbox lifecycle over HTTP (scripts/e2e.sh).
+  integration:
+    needs: unit
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: control-plane/go.mod
+          cache-dependency-path: control-plane/go.sum
+
+      - name: build sandboxd
+        run: cd control-plane && go build -o "$RUNNER_TEMP/sandboxd" ./cmd/sandboxd
+
+      - name: build e2e sandbox image
+        run: docker build -t sandboxd-e2e:ci scripts/e2e
+
+      - name: lifecycle e2e
+        env:
+          SANDBOXD_IMAGE: sandboxd-e2e:ci
+          SANDBOXD_BIN: ${{ runner.temp }}/sandboxd
+        run: bash scripts/e2e.sh
+
+      - name: leftover containers
+        if: always()
+        run: docker ps -a --filter "label=sandboxd.managed=true"
