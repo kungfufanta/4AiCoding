@@ -21,39 +21,24 @@ concurrency:
 jobs:
   deploy:
     name: deploy PVE1 control plane
-    runs-on: ubuntu-latest
+    # This runner lives on the PVE1 control-plane VM. GitHub-hosted runners
+    # cannot reach its private 192.168.1.0/24 address and we intentionally do
+    # not expose SSH through the Internet.
+    runs-on: [self-hosted, linux, x64, 4aicoding-control]
     environment: pve1-4aicoding
     steps:
       - uses: actions/checkout@v7
-      - name: Configure deployment SSH identity
-        env:
-          DEPLOY_KEY: ${{ secrets.PVE1_4AICODING_DEPLOY_SSH_KEY }}
-          KNOWN_HOSTS: ${{ secrets.PVE1_4AICODING_KNOWN_HOSTS }}
+      - name: Deploy exact source revision locally
         run: |
-          set -eu
-          test -n "$DEPLOY_KEY"
-          test -n "$KNOWN_HOSTS"
-          install -d -m 700 ~/.ssh
-          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/id_ed25519
-          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
-          chmod 600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts
-      - name: Upload exact source revision
-        run: |
-          set -eu
+          set -euo pipefail
           archive="$RUNNER_TEMP/4aicoding-${GITHUB_SHA}.tar.gz"
           git archive --format=tar.gz "$GITHUB_SHA" > "$archive"
-          scp -o BatchMode=yes "$archive" \
-            dhadmin@192.168.1.188:"/tmp/4aicoding-${GITHUB_SHA}.tar.gz"
       - name: Rebuild, health-check, and prune obsolete stack containers
         run: |
-          set -eu
-          ssh -o BatchMode=yes dhadmin@192.168.1.188 \
-            "SHA='${GITHUB_SHA}' bash -s" <<'REMOTE'
           set -euo pipefail
-          archive="/tmp/4aicoding-${SHA}.tar.gz"
+          archive="$RUNNER_TEMP/4aicoding-${GITHUB_SHA}.tar.gz"
           test -f "$archive"
           sudo tar -xzf "$archive" -C /opt/4aicoding
-          rm -f "$archive"
           cd /opt/4aicoding
           sudo docker compose up -d --build --remove-orphans
           for attempt in $(seq 1 30); do
@@ -67,4 +52,3 @@ jobs:
           sudo docker compose ps >&2 || true
           sudo docker compose logs --tail=100 sandboxd >&2 || true
           exit 1
-          REMOTE
