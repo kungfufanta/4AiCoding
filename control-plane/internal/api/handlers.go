@@ -25,8 +25,8 @@ import (
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/logging"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/manifest"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/metrics"
-	"github.com/tastyeffectco/sandboxd/control-plane/internal/snapshot"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/sandboxspec"
+	"github.com/tastyeffectco/sandboxd/control-plane/internal/snapshot"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/store"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/wake"
 )
@@ -80,6 +80,13 @@ type createReq struct {
 	// CPUs / MemoryMB are hard limits, clamped to the instance maximums.
 	CPUs     float64 `json:"cpus,omitempty"`
 	MemoryMB int     `json:"memory_mb,omitempty"`
+	// Egress is the sandbox's outbound allowlist (hostnames), checked
+	// against the policy. Empty = no egress.
+	Egress []string `json:"egress,omitempty"`
+	// IdleTimeoutSecs overrides the instance idle threshold (clamped by policy).
+	IdleTimeoutSecs int `json:"idle_timeout_secs,omitempty"`
+	// KeepAlive = idle_policy "always_on" (needs policy.lifecycle.allow_keep_alive).
+	KeepAlive bool `json:"keep_alive,omitempty"`
 }
 
 type createGitReq struct {
@@ -329,8 +336,12 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid json: "+err.Error())
 		return
 	}
-	spec, specErr := s.buildSpec(specInput{
+	if req.KeepAlive {
+		req.IdlePolicy = "always_on"
+	}
+	spec, decision, specErr := s.buildSpec(r.Context(), specInput{
 		Image: req.Image, Command: req.Command, Env: req.Env, CPUs: req.CPUs, MemoryMB: req.MemoryMB,
+		Ports: req.Ports, Egress: req.Egress, KeepAlive: req.IdlePolicy == "always_on", IdleTimeout: req.IdleTimeoutSecs,
 	})
 	if specErr != nil {
 		writeErr(w, http.StatusBadRequest, specErr.Error())
@@ -342,10 +353,6 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.MemoryHigh == "" {
 		req.MemoryHigh = "4G"
-	}
-	if err := s.checkPorts(req.Ports); err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
-		return
 	}
 	if req.ID == "" {
 		req.ID = newULID()
@@ -652,6 +659,10 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 			log.Warn("create: SetContainerIP failed (continuing; in-memory map already updated)",
 				"err", err.Error())
 		}
+	} else if ip := cj.BridgeIP(); ip != "" {
+		// The egress proxy identifies a sandbox by its source IP, so the IP
+		// is recorded whether or not nftables egress is on.
+		_ = s.Store.SetContainerIP(r.Context(), req.ID, ip)
 	}
 
 	// Seed last_active_at to "now" so a freshly-created sandbox isn't
@@ -668,7 +679,10 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "post-create get: "+err.Error())
 		return
 	}
-	createDetail := map[string]any{"visibility": visibility, "ports": req.Ports}
+	createDetail := map[string]any{"visibility": visibility, "ports": req.Ports, "image": fresh.Image}
+	if len(decision.Clamped) > 0 {
+		createDetail["policy_clamped"] = decision.Clamped
+	}
 	s.auditAction(r, audit.Entry{
 		Action:         "sandbox.create",
 		Target:         req.ID,

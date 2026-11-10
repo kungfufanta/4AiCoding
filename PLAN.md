@@ -182,15 +182,15 @@ Mọi thứ chạy trong sandbox, kể cả một agent "toàn quyền" sau này
 | 1 | **Không bao giờ mount `docker.sock`** hoặc host path tuỳ ý vào sandbox | **Đã có**: `sandboxspec.Build` chỉ mount workspace; có unit test và e2e | ✅ M3a |
 | 2 | Root filesystem read-only, `--cap-drop=ALL`, `no-new-privileges`, giới hạn pids/memory, tmpfs | **Đã có** (e2e đã kiểm tra) | — |
 | 3 | **Không chạy root**: ép `--user 1000:1000` bất kể USER của image | **Đã có**: mọi container chạy `1000:1000` (`SANDBOXD_SANDBOX_USER`); container cũ được tạo lại khi start | ✅ M3a |
-| 4 | Runtime cách ly mạnh: gVisor (`SANDBOXD_RUNTIME=runsc`) và userns-remap | Có sẵn tuỳ chọn | Đưa vào policy ở M3b; microVM/Kata cân nhắc sau M8 |
-| 5 | **Egress deny-by-default** + allowlist domain; chặn `169.254.169.254` (metadata) và dải mạng nội bộ của host | Package `egress` có, nhưng tắt trong bản OSS | M3b |
-| 6 | Chống DNS tunneling: sandbox chỉ dùng resolver do control plane cấp, resolver này chỉ trả lời các domain trong allowlist | Chưa có | M3b |
+| 4 | Runtime cách ly mạnh: gVisor (`SANDBOXD_RUNTIME=runsc`) và userns-remap | Có sẵn tuỳ chọn ở cấp instance (env) | Chưa đưa vào policy; dời sang sau M5. microVM/Kata cân nhắc sau M8 |
+| 5 | **Egress deny-by-default** + allowlist domain; chặn `169.254.169.254` (metadata) và dải mạng nội bộ của host | **Đã có**: `sandboxd_net` là network `internal` (không có route ra ngoài); lối ra duy nhất là egress proxy trong `sandboxd` (`HTTP(S)_PROXY` được tiêm vào sandbox). Proxy nhận diện sandbox theo IP nguồn, chỉ cho host trong allowlist của sandbox (`PUT /v1/sandboxes/{id}/network/egress`), allowlist này phải nằm trong policy. Loopback, link-local (metadata) luôn bị chặn; IP private chỉ được khi allowlist ghi đúng IP đó. e2e kiểm tra | ✅ M3b |
+| 6 | Chống DNS tunneling: sandbox chỉ dùng resolver do control plane cấp, resolver này chỉ trả lời các domain trong allowlist | **Một phần**: proxy tự resolve tên, nên sandbox không cần DNS ra ngoài để truy cập mạng. Rủi ro còn lại: DNS nhúng của Docker trên network `internal` vẫn trả lời tên container; cần xác minh nó không forward tên ngoài trên mọi phiên bản Docker | Resolver riêng: sau M5 |
 | 7 | Sandbox **không kế thừa** env, mount hay network namespace của orchestrator; chỉ nhận env khai báo trong spec | **Đã có**: env được lưu trong spec; unit test và e2e kiểm tra không có biến `SANDBOXD_*` | ✅ M3a |
 | 8 | **Không đưa secret vào sandbox** (env/file). Secret nằm ở control plane (`internal/secrets`, mã hoá at-rest). Sau này có Credential Broker: sandbox yêu cầu hành động, broker thực hiện thay | Secret store có sẵn; broker chưa có | Broker ở sau M5 (khi có agent client) |
-| 9 | **Least privilege cho API client**: API key có scope theo tài nguyên/hành động, có thời hạn (TTL), và có thể gắn với một sandbox | Có scope cơ bản, chưa có TTL hay gắn theo sandbox | M3b |
-| 10 | **Policy Decision Point tập trung**: mọi create/exec/network/port đi qua một hàm `policy.Decide()` duy nhất, và sandbox không có đường gọi tới API admin | Chưa có | M3b |
-| 11 | **Human-in-the-loop**: hành động rủi ro cao (xoá sandbox có `keep_alive`, đổi policy, mở egress ngoài allowlist, expose port public) bị đưa vào hàng đợi `approvals`. Mỗi phê duyệt chỉ dùng được **một lần** cho đúng payload hash, và có hạn | Chưa có | M3c (mới) |
-| 12 | **Audit tamper-evident**: `audit_log` ghi ai, làm gì, khi nào, theo policy nào, kết quả ra sao, nối với nhau bằng hash chain; có endpoint kiểm tra chuỗi | Có audit log, chưa có hash chain | M3b |
+| 9 | **Least privilege cho API client**: API key có scope theo tài nguyên/hành động, có thời hạn (TTL), và có thể gắn với một sandbox | **Đã có**: role (admin/operator/viewer, không vượt người tạo), scope theo nhóm route (`sandboxes:read`, `sandboxes:exec`, …), `ttl_seconds` (giới hạn bởi `SANDBOXD_API_KEY_MAX_TTL_SECONDS`) và `sandbox_id` | ✅ M3b |
+| 10 | **Policy Decision Point tập trung**: mọi create/exec/network/port đi qua một hàm `policy.Decide()` duy nhất, và sandbox không có đường gọi tới API admin | **Đã có**: `internal/policy.Decide` cho create, ports, egress, lifecycle; policy lưu trong `instance_config`, sửa qua `/v1/policy`. Lưu ý: siết policy không tự thu hẹp allowlist egress đã cấp cho sandbox đang có | ✅ M3b |
+| 11 | **Human-in-the-loop**: hành động rủi ro cao (xoá sandbox có `keep_alive`, đổi policy, mở egress ngoài allowlist, expose port public) bị đưa vào hàng đợi `approvals`. Mỗi phê duyệt chỉ dùng được **một lần** cho đúng payload hash, và có hạn | **Đã có**: bật từng loại qua `policy.approvals`; request trả 202 + `approval_id`, admin đăng nhập console duyệt (API key không bao giờ duyệt được), gửi lại đúng request với header `X-Sandboxd-Approval`. Duyệt hết hạn sau 24h, dùng trong 15 phút | ✅ M3c |
+| 12 | **Audit tamper-evident**: `audit_log` ghi ai, làm gì, khi nào, theo policy nào, kết quả ra sao, nối với nhau bằng hash chain; có endpoint kiểm tra chuỗi | **Đã có**: mỗi dòng có `prev_hash`/`hash`; `GET /v1/audit/verify` chỉ ra dòng bị sửa hoặc xoá | ✅ M3b |
 | 13 | Control plane API không bao giờ nhận request từ network mà sandbox truy cập được (`sandboxd_net`) | **Đã có**: Traefik gọi control plane qua network riêng `sandboxd_ctl` (`http://sandboxd-ctl:9000`); `sandboxd` vẫn nằm trên `sandboxd_net` để probe port khi wake, nhưng từ chối (403) mọi request có IP nguồn thuộc subnet của network đó, trừ gateway (chính là host). Lưu ý: nếu publish API ra `0.0.0.0`, sandbox có thể đi vòng qua docker-proxy của host, nên giữ `SANDBOXD_API_BIND` ở `127.0.0.1` | ✅ M3a |
 
 ## 9. Milestone
@@ -201,8 +201,8 @@ Mọi thứ chạy trong sandbox, kể cả một agent "toàn quyền" sau này
 | **M1** | Xoá package/thư mục/route trong danh sách bỏ, sửa `go.mod`, base image không còn runtimed, CI mới (unit + integration Docker thật) | `go build`, `go vet`, `go test -race` xanh; e2e lifecycle xanh | ✅ |
 | **M2** | Dọn phần còn lại (mục 3), chuẩn hoá `/v1/*` (thêm `GET /v1/sandboxes`, `restart`, `exec`, `logs`), giữ nhóm legacy | Route khớp mục 4 (phần lifecycle), e2e pass | ✅ |
 | **M3a** | Image theo từng sandbox, `command`, `network/ports`, `metrics`, `volumes`; bảo mật mục 8 #1, #3, #7, #13 | Curl được, có unit test và e2e | ✅ |
-| **M3b** | `domain`, `policy` + PDP, session login + bootstrap admin, `lifecycle/keep-alive`, egress deny-by-default, API key TTL/scope, audit hash chain | Curl được, có unit test | |
-| **M3c** | Hàng đợi phê duyệt (human-in-the-loop) | API approvals + e2e | |
+| **M3b** | `domain`, `policy` + PDP, session login + bootstrap admin, `lifecycle/keep-alive`, egress deny-by-default, API key TTL/scope, audit hash chain | Curl được, có unit test; e2e egress | ✅ |
+| **M3c** | Hàng đợi phê duyệt (human-in-the-loop) | API approvals + unit test | ✅ |
 | **M4** | Viết lại `console/` (Login + 5 trang) | `pnpm build` xanh | |
 | **M5** | CI đầy đủ (unit + e2e + console build) + PR preview workflow | CI xanh trên PR | |
 | **M6** | Worker mode: `--control-plane-url`, đăng ký fleet, `/v1/nodes/*` | 2 worker đăng ký từ 2 máy | |
@@ -217,7 +217,7 @@ Sau mỗi milestone có một checkpoint: báo kết quả build/test, chờ duy
 - **unit**: `gofmt`, `go vet`, `go build`, `go test -race ./...`.
 - **integration**: build `sandboxd` và image test nhỏ (`scripts/e2e/Dockerfile`), sau đó `scripts/e2e.sh` gọi API thật trên Docker của runner. Các bước: create, kiểm tra container chạy và cờ hardening, exec, validation 400/404, stop/start, delete và xác nhận container đã biến mất. Luôn dọn dẹp trong `trap`.
 
-Từ M3a, e2e sẽ thêm image theo request (`alpine`), policy clamp và từ chối port. Từ M3b thêm login và keep-alive. M5 thêm job console.
+Từ M3a, e2e có thêm image theo request, clamp tài nguyên và từ chối port. Từ M3b có thêm egress proxy (cho phép, từ chối, chặn metadata) và policy. Login, keep-alive và approvals được unit test bao phủ (e2e chạy với auth tắt). M5 thêm job console.
 
 Nguyên tắc: mỗi milestone phải xanh CI; test bằng Docker thật, không mock; luôn có bước cleanup.
 

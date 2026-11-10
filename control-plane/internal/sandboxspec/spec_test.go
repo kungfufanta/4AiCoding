@@ -208,3 +208,14 @@ func TestBuildAppliesSpecImageCommandAndResources(t *testing.T) {
 		t.Errorf("defaults cpus=%q mem=%q cmd=%v", d.CPUs, d.Memory, d.Cmd)
 	}
 }
+
+func TestBuildInjectsEgressProxy(t *testing.T) {
+	sb := &store.Sandbox{ID: "X", WorkspaceMnt: "/w", Spec: store.Spec{Env: map[string]string{"https_proxy": "http://evil", "A": "1"}}}
+	got := strings.Join(Build(sb, Env{Image: "img", EgressProxy: "http://sandboxd-egress:3128"}).Env, " ")
+	if !strings.Contains(got, "HTTPS_PROXY=http://sandboxd-egress:3128") || !strings.Contains(got, "A=1") || strings.Contains(got, "evil") {
+		t.Fatalf("env = %s", got)
+	}
+	if got := Build(sb, Env{Image: "img"}).Env; len(got) != 2 {
+		t.Fatalf("no proxy configured: env = %v", got)
+	}
+}

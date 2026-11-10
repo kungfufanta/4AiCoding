@@ -20,6 +20,12 @@ type Actor struct {
 	// Scopes restricts a service actor to the routes in scopes.go; nil/empty =
 	// unrestricted (console sessions, env-configured tokens, full-access keys).
 	Scopes []string
+	// User is the username (sessions) or API key name.
+	User string
+	// Role is admin | operator | viewer (see roles.go).
+	Role string
+	// SandboxID binds an API key to one sandbox ("" = any).
+	SandboxID string
 }
 
 type actorCtxKey struct{}
@@ -114,7 +120,7 @@ func (m *Middleware) Wrap(next http.Handler) http.Handler {
 		// tenant, unauthenticated. Explicit opt-out; trips the warning banner.
 		if cfg.Disabled {
 			next.ServeHTTP(w, r.WithContext(WithActor(r.Context(),
-				Actor{Kind: "service", Name: "default", IP: ip})))
+				Actor{Kind: "service", Name: "default", IP: ip, Role: RoleAdmin})))
 			return
 		}
 
@@ -131,6 +137,20 @@ func (m *Middleware) Wrap(next http.Handler) http.Handler {
 			writeForbidden(w, scopeDeniedMessage(actor.Scopes))
 			return
 		}
+		if !SandboxBindingAllows(actor.SandboxID, r.URL.Path) {
+			writeForbidden(w, "this API key is bound to sandbox "+actor.SandboxID)
+			return
+		}
+		if !RoleAllows(actor.Role, r.Method, r.URL.Path) {
+			writeForbidden(w, "role "+actor.Role+" may not "+r.Method+" "+r.URL.Path)
+			return
+		}
+		// CSRF: a cookie-authenticated, state-changing request must carry the
+		// custom header (bearer clients are not exposed to CSRF).
+		if actor.Kind == "user" && !safeMethod(r.Method) && r.Header.Get(CSRFHeader) == "" {
+			writeForbidden(w, "missing "+CSRFHeader+" header")
+			return
+		}
 		next.ServeHTTP(w, r.WithContext(WithActor(r.Context(), actor)))
 	})
 }
@@ -141,20 +161,22 @@ func (m *Middleware) resolve(r *http.Request, cfg *Config, ip string) (Actor, bo
 	// 1. console session cookie.
 	if m.resolver != nil {
 		if ck, err := r.Cookie(SessionCookie); err == nil && ck.Value != "" {
-			if owner, ok := m.resolver.ResolveSession(r.Context(), ck.Value); ok {
-				return Actor{Kind: "user", Name: owner, IP: ip}, true
+			if p, ok := m.resolver.ResolveSession(r.Context(), ck.Value); ok {
+				return Actor{Kind: "user", Name: p.Owner, IP: ip, User: p.User, Role: p.Role}, true
 			}
 		}
 	}
 	// 2. bearer API key — DB-stored, then env-configured.
 	if tok := bearerToken(r); tok != "" {
 		if m.resolver != nil {
-			if owner, scopes, ok := m.resolver.ResolveAPIKey(r.Context(), tok); ok {
-				return Actor{Kind: "service", Name: owner, IP: ip, Scopes: scopes}, true
+			if p, ok := m.resolver.ResolveAPIKey(r.Context(), tok); ok {
+				return Actor{Kind: "service", Name: p.Owner, IP: ip, Scopes: p.Scopes,
+					User: p.User, Role: p.Role, SandboxID: p.SandboxID}, true
 			}
 		}
+		// Env-configured tokens are the operator's root credential: admin.
 		if name, ok := MatchToken(tok, cfg.APITokens); ok {
-			return Actor{Kind: "service", Name: name, IP: ip}, true
+			return Actor{Kind: "service", Name: name, IP: ip, User: name, Role: RoleAdmin}, true
 		}
 	}
 	return Actor{Kind: "unknown", IP: ip}, false
@@ -210,3 +232,5 @@ func isLoopbackReq(r *http.Request) bool {
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
 }
+
+func safeMethod(m string) bool { return m == "GET" || m == "HEAD" || m == "OPTIONS" }

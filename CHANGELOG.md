@@ -6,6 +6,32 @@ All notable changes to 4AiCoding. The project started from
 
 ## Unreleased
 
+### M3b/M3c — users, policy, egress, approvals, domain
+- Console users with roles `admin`, `operator` and `viewer` (migration `0029`
+  turns the old single password into user `admin`). `SANDBOXD_BOOTSTRAP_ADMIN`
+  creates the first admin. New routes: `GET /v1/auth/me`, `/v1/users` CRUD.
+  Cookie-authenticated unsafe requests need the `X-Sandboxd-CSRF` header.
+- API keys take `role` (not above the creator's), more scopes, `ttl_seconds`
+  (capped by `SANDBOXD_API_KEY_MAX_TTL_SECONDS`) and `sandbox_id`.
+- Audit log rows are hash-chained; `GET /v1/audit` and `GET /v1/audit/verify`.
+- Instance policy (`GET|PUT /v1/policy`, `/v1/policy/{section}`): allowed
+  images, port ranges, resource caps, egress mode and allowlist, keep-alive
+  and idle limits, and which actions need approval. Every create, port,
+  egress and lifecycle change goes through `policy.Decide`. Denials are 403
+  `policy_denied`; disallowed images are now refused with "not allowed by policy".
+- Per-sandbox lifecycle: `GET|PATCH /v1/sandboxes/{id}/lifecycle`,
+  `POST|DELETE /v1/sandboxes/{id}/keep-alive`. Keep-alive is off unless the
+  policy allows it.
+- Egress deny-by-default: the compose sandbox network is `internal`, and
+  sandboxd runs an HTTP/CONNECT proxy (`SANDBOXD_EGRESS_PROXY_ADDR`) injected
+  as `HTTP(S)_PROXY`. `GET|PUT /v1/sandboxes/{id}/network/egress` manages each
+  sandbox's allowlist. Metadata, loopback and unlisted private IPs are blocked.
+- Approvals: `GET /v1/approvals[/{id}]`, `POST /v1/approvals/{id}/approve|deny`.
+  A gated request returns 202 with an `approval_id`; repeat it with
+  `X-Sandboxd-Approval` once a console admin approves. Single use, payload-bound.
+- Domain manager: `GET|PUT /v1/domain` (applied at the next start),
+  `POST /v1/domain/verify`, `GET|POST /v1/domain/certificates`.
+
 ### M3a — per-sandbox spec, ports, observability, isolation
 - `POST /v1/sandboxes` accepts `image` (instance image or one on
   `SANDBOXD_IMAGE_ALLOWLIST`), `command`, `resources.cpus`/`resources.memory_mb`

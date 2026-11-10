@@ -5,6 +5,7 @@ package api
 import (
 	"bufio"
 	"errors"
+	"github.com/tastyeffectco/sandboxd/control-plane/internal/domain"
 	"log/slog"
 	"net"
 	"net/http"
@@ -36,8 +37,22 @@ type Server struct {
 	// its Image is empty (unit tests) it is derived from the fields below.
 	SpecEnv sandboxspec.Env
 	// Limits bounds what a create request may ask for (images, resources,
-	// ports). M3b moves these into the admin policy.
+	// ports). It seeds the admin policy when none is stored yet.
 	Limits Limits
+	// APIKeyMaxTTL caps (and, when > 0, imposes) API key lifetimes.
+	APIKeyMaxTTL time.Duration
+	// policyCache caches the admin policy (see spec.go).
+	policyCache policyCache
+	// EgressProxyURL is the forward proxy sandboxes must use for outbound
+	// traffic (http://host:port as seen from a sandbox). Empty = egress
+	// enforcement not wired (sandboxes keep the network's default reach).
+	EgressProxyURL string
+	// Domain manager (v1_domain.go): DomainTLSMode is the running TLS mode
+	// (custom / letsencrypt) when PreviewTLS is on; Certs stores custom
+	// certificates for Traefik; DomainResolver is for verify (nil = system).
+	DomainTLSMode  string
+	Certs          *domain.CertStore
+	DomainResolver domain.Resolver
 
 	Store         *store.Store
 	Docker        *docker.Client
@@ -189,6 +204,25 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/sandboxes/{id}/metrics/stream", s.observe("GET /v1/sandboxes/{id}/metrics/stream", s.v1SandboxMetricsStream))
 	mux.HandleFunc("GET /v1/sandboxes/{id}/volumes", s.observe("GET /v1/sandboxes/{id}/volumes", s.v1SandboxVolumes))
 	mux.HandleFunc("DELETE /v1/sandboxes/{id}", s.observe("DELETE /v1/sandboxes/{id}", s.v1DeleteSandbox))
+	mux.HandleFunc("GET /v1/sandboxes/{id}/lifecycle", s.observe("GET /v1/sandboxes/{id}/lifecycle", s.v1GetLifecycle))
+	mux.HandleFunc("PATCH /v1/sandboxes/{id}/lifecycle", s.observe("PATCH /v1/sandboxes/{id}/lifecycle", s.v1PatchLifecycle))
+	mux.HandleFunc("POST /v1/sandboxes/{id}/keep-alive", s.observe("POST /v1/sandboxes/{id}/keep-alive", s.v1KeepAliveOn))
+	mux.HandleFunc("DELETE /v1/sandboxes/{id}/keep-alive", s.observe("DELETE /v1/sandboxes/{id}/keep-alive", s.v1KeepAliveOff))
+	mux.HandleFunc("GET /v1/sandboxes/{id}/network/egress", s.observe("GET /v1/sandboxes/{id}/network/egress", s.v1GetEgress))
+	mux.HandleFunc("PUT /v1/sandboxes/{id}/network/egress", s.observe("PUT /v1/sandboxes/{id}/network/egress", s.v1PutEgress))
+	mux.HandleFunc("GET /v1/domain", s.observe("GET /v1/domain", s.v1GetDomain))
+	mux.HandleFunc("PUT /v1/domain", s.observe("PUT /v1/domain", s.v1PutDomain))
+	mux.HandleFunc("POST /v1/domain/verify", s.observe("POST /v1/domain/verify", s.v1VerifyDomain))
+	mux.HandleFunc("GET /v1/domain/certificates", s.observe("GET /v1/domain/certificates", s.v1ListCertificates))
+	mux.HandleFunc("POST /v1/domain/certificates", s.observe("POST /v1/domain/certificates", s.v1AddCertificate))
+	mux.HandleFunc("GET /v1/policy", s.observe("GET /v1/policy", s.v1GetPolicy))
+	mux.HandleFunc("PUT /v1/policy", s.observe("PUT /v1/policy", s.v1PutPolicy))
+	mux.HandleFunc("GET /v1/policy/{section}", s.observe("GET /v1/policy/{section}", s.v1GetPolicySection))
+	mux.HandleFunc("PUT /v1/policy/{section}", s.observe("PUT /v1/policy/{section}", s.v1PutPolicySection))
+	mux.HandleFunc("GET /v1/approvals", s.observe("GET /v1/approvals", s.v1ListApprovals))
+	mux.HandleFunc("GET /v1/approvals/{id}", s.observe("GET /v1/approvals/{id}", s.v1GetApproval))
+	mux.HandleFunc("POST /v1/approvals/{id}/approve", s.observe("POST /v1/approvals/{id}/approve", s.v1ApproveApproval))
+	mux.HandleFunc("POST /v1/approvals/{id}/deny", s.observe("POST /v1/approvals/{id}/deny", s.v1DenyApproval))
 
 	// Instance settings.
 	mux.HandleFunc("GET /v1/settings", s.observe("GET /v1/settings", s.v1GetSettings))
@@ -205,6 +239,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/api-keys", s.observe("GET /v1/api-keys", s.v1ListAPIKeys))
 	mux.HandleFunc("POST /v1/api-keys", s.observe("POST /v1/api-keys", s.v1CreateAPIKey))
 	mux.HandleFunc("DELETE /v1/api-keys/{id}", s.observe("DELETE /v1/api-keys/{id}", s.v1DeleteAPIKey))
+	mux.HandleFunc("GET /v1/auth/me", s.observe("GET /v1/auth/me", s.v1AuthMe))
+	mux.HandleFunc("GET /v1/users", s.observe("GET /v1/users", s.v1ListUsers))
+	mux.HandleFunc("POST /v1/users", s.observe("POST /v1/users", s.v1CreateUser))
+	mux.HandleFunc("PATCH /v1/users/{id}", s.observe("PATCH /v1/users/{id}", s.v1UpdateUser))
+	mux.HandleFunc("DELETE /v1/users/{id}", s.observe("DELETE /v1/users/{id}", s.v1DeleteUser))
+	mux.HandleFunc("GET /v1/audit", s.observe("GET /v1/audit", s.v1ListAudit))
+	mux.HandleFunc("GET /v1/audit/verify", s.observe("GET /v1/audit/verify", s.v1VerifyAudit))
 
 	// Snapshots-as-templates.
 	mux.HandleFunc("POST /v1/snapshots", s.observe("POST /v1/snapshots", s.v1CreateSnapshot))

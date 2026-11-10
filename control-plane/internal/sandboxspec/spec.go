@@ -43,6 +43,22 @@ type Env struct {
 	PreviewTLS        bool
 	User              string // "" = DefaultUser
 	MemoryMB          int    // instance default hard limit; 0 = DefaultMemoryMB
+	// EgressProxy is the forward proxy URL every sandbox must use for
+	// outbound HTTP(S) (PLAN §8 #5); "" = not injected.
+	EgressProxy string
+}
+
+// proxyEnv is what Build injects when an egress proxy is configured. Both
+// spellings, since tools disagree on which they read.
+func proxyEnv(url string) []string {
+	if url == "" {
+		return nil
+	}
+	return []string{
+		"HTTP_PROXY=" + url, "HTTPS_PROXY=" + url,
+		"http_proxy=" + url, "https_proxy=" + url,
+		"NO_PROXY=localhost,127.0.0.1,::1", "no_proxy=localhost,127.0.0.1,::1",
+	}
 }
 
 // Build returns the RunSpec for `sb`. Both the create path and the
@@ -54,10 +70,14 @@ type Env struct {
 func Build(sb *store.Sandbox, e Env) docker.RunSpec {
 	name := "s-" + sb.ID
 
-	env := make([]string, 0, len(sb.Spec.Env))
+	env := make([]string, 0, len(sb.Spec.Env)+6)
 	for k, v := range sb.Spec.Env {
+		if e.EgressProxy != "" && isProxyVar(k) {
+			continue // the instance proxy cannot be overridden by the spec
+		}
 		env = append(env, k+"="+v)
 	}
+	env = append(env, proxyEnv(e.EgressProxy)...)
 	sort.Strings(env) // deterministic flags (tests, diffing)
 
 	volumes := []string{sb.WorkspaceMnt + ":/home/sandbox"}
@@ -179,4 +199,12 @@ func PreviewLabelsStale(labels map[string]string, hs previewhost.Scheme) bool {
 		}
 	}
 	return sawRouter
+}
+
+func isProxyVar(k string) bool {
+	switch strings.ToUpper(k) {
+	case "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY":
+		return true
+	}
+	return false
 }

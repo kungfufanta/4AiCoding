@@ -19,6 +19,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -36,7 +37,9 @@ import (
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/audit"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/auth"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/docker"
+	domainpkg "github.com/tastyeffectco/sandboxd/control-plane/internal/domain"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/egress"
+	"github.com/tastyeffectco/sandboxd/control-plane/internal/egressproxy"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/events"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/idlock"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/instancecfg"
@@ -198,6 +201,24 @@ func main() {
 			log.Error("shutdown: store close failed", "err", err.Error())
 		}
 	}()
+
+	// Domain manager (PUT /v1/domain): a stored domain / TLS mode overrides
+	// PREVIEW_DOMAIN / PREVIEW_TLS. Applied here, at start, because every
+	// preview route and URL derives from it.
+	domainTLSMode := ""
+	if dc, ok, derr := api.StoredDomain(st, ctx); derr != nil {
+		log.Warn("startup: stored domain unreadable; using PREVIEW_DOMAIN", "err", derr.Error())
+	} else if ok {
+		domain, previewTLS = dc.Domain, dc.TLS()
+		if previewTLS {
+			domainTLSMode = dc.TLSMode
+			if os.Getenv("PREVIEW_ENTRYPOINT") == "" {
+				previewEntrypoint = "websecure"
+			}
+		}
+		hosts, _ = previewhost.New(domain, previewHostStyle, previewHostTag)
+		log.Info("startup: using the stored domain", "domain", domain, "tls_mode", dc.TLSMode)
+	}
 
 	// Phase 5 — Backfill last_active_at for legacy running rows where
 	// the migration default (0) would otherwise make every existing
@@ -427,7 +448,21 @@ func main() {
 	// workspace bind mount, and the container rootfs is read-only by construction.
 	// One spec environment for every container sandboxd builds (create and
 	// recreate), so both paths produce the same hardened container.
+	// PLAN §8 #5: the egress proxy. SANDBOXD_EGRESS_PROXY_ADDR is where
+	// sandboxd listens for it (e.g. ":3128"; empty = off); the URL is what a
+	// sandbox is told to use (an alias of sandboxd on the sandbox network).
+	egressProxyAddr := os.Getenv("SANDBOXD_EGRESS_PROXY_ADDR")
+	egressProxyURL := ""
+	if egressProxyAddr != "" {
+		_, port, perr := net.SplitHostPort(egressProxyAddr)
+		if perr != nil || port == "" {
+			log.Error("startup: bad SANDBOXD_EGRESS_PROXY_ADDR", "value", egressProxyAddr)
+			os.Exit(1)
+		}
+		egressProxyURL = envDefault("SANDBOXD_EGRESS_PROXY_URL", "http://sandboxd-egress:"+port)
+	}
 	specEnv := sandboxspec.Env{
+		EgressProxy:       egressProxyURL,
 		Image:             image,
 		Network:           network,
 		Userns:            userns,
@@ -503,9 +538,23 @@ func main() {
 			IdleReapEnabled:      idleInterval > 0,
 			IdleThresholdSeconds: int(idleThreshold.Seconds()),
 		},
-		Live:    live,
-		SpecEnv: specEnv,
-		Limits:  limits,
+		Live:           live,
+		SpecEnv:        specEnv,
+		Limits:         limits,
+		APIKeyMaxTTL:   durationFromEnvSec("SANDBOXD_API_KEY_MAX_TTL_SECONDS", 0),
+		EgressProxyURL: egressProxyURL,
+		DomainTLSMode:  domainTLSMode,
+		Certs: &domainpkg.CertStore{
+			Dir:        os.Getenv("SANDBOXD_TRAEFIK_DYNAMIC_DIR"),
+			TraefikDir: envDefault("SANDBOXD_TRAEFIK_DYNAMIC_DIR_IN_TRAEFIK", "/etc/traefik/dynamic"),
+		},
+	}
+	// First admin from the environment (headless installs). No-op once any
+	// user exists, so the variable can stay set.
+	if created, name, berr := api.BootstrapAdmin(ctx, st, os.Getenv("SANDBOXD_BOOTSTRAP_ADMIN")); berr != nil {
+		log.Error("startup: bootstrap admin failed", "err", berr.Error())
+	} else if created {
+		log.Info("startup: bootstrap admin created", "username", name)
 	}
 
 	// Phase 5 — after reconcile, if MemAvailable is
@@ -558,6 +607,35 @@ func main() {
 		Handler:           root,
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       60 * time.Second,
+	}
+
+	// Egress proxy listener (separate from the API: sandboxes may reach this
+	// one, never the API).
+	var egressSrv *http.Server
+	if egressProxyAddr != "" {
+		elog := log.With("component", "egress-proxy")
+		px := &egressproxy.Proxy{
+			Log: elog,
+			Lookup: func(ctx context.Context, ip string) (string, []string, bool) {
+				sb, err := st.RunningByIP(ctx, ip)
+				if err != nil {
+					return "", nil, false
+				}
+				return sb.ID, sb.Spec.Egress, true
+			},
+			OnDecision: func(id, host string, allowed bool, reason string) {
+				elog.Info("egress", "sandbox_id", id, "host", host, "allowed", allowed, "reason", reason)
+			},
+		}
+		egressSrv = &http.Server{Addr: egressProxyAddr, Handler: px, ReadHeaderTimeout: 10 * time.Second}
+		go func() {
+			log.Info("egress proxy listening", "addr", egressProxyAddr, "url", egressProxyURL)
+			if err := egressSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Error("egress proxy stopped", "err", err.Error())
+			}
+		}()
+	} else {
+		log.Warn("startup: SANDBOXD_EGRESS_PROXY_ADDR unset — sandbox egress is NOT enforced by sandboxd")
 	}
 
 	// --- Phase 5 background goroutines ---------------------------------
@@ -737,6 +815,9 @@ func main() {
 	gcancel()
 	shutCtx, shutCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutCancel()
+	if egressSrv != nil {
+		_ = egressSrv.Shutdown(shutCtx)
+	}
 	if err := httpSrv.Shutdown(shutCtx); err != nil {
 		log.Error("shutdown: http server shutdown failed", "err", err.Error())
 	}

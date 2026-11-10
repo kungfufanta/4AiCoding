@@ -110,8 +110,8 @@ func (s *Server) v1SetPorts(w http.ResponseWriter, r *http.Request, id string, c
 	}
 	next := change(sb.Ports)
 	sort.Ints(next)
-	if err := s.checkPorts(next); err != nil {
-		writeV1Err(w, http.StatusBadRequest, "invalid_request", err.Error())
+	if err := s.checkPorts(r.Context(), next); err != nil {
+		writeV1Err(w, http.StatusBadRequest, "policy_denied", err.Error())
 		return
 	}
 	if equalInts(next, sb.Ports) {

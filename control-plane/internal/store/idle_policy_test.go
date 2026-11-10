@@ -89,8 +89,7 @@ func TestListIdleCandidatesExcludesAlwaysOn(t *testing.T) {
 	}
 
 	// cutoff = 5 minutes ago — both sandboxes are idle relative to this.
-	cutoff := time.Now().UTC().Add(-5 * time.Minute)
-	candidates, err := st.ListIdleCandidates(ctx, cutoff)
+	candidates, err := st.ListIdleCandidates(ctx, time.Now().UTC(), 5*time.Minute)
 	if err != nil {
 		t.Fatalf("ListIdleCandidates: %v", err)
 	}
@@ -144,7 +143,7 @@ func TestIdlePolicyInListAndListFiltered(t *testing.T) {
 }
 
 func TestListIdleCandidatesExcludesAlwaysOnAtPressureCutoff(t *testing.T) {
-	// The pressure reaper calls ListIdleCandidates(now); a cutoff of "now"
+	// The pressure reaper calls ListPressureCandidates(now); a cutoff of "now"
 	// makes every running sandbox a candidate. always_on must STILL be
 	// excluded so moderate memory pressure does not stop it. (The emergency
 	// path is separate and intentionally ignores idle_policy.)
@@ -166,9 +165,9 @@ func TestListIdleCandidatesExcludesAlwaysOnAtPressureCutoff(t *testing.T) {
 		t.Fatalf("BumpLastActive always_on: %v", err)
 	}
 
-	candidates, err := st.ListIdleCandidates(ctx, time.Now().UTC())
+	candidates, err := st.ListPressureCandidates(ctx, time.Now().UTC())
 	if err != nil {
-		t.Fatalf("ListIdleCandidates: %v", err)
+		t.Fatalf("ListPressureCandidates: %v", err)
 	}
 	var sawSleep, sawAlwaysOn bool
 	for _, sb := range candidates {

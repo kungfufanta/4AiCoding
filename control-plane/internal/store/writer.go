@@ -210,18 +210,28 @@ func (s *Store) PurgeSandbox(ctx context.Context, id string) error {
 	})
 }
 
-// InsertAudit appends one append-only audit_log row. detail is a
-// pre-encoded JSON string ("" allowed). Best-effort callers ignore
-// the error after logging it; the audit package wraps this.
+// InsertAudit appends one audit_log row and links it into the hash chain:
+// hash = sha256(prev_hash + "\n" + canonical row). The single writer
+// goroutine serialises inserts, so reading the previous hash here is race-free.
+// detail is a pre-encoded JSON string ("" allowed).
 func (s *Store) InsertAudit(ctx context.Context, at int64, actorKind, actorName, actorIP, externalUserID, action, target, detail string) error {
 	return s.submit(ctx, func(db *sql.DB) error {
-		_, err := db.ExecContext(ctx, `
+		var prev sql.NullString
+		err := db.QueryRowContext(ctx, `SELECT hash FROM audit_log WHERE hash IS NOT NULL ORDER BY id DESC LIMIT 1`).Scan(&prev)
+		if err != nil && err != sql.ErrNoRows {
+			return err
+		}
+		row := AuditRow{At: at, ActorKind: actorKind, ActorName: actorName, ActorIP: actorIP,
+			ExternalUserID: externalUserID, Action: action, Target: target, Detail: detail, PrevHash: prev.String}
+		row.Hash = row.ComputeHash()
+		_, err = db.ExecContext(ctx, `
 			INSERT INTO audit_log
 			    (at, actor_kind, actor_name, actor_ip,
-			     external_user_id, action, target, detail)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			     external_user_id, action, target, detail, prev_hash, hash)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			at, actorKind, nullIfEmpty(actorName), nullIfEmpty(actorIP),
-			nullIfEmpty(externalUserID), action, nullIfEmpty(target), nullIfEmpty(detail))
+			nullIfEmpty(externalUserID), action, nullIfEmpty(target), nullIfEmpty(detail),
+			nullIfEmpty(row.PrevHash), row.Hash)
 		return err
 	})
 }

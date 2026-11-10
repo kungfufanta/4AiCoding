@@ -92,7 +92,7 @@ paths:
     get:
       operationId: authStatus
       tags: [auth]
-      summary: Console auth status — is auth enabled, is the caller authenticated, is a password set (pre-login probe, no credential required)
+      summary: Console auth status — is auth enabled, is the caller authenticated, does the first admin still need to be created (pre-login probe, no credential required)
       responses:
         "200":
           description: OK
@@ -103,12 +103,13 @@ paths:
                 properties:
                   enabled: { type: boolean }
                   authenticated: { type: boolean }
-                  password_set: { type: boolean }
+                  password_set: { type: boolean, description: deprecated alias of !setup_needed }
+                  setup_needed: { type: boolean }
   /v1/auth/setup:
     post:
       operationId: authSetup
       tags: [auth]
-      summary: First-run — set the console password and start a session. 409 once a password is already set.
+      summary: First run — create the first admin user and start a session. 409 once any user exists.
       requestBody:
         required: true
         content:
@@ -117,16 +118,17 @@ paths:
               type: object
               required: [password]
               properties:
+                username: { type: string, default: admin }
                 password: { type: string, description: min 8 chars }
       responses:
-        "204": { description: Password set; session cookie issued }
+        "204": { description: Admin created; session cookie issued }
         "400": { description: Password too short / invalid body }
-        "409": { description: A password is already set }
+        "409": { description: A user already exists }
   /v1/auth/login:
     post:
       operationId: authLogin
       tags: [auth]
-      summary: Verify the console password and issue an HttpOnly session cookie
+      summary: Sign in as a console user and receive an HttpOnly session cookie. Unsafe requests made with the cookie must carry the header X-Sandboxd-CSRF.
       requestBody:
         required: true
         content:
@@ -135,22 +137,25 @@ paths:
               type: object
               required: [password]
               properties:
+                username: { type: string, default: admin }
                 password: { type: string }
       responses:
         "204": { description: Authenticated; session cookie issued }
-        "401": { description: Invalid password }
+        "401": { description: Invalid username or password }
   /v1/auth/logout:
     post:
       operationId: authLogout
       tags: [auth]
-      summary: Revoke the current session and clear the cookie
+      summary: Revoke the current session (or with ?all=true every session of this user) and clear the cookie
+      parameters:
+        - { name: all, in: query, schema: { type: boolean } }
       responses:
         "204": { description: Logged out }
   /v1/auth/password:
     post:
       operationId: authChangePassword
       tags: [auth]
-      summary: Change the console password (requires a logged-in session); revokes all sessions and re-issues one
+      summary: Change the signed-in user's password; revokes that user's sessions and re-issues one
       requestBody:
         required: true
         content:
@@ -169,7 +174,7 @@ paths:
     delete:
       operationId: authResetPassword
       tags: [auth]
-      summary: Reset (forget) the console password so the next visit creates a new one; revokes every session. API-key callers only — a console session is refused.
+      summary: Delete every console user and session so the next visit runs first-run setup again. Admin API keys only — a console session is refused.
       responses:
         "204": { description: Password cleared and all sessions revoked }
         "401": { description: No credential }
@@ -178,12 +183,14 @@ paths:
     post:
       operationId: createApiKey
       tags: [auth]
-      summary: Mint an API key (each = the shared tenant). The plaintext key is returned exactly once. Session-only.
+      summary: Mint an API key. The plaintext key is returned exactly once. Admin only.
       description: |
-        `scopes` restricts what the key may call; omitted or empty = full access.
-        A key with scope `health` may only call `GET /healthz`, `GET /readyz`,
-        `GET /version` and `GET /v1/auth/status` — every other route returns
-        403 `forbidden`. Intended for external monitors.
+        A key acts with `role` (default admin; never above its creator's).
+        `scopes` further restricts what it may call (omitted = everything its
+        role allows): `health` (health/version/status probes only),
+        `sandboxes:read`, `sandboxes:write`, `sandboxes:exec`, `snapshots`,
+        `sandboxes:egress`. `sandbox_id` binds the key to one sandbox's routes.
+        `ttl_seconds` makes it expire (capped by SANDBOXD_API_KEY_MAX_TTL_SECONDS).
       requestBody:
         required: true
         content:
@@ -195,8 +202,11 @@ paths:
                 name: { type: string, description: 1-64 printable chars }
                 scopes:
                   type: array
-                  items: { type: string, enum: [health] }
-                  description: Optional restriction; omitted = full access
+                  items: { type: string, enum: [health, "sandboxes:read", "sandboxes:write", "sandboxes:exec", snapshots, "sandboxes:egress"] }
+                  description: Optional restriction; omitted = everything the role allows
+                role: { $ref: "#/components/schemas/Role" }
+                ttl_seconds: { type: integer }
+                sandbox_id: { type: string }
       responses:
         "201":
           description: Created — plaintext key returned once
@@ -582,6 +592,449 @@ paths:
       responses:
         "204": { description: Deleted }
 
+  /v1/auth/me:
+    get:
+      operationId: authMe
+      tags: [auth]
+      summary: Who the caller is — kind (user/service), user, role, and for API keys the scopes and sandbox binding
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  kind: { type: string, enum: [user, service] }
+                  user: { type: string }
+                  role: { $ref: "#/components/schemas/Role" }
+                  sandbox_id: { type: string }
+                  scopes: { type: array, items: { type: string } }
+
+  /v1/users:
+    get:
+      operationId: listUsers
+      tags: [users]
+      summary: List console users. Admin only.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  users: { type: array, items: { $ref: "#/components/schemas/User" } }
+    post:
+      operationId: createUser
+      tags: [users]
+      summary: Create a console user. Admin only.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password, role]
+              properties:
+                username: { type: string, description: "1-64 chars: letters, digits, . _ -" }
+                password: { type: string, description: min 8 chars }
+                role: { $ref: "#/components/schemas/Role" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "400": { $ref: "#/components/responses/Error" }
+        "409": { description: Username taken }
+  /v1/users/{id}:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    patch:
+      operationId: updateUser
+      tags: [users]
+      summary: Change a user's role, disable/enable it, or set a new password. Revokes that user's sessions. Admin only.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                role: { $ref: "#/components/schemas/Role" }
+                disabled: { type: boolean }
+                password: { type: string }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { description: Would leave no active admin }
+    delete:
+      operationId: deleteUser
+      tags: [users]
+      summary: Delete a user and its sessions. Admin only.
+      responses:
+        "204": { description: Deleted }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { description: Would leave no active admin }
+
+  /v1/audit:
+    get:
+      operationId: listAudit
+      tags: [audit]
+      summary: Audit log, newest first. Admin only.
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 1000, default: 100 } }
+        - { name: before, in: query, description: Return entries with id < before (paging), schema: { type: integer } }
+        - { name: action, in: query, schema: { type: string } }
+        - { name: target, in: query, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  entries: { type: array, items: { $ref: "#/components/schemas/AuditEntry" } }
+  /v1/audit/verify:
+    get:
+      operationId: verifyAudit
+      tags: [audit]
+      summary: Recompute the audit hash chain and report the first broken row (edited or deleted entries). Admin only.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  checked: { type: integer }
+                  unchained: { type: integer, description: rows written before the chain existed }
+                  broken_at: { type: integer }
+                  reason: { type: string }
+
+  /v1/domain:
+    get:
+      operationId: getDomain
+      tags: [domain]
+      summary: The stored domain / TLS mode, what is running, and whether a restart is needed to apply it
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Domain" }
+    put:
+      operationId: putDomain
+      tags: [domain]
+      summary: Set the domain and TLS mode (off, custom, letsencrypt). Stored; applied at the next start of sandboxd. Admin only.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [domain]
+              properties:
+                domain: { type: string }
+                tls_mode: { type: string, enum: [off, custom, letsencrypt], default: off }
+                acme_email: { type: string }
+      responses:
+        "200":
+          description: Saved
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Domain" }
+        "400": { $ref: "#/components/responses/Error" }
+  /v1/domain/verify:
+    post:
+      operationId: verifyDomain
+      tags: [domain]
+      summary: Resolve the console host and a random preview host (proves the wildcard record), optionally against expected IPs. Admin only.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                expect_ips: { type: array, items: { type: string } }
+      responses:
+        "200":
+          description: Result (ok=false with a hint when records are missing or wrong)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  domain: { type: string }
+                  ok: { type: boolean }
+                  hint: { type: string }
+                  checks:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        host: { type: string }
+                        addrs: { type: array, items: { type: string } }
+                        ok: { type: boolean }
+                        error: { type: string }
+        "400": { description: localhost needs no DNS }
+  /v1/domain/certificates:
+    get:
+      operationId: listCertificates
+      tags: [domain]
+      summary: Custom certificates installed for Traefik (metadata only, never keys)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled: { type: boolean }
+                  certificates: { type: array, items: { $ref: "#/components/schemas/Certificate" } }
+    post:
+      operationId: addCertificate
+      tags: [domain]
+      summary: Install a PEM certificate + key covering the console host and the preview wildcard; it becomes Traefik's default certificate. Admin only.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [cert_pem, key_pem]
+              properties:
+                cert_pem: { type: string }
+                key_pem: { type: string }
+      responses:
+        "201":
+          description: Installed
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Certificate" }
+        "400": { description: Invalid pair, expired, or does not cover the hosts }
+        "503": { description: Certificate storage not configured }
+
+  /v1/policy:
+    get:
+      operationId: getPolicy
+      tags: [policy]
+      summary: The instance policy every sandbox request is checked against
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Policy" }
+    put:
+      operationId: putPolicy
+      tags: [policy]
+      summary: Replace the instance policy. Admin only. Returns 202 when the current policy gates policy.update behind an approval.
+      parameters: [ { $ref: "#/components/parameters/ApprovalHeader" } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Policy" }
+      responses:
+        "200":
+          description: Saved
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Policy" }
+        "202": { $ref: "#/components/responses/ApprovalPending" }
+        "400": { $ref: "#/components/responses/Error" }
+  /v1/policy/{section}:
+    parameters:
+      - { name: section, in: path, required: true, schema: { type: string, enum: [images, ports, resources, egress, lifecycle, approvals] } }
+    get:
+      operationId: getPolicySection
+      tags: [policy]
+      summary: One section of the policy
+      responses:
+        "200": { description: The section's JSON }
+        "404": { $ref: "#/components/responses/Error" }
+    put:
+      operationId: putPolicySection
+      tags: [policy]
+      summary: Replace one section of the policy. Admin only.
+      parameters: [ { $ref: "#/components/parameters/ApprovalHeader" } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "200":
+          description: Saved; returns the whole policy
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Policy" }
+        "202": { $ref: "#/components/responses/ApprovalPending" }
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+
+  /v1/sandboxes/{id}/lifecycle:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    get:
+      operationId: getSandboxLifecycle
+      tags: [sandboxes]
+      summary: The sandbox's idle timeout and keep-alive flag
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Lifecycle" }
+    patch:
+      operationId: patchSandboxLifecycle
+      tags: [sandboxes]
+      summary: Change the idle timeout (0 = instance default; clamped by policy) or keep-alive (denied unless the policy allows it)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Lifecycle" }
+      responses:
+        "200":
+          description: Applied values
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Lifecycle" }
+        "403": { $ref: "#/components/responses/PolicyDenied" }
+  /v1/sandboxes/{id}/keep-alive:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    post:
+      operationId: keepAliveOn
+      tags: [sandboxes]
+      summary: Exempt the sandbox from the idle reaper (policy lifecycle.allow_keep_alive)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Lifecycle" }
+        "403": { $ref: "#/components/responses/PolicyDenied" }
+    delete:
+      operationId: keepAliveOff
+      tags: [sandboxes]
+      summary: Return the sandbox to the idle reaper
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Lifecycle" }
+  /v1/sandboxes/{id}/network/egress:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    get:
+      operationId: getSandboxEgress
+      tags: [network]
+      summary: The sandbox's outbound allowlist and the proxy it must use
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Egress" }
+    put:
+      operationId: putSandboxEgress
+      tags: [network]
+      summary: Replace the outbound allowlist (hosts, *.domains or IPs). Entries outside the instance policy are denied, or return 202 when policy gates sandbox.egress_outside_policy behind an approval. Applies to the next connection, no restart.
+      parameters: [ { $ref: "#/components/parameters/ApprovalHeader" } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [allow]
+              properties:
+                allow: { type: array, items: { type: string } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Egress" }
+        "202": { $ref: "#/components/responses/ApprovalPending" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/PolicyDenied" }
+
+  /v1/approvals:
+    get:
+      operationId: listApprovals
+      tags: [approvals]
+      summary: Approval requests, newest first
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [pending, approved, denied, used, expired] } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  approvals: { type: array, items: { $ref: "#/components/schemas/Approval" } }
+  /v1/approvals/{id}:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    get:
+      operationId: getApproval
+      tags: [approvals]
+      summary: One approval request
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Approval" }
+        "404": { $ref: "#/components/responses/Error" }
+  /v1/approvals/{id}/approve:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    post:
+      operationId: approveApproval
+      tags: [approvals]
+      summary: Approve a pending request. Admin console users only — API keys can never approve.
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, properties: { reason: { type: string } } }
+      responses:
+        "200":
+          description: Approved
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Approval" }
+        "403": { description: Caller is not a console user }
+        "409": { description: Not pending any more }
+  /v1/approvals/{id}/deny:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    post:
+      operationId: denyApproval
+      tags: [approvals]
+      summary: Deny a pending request. Admin console users only.
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, properties: { reason: { type: string } } }
+      responses:
+        "200":
+          description: Denied
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Approval" }
+        "403": { description: Caller is not a console user }
+        "409": { description: Not pending any more }
+
 components:
   securitySchemes:
     bearerAuth:
@@ -593,7 +1046,30 @@ components:
       name: id
       required: true
       schema: { type: string }
+    ApprovalHeader:
+      in: header
+      name: X-Sandboxd-Approval
+      required: false
+      description: The id of an approved approval for exactly this request. Single use; bound to the request's hash.
+      schema: { type: string }
   responses:
+    ApprovalPending:
+      description: The action needs an admin's approval. Repeat the same request with X-Sandboxd-Approval once approved.
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              approval_id: { type: string }
+              status: { type: string, enum: [pending] }
+              action: { type: string }
+              target: { type: string }
+              message: { type: string }
+    PolicyDenied:
+      description: The instance policy forbids this (code policy_denied or approval_required)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
     Error:
       description: Error
       content:
@@ -614,6 +1090,112 @@ components:
                     container: { type: integer }
                     preview_url: { type: string }
   schemas:
+    Domain:
+      type: object
+      properties:
+        domain: { type: string }
+        tls_mode: { type: string, enum: [off, custom, letsencrypt] }
+        acme_email: { type: string }
+        running:
+          type: object
+          properties:
+            domain: { type: string }
+            tls_mode: { type: string }
+        restart_required: { type: boolean }
+        console_host: { type: string }
+        preview_example: { type: string }
+    Certificate:
+      type: object
+      properties:
+        id: { type: string }
+        subject: { type: string }
+        dns_names: { type: array, items: { type: string } }
+        not_before: { type: string, format: date-time }
+        not_after: { type: string, format: date-time }
+        default: { type: boolean }
+    Role:
+      type: string
+      enum: [admin, operator, viewer]
+    User:
+      type: object
+      properties:
+        id: { type: string }
+        username: { type: string }
+        role: { $ref: "#/components/schemas/Role" }
+        disabled: { type: boolean }
+        created_at: { type: string }
+        updated_at: { type: string }
+    AuditEntry:
+      type: object
+      properties:
+        id: { type: integer }
+        at: { type: integer, description: unix seconds }
+        actor_kind: { type: string }
+        actor_name: { type: string }
+        actor_ip: { type: string }
+        action: { type: string }
+        target: { type: string }
+        detail: { type: string, description: JSON }
+        prev_hash: { type: string }
+        hash: { type: string, description: "sha256(prev_hash + canonical row)" }
+    Policy:
+      type: object
+      properties:
+        images:
+          type: object
+          properties:
+            allowed: { type: array, items: { type: string }, description: empty = the instance image only }
+        ports:
+          type: object
+          properties:
+            ranges:
+              type: array
+              items: { type: object, properties: { min: { type: integer }, max: { type: integer } } }
+        resources:
+          type: object
+          properties:
+            max_cpus: { type: number }
+            max_memory_mb: { type: integer }
+            max_ports_per_sandbox: { type: integer }
+        egress:
+          type: object
+          properties:
+            mode: { type: string, enum: [strict, permissive], description: "strict: a sandbox may only allow hosts on this list" }
+            allow: { type: array, items: { type: string } }
+        lifecycle:
+          type: object
+          properties:
+            allow_keep_alive: { type: boolean }
+            max_idle_timeout_secs: { type: integer }
+        approvals:
+          type: array
+          items: { type: string, enum: [sandbox.delete_keep_alive, policy.update, sandbox.egress_outside_policy, sandbox.public] }
+          description: Actions that need an admin's approval first
+    Lifecycle:
+      type: object
+      properties:
+        idle_timeout_secs: { type: integer, description: 0 = instance default }
+        keep_alive: { type: boolean }
+    Egress:
+      type: object
+      properties:
+        allow: { type: array, items: { type: string } }
+        proxy: { type: string, description: The HTTP(S) proxy sandboxes reach the internet through; empty when egress enforcement is off }
+    Approval:
+      type: object
+      properties:
+        id: { type: string }
+        action: { type: string }
+        target: { type: string }
+        payload: { type: string }
+        payload_hash: { type: string }
+        status: { type: string, enum: [pending, approved, denied, used, expired] }
+        requested_by: { type: string }
+        decided_by: { type: string }
+        reason: { type: string }
+        created_at: { type: integer }
+        decided_at: { type: integer }
+        expires_at: { type: integer }
     PortRequest:
       type: object
       required: [container]

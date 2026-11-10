@@ -409,6 +409,10 @@ func (h *Handler) serve(r *http.Request, w http.ResponseWriter, id, port string,
 			log.Warn("wake: SetContainerIP failed (continuing; in-memory map already updated)",
 				"err", err.Error())
 		}
+	} else if ip := cj.BridgeIP(); ip != "" {
+		// Docker may hand out a new IP on every start; the egress proxy
+		// identifies the sandbox by it.
+		_ = h.Store.SetContainerIP(ctx, id, ip)
 	}
 
 	rel := sb.CgroupPath.String

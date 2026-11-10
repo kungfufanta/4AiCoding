@@ -1,13 +1,14 @@
-// v1_auth.go — the console's login authority. First-run password setup,
-// password login → HttpOnly session cookie, logout, change-password, and the
-// API-key-only password reset. The
-// password is bcrypt-hashed; sessions are opaque random tokens stored as their
-// sha256. All resolve to the single shared tenant (store.DefaultTenant).
+// v1_auth.go — the console's login authority. First-run admin setup (or the
+// SANDBOXD_BOOTSTRAP_ADMIN env), username/password login → HttpOnly session
+// cookie, logout, change-password, and the API-key-only console reset.
+// Passwords are bcrypt-hashed; sessions are opaque random tokens stored as
+// their sha256. All resolve to the single shared tenant (store.DefaultTenant).
 package api
 
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/audit"
@@ -22,16 +23,17 @@ const sessionTTL = 30 * 24 * time.Hour
 // primary gate is that the API is unreachable without a credential at all).
 const minPasswordLen = 8
 
-// passwordSet reports whether a console password has been configured.
-func (s *Server) passwordSet(r *http.Request) bool {
+// usersExist reports whether any user has been created.
+func (s *Server) usersExist(r *http.Request) bool {
 	if s.Store == nil {
 		return false
 	}
-	_, err := s.Store.GetPasswordHash(r.Context())
-	return err == nil
+	n, err := s.Store.CountUsers(r.Context())
+	return err == nil && n > 0
 }
 
 // GET /v1/auth/status — pre-login probe (exempt from the middleware).
+// password_set is kept for older clients; it means "an admin exists".
 func (s *Server) v1AuthStatus(w http.ResponseWriter, r *http.Request) {
 	enabled := true
 	if s.Auth != nil {
@@ -39,74 +41,106 @@ func (s *Server) v1AuthStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	actor := auth.ActorFrom(r.Context())
 	authed := actor.Kind == "user" || actor.Kind == "service"
+	exists := s.usersExist(r)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"enabled":       enabled,
 		"authenticated": authed,
-		"password_set":  s.passwordSet(r),
+		"setup_needed":  !exists,
+		"password_set":  exists,
 	})
 }
 
-// POST /v1/auth/setup {password} — first-run create-password. 409 once set.
+// GET /v1/auth/me — who the caller is.
+func (s *Server) v1AuthMe(w http.ResponseWriter, r *http.Request) {
+	a := auth.ActorFrom(r.Context())
+	out := map[string]any{"kind": a.Kind, "user": a.User, "role": a.Role}
+	if a.SandboxID != "" {
+		out["sandbox_id"] = a.SandboxID
+	}
+	if len(a.Scopes) > 0 {
+		out["scopes"] = a.Scopes
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+type credentials struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+func decodeCredentials(w http.ResponseWriter, r *http.Request) (credentials, bool) {
+	var c credentials
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8*1024))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&c); err != nil {
+		writeV1Err(w, http.StatusBadRequest, "invalid_request", "invalid request body")
+		return c, false
+	}
+	c.Username = strings.TrimSpace(c.Username)
+	if c.Username == "" {
+		c.Username = "admin" // single-admin installs and pre-0029 clients
+	}
+	return c, true
+}
+
+// POST /v1/auth/setup {username?, password} — first-run: create the first
+// admin. 409 once any user exists.
 func (s *Server) v1AuthSetup(w http.ResponseWriter, r *http.Request) {
 	if s.Store == nil {
 		writeV1Err(w, http.StatusServiceUnavailable, "unavailable", "auth store not configured")
 		return
 	}
-	if s.passwordSet(r) {
-		writeV1Err(w, http.StatusConflict, "conflict", "a password is already set; use login or change-password")
+	if s.usersExist(r) {
+		writeV1Err(w, http.StatusConflict, "conflict", "an admin already exists; sign in instead")
 		return
 	}
-	pw, ok := decodePassword(w, r, "password")
+	c, ok := decodeCredentials(w, r)
 	if !ok {
 		return
 	}
-	hash, err := console.HashPassword(pw)
+	u, err := s.createUser(r, c.Username, c.Password, auth.RoleAdmin)
 	if err != nil {
-		writeV1Err(w, http.StatusInternalServerError, "internal", "could not hash password")
+		writeUserErr(w, err)
 		return
 	}
-	if err := s.Store.SetPasswordHash(r.Context(), hash); err != nil {
-		writeV1Err(w, http.StatusInternalServerError, "internal", "could not save password")
-		return
-	}
-	if !s.issueSession(w, r) {
+	s.auditAction(r, audit.Entry{Action: "user.bootstrap", Target: u.ID, Detail: map[string]any{"username": u.Username}})
+	if !s.issueSession(w, r, u) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// POST /v1/auth/login {password} — verify + set a session cookie.
+// POST /v1/auth/login {username, password} — verify + set a session cookie.
 func (s *Server) v1AuthLogin(w http.ResponseWriter, r *http.Request) {
 	if s.Store == nil {
 		writeV1Err(w, http.StatusServiceUnavailable, "unavailable", "auth store not configured")
 		return
 	}
-	var body struct {
-		Password string `json:"password"`
-	}
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8*1024))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&body); err != nil {
-		writeV1Err(w, http.StatusBadRequest, "invalid_request", "invalid request body")
+	c, ok := decodeCredentials(w, r)
+	if !ok {
 		return
 	}
-	hash, err := s.Store.GetPasswordHash(r.Context())
-	if err != nil || !console.CheckPassword(hash, body.Password) {
-		writeV1Err(w, http.StatusUnauthorized, "unauthorized", "invalid password")
+	u, err := s.Store.GetUserByName(r.Context(), c.Username)
+	if err != nil || u.Disabled || !console.CheckPassword(u.PasswordHash, c.Password) {
+		s.auditAction(r, audit.Entry{Action: "auth.login_failed", Detail: map[string]any{"username": c.Username}})
+		writeV1Err(w, http.StatusUnauthorized, "unauthorized", "invalid username or password")
 		return
 	}
-	if !s.issueSession(w, r) {
+	if !s.issueSession(w, r, u) {
 		return
 	}
+	s.auditAction(r, audit.Entry{Action: "auth.login", Target: u.ID, Detail: map[string]any{"username": u.Username}})
 	w.WriteHeader(http.StatusNoContent)
 }
 
 // POST /v1/auth/logout — revoke the current session + clear the cookie.
-// With ?all=true it revokes EVERY session (sign out everywhere).
+// With ?all=true it revokes every session of the current user.
 func (s *Server) v1AuthLogout(w http.ResponseWriter, r *http.Request) {
 	if s.Store != nil {
 		if r.URL.Query().Get("all") == "true" {
-			_ = s.Store.DeleteAllSessions(r.Context())
+			if u := s.currentUser(r); u != nil {
+				_ = s.Store.DeleteUserSessions(r.Context(), u.ID)
+			}
 		} else if ck, err := r.Cookie(auth.SessionCookie); err == nil && ck.Value != "" {
 			_ = s.Store.DeleteSession(r.Context(), console.HashToken(ck.Value))
 		}
@@ -115,14 +149,28 @@ func (s *Server) v1AuthLogout(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// POST /v1/auth/password {current_password, new_password} — change password
-// (requires a logged-in user). Revokes all other sessions, then re-issues one.
+// currentUser returns the session user of the request, or nil.
+func (s *Server) currentUser(r *http.Request) *store.User {
+	a := auth.ActorFrom(r.Context())
+	if a.Kind != "user" || s.Store == nil {
+		return nil
+	}
+	u, err := s.Store.GetUserByName(r.Context(), a.User)
+	if err != nil {
+		return nil
+	}
+	return u
+}
+
+// POST /v1/auth/password {current_password, new_password} — change your own
+// password (session only). Signs you out everywhere, then re-issues a session.
 func (s *Server) v1AuthPassword(w http.ResponseWriter, r *http.Request) {
 	if s.Store == nil {
 		writeV1Err(w, http.StatusServiceUnavailable, "unavailable", "auth store not configured")
 		return
 	}
-	if auth.ActorFrom(r.Context()).Kind != "user" {
+	u := s.currentUser(r)
+	if u == nil {
 		writeV1Err(w, http.StatusForbidden, "forbidden", "change password requires a console login")
 		return
 	}
@@ -136,8 +184,7 @@ func (s *Server) v1AuthPassword(w http.ResponseWriter, r *http.Request) {
 		writeV1Err(w, http.StatusBadRequest, "invalid_request", "invalid request body")
 		return
 	}
-	hash, err := s.Store.GetPasswordHash(r.Context())
-	if err != nil || !console.CheckPassword(hash, body.CurrentPassword) {
+	if !console.CheckPassword(u.PasswordHash, body.CurrentPassword) {
 		writeV1Err(w, http.StatusUnauthorized, "unauthorized", "current password is incorrect")
 		return
 	}
@@ -150,61 +197,44 @@ func (s *Server) v1AuthPassword(w http.ResponseWriter, r *http.Request) {
 		writeV1Err(w, http.StatusInternalServerError, "internal", "could not hash password")
 		return
 	}
-	if err := s.Store.SetPasswordHash(r.Context(), newHash); err != nil {
+	u.PasswordHash = newHash
+	if err := s.Store.UpdateUser(r.Context(), u); err != nil {
 		writeV1Err(w, http.StatusInternalServerError, "internal", "could not save password")
 		return
 	}
-	_ = s.Store.DeleteAllSessions(r.Context()) // invalidate everyone, including us
-	if !s.issueSession(w, r) {                 // re-issue for this browser
+	_ = s.Store.DeleteUserSessions(r.Context(), u.ID)
+	s.auditAction(r, audit.Entry{Action: "user.password_changed", Target: u.ID})
+	if !s.issueSession(w, r, u) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// DELETE /v1/auth/password — reset a forgotten console password. Only an
-// API-key (bearer) actor may call it: the operator proves control of the
-// server by holding its key, and the console goes back to first-run
-// "create your password". Every session is revoked.
+// DELETE /v1/auth/password — recovery: remove every user so the console goes
+// back to first-run setup. Only an admin API key (bearer) may call it: the
+// operator proves control of the server by holding its key.
 func (s *Server) v1AuthPasswordReset(w http.ResponseWriter, r *http.Request) {
 	if s.Store == nil {
 		writeV1Err(w, http.StatusServiceUnavailable, "unavailable", "auth store not configured")
 		return
 	}
 	if auth.ActorFrom(r.Context()).Kind != "service" {
-		writeV1Err(w, http.StatusForbidden, "forbidden", "password reset requires an API key (run ./console-login.sh --reset-password on the server)")
+		writeV1Err(w, http.StatusForbidden, "forbidden", "console reset requires an admin API key")
 		return
 	}
-	if err := s.Store.ClearPasswordHash(r.Context()); err != nil {
-		writeV1Err(w, http.StatusInternalServerError, "internal", "could not clear password")
+	if err := s.Store.DeleteAllUsers(r.Context()); err != nil {
+		writeV1Err(w, http.StatusInternalServerError, "internal", "could not reset users")
 		return
 	}
-	_ = s.Store.DeleteAllSessions(r.Context())
-	s.auditAction(r, audit.Entry{Action: "auth.password_reset"})
+	s.auditAction(r, audit.Entry{Action: "auth.console_reset"})
 	w.WriteHeader(http.StatusNoContent)
 }
 
 // ── helpers ──────────────────────────────────────────────────────────
 
-// decodePassword decodes {field: "..."} and validates length. Writes the error
-// response and returns ok=false on failure.
-func decodePassword(w http.ResponseWriter, r *http.Request, field string) (string, bool) {
-	var raw map[string]string
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8*1024))
-	if err := dec.Decode(&raw); err != nil {
-		writeV1Err(w, http.StatusBadRequest, "invalid_request", "invalid request body")
-		return "", false
-	}
-	pw := raw[field]
-	if len(pw) < minPasswordLen {
-		writeV1Err(w, http.StatusBadRequest, "invalid_request", "password must be at least 8 characters")
-		return "", false
-	}
-	return pw, true
-}
-
 // issueSession mints a session, stores it, and sets the cookie. Writes an error
 // response and returns false on failure.
-func (s *Server) issueSession(w http.ResponseWriter, r *http.Request) bool {
+func (s *Server) issueSession(w http.ResponseWriter, r *http.Request, u *store.User) bool {
 	value, hash, err := console.NewSessionValue()
 	if err != nil {
 		writeV1Err(w, http.StatusInternalServerError, "internal", "could not create session")
@@ -212,7 +242,7 @@ func (s *Server) issueSession(w http.ResponseWriter, r *http.Request) bool {
 	}
 	now := time.Now()
 	exp := now.Add(sessionTTL)
-	if err := s.Store.CreateSession(r.Context(), hash, store.DefaultTenant, now.Unix(), now.Unix(), exp.Unix()); err != nil {
+	if err := s.Store.CreateSession(r.Context(), hash, store.DefaultTenant, u.ID, now.Unix(), now.Unix(), exp.Unix()); err != nil {
 		writeV1Err(w, http.StatusInternalServerError, "internal", "could not persist session")
 		return false
 	}

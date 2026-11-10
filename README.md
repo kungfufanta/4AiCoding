@@ -17,10 +17,15 @@ See [PLAN.md](PLAN.md) for the roadmap and the security baseline.
 | Isolation | Non-root (`1000:1000`), read-only rootfs, `--cap-drop=ALL`, `no-new-privileges`, pids/memory limits, tmpfs `/tmp`, only the workspace mounted; optional gVisor (`SANDBOXD_RUNTIME=runsc`) |
 | Resources | Idle reaper, memory-pressure reaper, wake-on-request through Traefik, keepalive |
 | Workspaces | Persistent bind-mounted workspace per sandbox; snapshots; clone a public git repo at create time |
-| Access | API keys and console sessions (bcrypt), audit log |
+| Access | Console users with roles (admin, operator, viewer), session login with CSRF protection, API keys with role, scopes, TTL and optional binding to one sandbox |
+| Policy | One instance policy (`/v1/policy`) checked for every create, port, egress and lifecycle change; requests are clamped or refused |
+| Egress | Sandboxes have no route out; the only exit is an HTTP/CONNECT proxy that allows each sandbox's allowlist only and always blocks metadata/loopback |
+| Approvals | Risky actions (delete a keep-alive sandbox, change policy, egress outside policy, public preview) can require a console admin's single-use approval |
+| Audit | Hash-chained audit log with `GET /v1/audit/verify` |
+| Domain | `/v1/domain` stores domain and TLS mode, checks DNS, installs custom wildcard certificates for Traefik |
 | Preview | Per-port Traefik routes: `http://s-<id>-<port>.preview.<domain>` |
 
-Planned next (see PLAN.md): policy engine and egress policy, session login, domain manager, approvals, a new web console, and multi-node workers.
+Planned next (see PLAN.md): a new web console and multi-node workers.
 
 ## Quickstart (single host)
 
@@ -33,7 +38,16 @@ docker build -f image/Dockerfile -t sandboxd-base:0.3.0 .
 docker compose up -d --build
 ```
 
-The API listens on `127.0.0.1:9090`. Auth is on by default, so set a token in `.env` (`SANDBOXD_API_TOKENS=default=<secret>`) and send it as `Authorization: Bearer <secret>`.
+The API listens on `127.0.0.1:9090`. Auth is on by default, so set a token in `.env` (`SANDBOXD_API_TOKENS=default=<secret>`) and send it as `Authorization: Bearer <secret>`. Set `SANDBOXD_BOOTSTRAP_ADMIN=admin:<password>` to create the first console user.
+
+Sandboxes start with **no internet access**. To let one reach, say, GitHub, allow it in the instance policy and then on the sandbox:
+
+```bash
+curl -s -H "$AUTH" -X PUT $API/v1/policy/egress -d '{"mode":"strict","allow":["github.com","*.npmjs.org"]}'
+curl -s -H "$AUTH" -X PUT $API/v1/sandboxes/$ID/network/egress -d '{"allow":["github.com"]}'
+```
+
+Tools inside the sandbox pick up the proxy from `HTTP_PROXY`/`HTTPS_PROXY`.
 
 ```bash
 API=http://127.0.0.1:9090

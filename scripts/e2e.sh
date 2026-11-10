@@ -47,6 +47,7 @@ cleanup() {
     [ -n "$id" ] && curl -s -m30 -o /dev/null -XPOST "$API/sandbox/$id/purge" >/dev/null 2>&1 || true
   done
   [ -n "$SBX_PID" ] && kill "$SBX_PID" >/dev/null 2>&1 || true
+  [ -n "${WWW_PID:-}" ] && kill "$WWW_PID" >/dev/null 2>&1 || true
   docker ps -aq --filter "label=sandboxd.managed=true" --filter "network=$NET" | xargs -r docker rm -f >/dev/null 2>&1 || true
   docker network rm "$NET" >/dev/null 2>&1 || true
   [ -n "${ALT_IMG:-}" ] && docker rmi "$ALT_IMG" >/dev/null 2>&1 || true
@@ -71,6 +72,10 @@ ALT_IMG="sandboxd-e2e-alt:local"
 docker tag "$IMG" "$ALT_IMG" || fail "docker tag"
 # Listen on all interfaces so the source-guard test below can try to reach the
 # API from inside a sandbox (via the network gateway, i.e. the host).
+# PLAN §8 #5: the egress proxy listens on the host side of the sandbox network.
+GW="$(docker network inspect -f '{{range .IPAM.Config}}{{.Gateway}}{{end}}' "$NET")"
+EPORT="${SANDBOXD_E2E_EGRESS_PORT:-9192}"
+SANDBOXD_EGRESS_PROXY_ADDR="0.0.0.0:$EPORT" SANDBOXD_EGRESS_PROXY_URL="http://$GW:$EPORT" \
 SANDBOXD_ADDR="0.0.0.0:$PORT" SANDBOXD_IMAGE_ALLOWLIST="$ALT_IMG" SANDBOXD_MAX_MEMORY_MB=1024 SANDBOXD_IMAGE="$IMG" SANDBOXD_DATA_DIR="$DD" \
   SANDBOXD_LOG_DIR="$DD/log" SANDBOXD_NETWORK="$NET" SANDBOXD_USERNS=host \
   SANDBOXD_LIBRARY_DIR="$DD/library" SANDBOXD_MIGRATIONS="$HERE/control-plane/migrations" \
@@ -124,11 +129,42 @@ log "hardening ✓"
 # 3b. The sandbox cannot reach the control plane (PLAN §8 #13): a request from
 # inside it to the host's API port is refused by the source guard.
 log "api source guard"
-GW="$(docker network inspect -f '{{range .IPAM.Config}}{{.Gateway}}{{end}}' "$NET")"
 OUT="$(curl -s -m30 -XPOST "$API/v1/sandboxes/$ID/exec" -H 'content-type: application/json' \
   -d "{\"cmd\":[\"bash\",\"-c\",\"exec 3<>/dev/tcp/$GW/$PORT && printf 'GET /v1/sandboxes HTTP/1.0\\\\r\\\\n\\\\r\\\\n' >&3 && head -1 <&3\"]}")"
 echo "$OUT" | jget stdout | grep -q " 403" || fail "sandbox reached the API (want 403): $OUT"
 log "api source guard ✓"
+
+# 3c. Egress goes through the proxy, deny-by-default (PLAN §8 #5). A tiny HTTP
+# server on the gateway stands in for "the internet" (no real network needed).
+log "egress proxy"
+sbsh() { # id script -> stdout
+  python3 -c 'import json,sys; print(json.dumps({"cmd":["bash","-c",sys.argv[1]]}))' "$2" |
+    curl -s -m30 -XPOST "$API/v1/sandboxes/$1/exec" -H 'content-type: application/json' -d @- | jget stdout
+}
+via_proxy() { # id host:port -> first response line of a proxied GET
+  sbsh "$1" "exec 3<>/dev/tcp/$GW/$EPORT && printf 'GET http://$2/ HTTP/1.1\\r\\nHost: $2\\r\\nConnection: close\\r\\n\\r\\n' >&3 && head -1 <&3"
+}
+connect_proxy() { # id host:port -> first response line of a CONNECT
+  sbsh "$1" "exec 3<>/dev/tcp/$GW/$EPORT && printf 'CONNECT $2 HTTP/1.1\\r\\nHost: $2\\r\\n\\r\\n' >&3 && head -1 <&3"
+}
+mkdir -p "$DD/www" && echo egress-ok > "$DD/www/index.html"
+python3 -m http.server 18099 --bind "$GW" --directory "$DD/www" >/dev/null 2>&1 &
+WWW_PID=$!
+sleep 1
+sbsh "$ID" 'echo $HTTPS_PROXY' | grep -q "http://$GW:$EPORT" || fail "HTTPS_PROXY not injected into the sandbox"
+via_proxy "$ID" "$GW:18099" | grep -q " 403" || fail "empty allowlist must deny egress"
+code="$(curl -s -m10 -o "$DD/last.body" -w '%{http_code}' -XPUT "$API/v1/sandboxes/$ID/network/egress" -H 'content-type: application/json' -d "{\"allow\":[\"$GW\"]}")"
+[ "$code" = "403" ] || fail "egress outside the strict policy returned $code, want 403"
+code="$(curl -s -m10 -o "$DD/last.body" -w '%{http_code}' -XPUT "$API/v1/policy/egress" -H 'content-type: application/json' -d "{\"mode\":\"strict\",\"allow\":[\"$GW\",\"169.254.169.254\"]}")"
+[ "$code" = "200" ] || fail "policy egress returned $code"
+code="$(curl -s -m10 -o "$DD/last.body" -w '%{http_code}' -XPUT "$API/v1/sandboxes/$ID/network/egress" -H 'content-type: application/json' -d "{\"allow\":[\"$GW\",\"169.254.169.254\"]}")"
+[ "$code" = "200" ] || fail "sandbox egress returned $code"
+via_proxy "$ID" "$GW:18099" | grep -q " 200" || fail "allowlisted destination denied: $(via_proxy "$ID" "$GW:18099")"
+connect_proxy "$ID" "$GW:18099" | grep -q " 200" || fail "allowlisted CONNECT denied"
+connect_proxy "$ID" "169.254.169.254:80" | grep -q " 403" || fail "cloud metadata must stay blocked even when allowlisted"
+via_proxy "$ID" "example.com:80" | grep -q " 403" || fail "non-allowlisted host must be denied"
+kill "$WWW_PID" 2>/dev/null || true
+log "egress proxy ✓"
 
 # 4. Exec runs inside the sandbox and sees the requested env; non-zero exit is reported.
 log "exec"

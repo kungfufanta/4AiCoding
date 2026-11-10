@@ -17,6 +17,7 @@ import (
 
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/audit"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/events"
+	"github.com/tastyeffectco/sandboxd/control-plane/internal/policy"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/sandboxspec"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/store"
 )
@@ -52,6 +53,8 @@ type v1Sandbox struct {
 	Command        []string          `json:"command,omitempty"`
 	Env            map[string]string `json:"env,omitempty"`
 	Resources      v1Resources       `json:"resources"`
+	Lifecycle      v1Lifecycle       `json:"lifecycle"`
+	Egress         []string          `json:"egress"`
 	Ports          []int             `json:"ports"`
 	Preview        *v1Preview        `json:"preview,omitempty"` // only when the sandbox exposes ports
 	Visibility     string            `json:"visibility"`
@@ -69,6 +72,13 @@ type v1Sandbox struct {
 type v1Resources struct {
 	CPUs     float64 `json:"cpus"`
 	MemoryMB int     `json:"memory_mb"`
+}
+
+// v1Lifecycle is the sandbox's idle behaviour. IdleTimeoutSecs 0 = the
+// instance threshold.
+type v1Lifecycle struct {
+	IdleTimeoutSecs int  `json:"idle_timeout_secs"`
+	KeepAlive       bool `json:"keep_alive"`
 }
 
 // --- helpers --------------------------------------------------------
@@ -180,6 +190,8 @@ func (s *Server) v1SandboxFromRow(_ *http.Request, sb *store.Sandbox) v1Sandbox 
 		Command:    sb.Spec.Command,
 		Env:        sb.Spec.Env,
 		Resources:  v1Resources{CPUs: sb.Spec.CPUs, MemoryMB: s.effectiveMemoryMB(sb)},
+		Lifecycle:  v1Lifecycle{IdleTimeoutSecs: sb.Spec.IdleTimeoutSecs, KeepAlive: sb.IdlePolicy == "always_on"},
+		Egress:     sb.Spec.Egress,
 		Ports:      sb.Ports,
 		Visibility: sb.Visibility,
 		IdlePolicy: sb.IdlePolicy,
@@ -188,6 +200,9 @@ func (s *Server) v1SandboxFromRow(_ *http.Request, sb *store.Sandbox) v1Sandbox 
 	}
 	if out.Ports == nil {
 		out.Ports = []int{}
+	}
+	if out.Egress == nil {
+		out.Egress = []string{}
 	}
 	if len(sb.Ports) > 0 {
 		p := s.v1PreviewView(sb.ID, sb.Status, webPortOf(sb))
@@ -291,10 +306,14 @@ type v1CreateReq struct {
 	// Resources are hard limits, clamped (not rejected) to the instance
 	// maximums; the response carries the applied values.
 	Resources *v1Resources `json:"resources,omitempty"`
-	// Network.Ports is the structured form of Ports (PLAN §4 sandboxspec).
+	// Network.Ports is the structured form of Ports (PLAN §4 sandboxspec);
+	// Network.Egress is the outbound hostname allowlist (policy-checked).
 	Network *struct {
-		Ports []v1PortReq `json:"ports,omitempty"`
+		Ports  []v1PortReq `json:"ports,omitempty"`
+		Egress []string    `json:"egress,omitempty"`
 	} `json:"network,omitempty"`
+	// Lifecycle sets the idle timeout and keep-alive (policy-checked).
+	Lifecycle *v1Lifecycle `json:"lifecycle,omitempty"`
 }
 
 // v1PortReq is one preview port in a create / network request.
@@ -327,6 +346,17 @@ func (s *Server) v1CreateSandbox(w http.ResponseWriter, r *http.Request) {
 	if vis == "" {
 		vis = "private"
 	}
+	if vis == "public" {
+		pol, err := s.policy(r.Context())
+		if err != nil {
+			writeV1Err(w, http.StatusInternalServerError, "internal", err.Error())
+			return
+		}
+		if pol.RequiresApproval(policy.ApprovePublic) &&
+			s.requestApproval(w, r, policy.ApprovePublic, "sandbox:new", req) {
+			return
+		}
+	}
 	createBody := map[string]any{
 		"ports":      req.Ports,
 		"visibility": vis,
@@ -338,6 +368,13 @@ func (s *Server) v1CreateSandbox(w http.ResponseWriter, r *http.Request) {
 	if req.Resources != nil {
 		createBody["cpus"] = req.Resources.CPUs
 		createBody["memory_mb"] = req.Resources.MemoryMB
+	}
+	if req.Network != nil {
+		createBody["egress"] = req.Network.Egress
+	}
+	if req.Lifecycle != nil {
+		createBody["idle_timeout_secs"] = req.Lifecycle.IdleTimeoutSecs
+		createBody["keep_alive"] = req.Lifecycle.KeepAlive
 	}
 	if req.IdlePolicy != "" {
 		createBody["idle_policy"] = req.IdlePolicy
@@ -614,6 +651,19 @@ func (s *Server) v1SandboxLogs(w http.ResponseWriter, r *http.Request) {
 // the soft DELETE preserves the workspace for id-reuse.
 func (s *Server) v1DeleteSandbox(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	// A keep-alive sandbox is one someone decided must not go away; deleting
+	// it can be gated behind an approval (policy approvals).
+	if sb, err := s.Store.Get(r.Context(), id); err == nil && sb.IdlePolicy == "always_on" {
+		pol, perr := s.policy(r.Context())
+		if perr != nil {
+			writeV1Err(w, http.StatusInternalServerError, "internal", perr.Error())
+			return
+		}
+		if pol.RequiresApproval(policy.ApproveDeleteKeepAlive) &&
+			s.requestApproval(w, r, policy.ApproveDeleteKeepAlive, "sandbox:"+id, nil) {
+			return
+		}
+	}
 	code, body := s.delegate(r, s.handlePurgeSandbox, http.MethodPost, "/sandbox/"+id+"/purge",
 		map[string]string{"id": id}, nil)
 	if code >= 200 && code < 300 {

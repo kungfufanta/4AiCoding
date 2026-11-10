@@ -20,7 +20,7 @@ func TestImageOutsideAllowlistRejected(t *testing.T) {
 			if w.Code != http.StatusBadRequest {
 				t.Fatalf("%s: got %d, want 400; body=%s", name, w.Code, w.Body.String())
 			}
-			if !strings.Contains(w.Body.String(), "is not allowed on this instance") {
+			if !strings.Contains(w.Body.String(), "is not allowed by policy") {
 				t.Errorf("%s: missing explanatory message: %s", name, w.Body.String())
 			}
 		})
