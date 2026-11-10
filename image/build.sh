@@ -1,13 +1,10 @@
 #!/usr/bin/env bash
 # image/build.sh [version]
 #
-# Build the sandboxd base image. Multi-stage: stage 1 compiles the
-# `runtimed` supervisor from ../control-plane (so the host needs only
-# Docker, not Go); stage 2 is the Debian-slim runtime image with the
-# language toolchains baked in.
+# Build the sandboxd base image: a Debian-slim image with the language
+# toolchains baked in. There is no in-sandbox supervisor.
 #
-# Build context is the REPO ROOT (one level up from this script) so the
-# control-plane source is visible to the builder stage. Native arch
+# Build context is the REPO ROOT (one level up from this script). Native arch
 # (works on both arm64 and amd64). Override the tag by passing a version.
 
 set -euo pipefail

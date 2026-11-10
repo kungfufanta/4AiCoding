@@ -25,7 +25,6 @@ import (
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/logging"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/manifest"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/metrics"
-	"github.com/tastyeffectco/sandboxd/control-plane/internal/preset"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/snapshot"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/store"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/traefik"
@@ -47,23 +46,17 @@ type createReq struct {
 	MemoryHigh string      `json:"memory_high,omitempty"`
 	Visibility string      `json:"visibility,omitempty"`
 	External   externalReq `json:"external"`
-	// Template, when set, is the name of a prebuilt golden template
-	// .img to reflink-clone the workspace from instead of an empty
-	// seeded provision (the fast-cold-start path). Empty = the existing
-	// scaffold-at-runtime behaviour, unchanged.
-	Template string `json:"template,omitempty"`
 	// TemplatePath is an INTERNAL, pre-resolved absolute path to a
 	// golden .img to clone from — set by the v1 snapshot spin-up path
 	// after it has resolved and
 	// authorized the snapshot. It must live under TemplatesDir or
-	// LibraryRoot (validated below). Mutually exclusive with Template.
+	// LibraryRoot (validated below).
 	// Not part of the public /v1 contract; never set from an external
 	// body in practice (v1 builds the internal body itself).
 	TemplatePath string `json:"template_path,omitempty"`
 	// Env injects environment variables into the sandbox container at
-	// create time (e.g. {"ANTHROPIC_API_KEY":"sk-..."}). They are visible
-	// to the container's main process (runtimed) and therefore to coding
-	// agents (opencode/claude) it spawns. Values are passed straight to
+	// create time. They are visible to every process in the sandbox, so
+	// never pass secrets here. Values are passed straight to
 	// `docker run --env`; keys must be non-empty and free of '=' and
 	// newlines.
 	Env map[string]string `json:"env,omitempty"`
@@ -73,18 +66,10 @@ type createReq struct {
 	//   reaping. NOTE: still stoppable under critical host pressure (<5% mem
 	//   available), and not auto-restarted if stopped.
 	IdlePolicy string `json:"idle_policy,omitempty"`
-	// AppID links this sandbox to a durable app (Phase 1). Set by the
-	// POST /v1/apps/{id}/sandbox path; empty for the standalone sandbox
-	// API. The sandbox is the app's current running instance.
-	AppID string `json:"app_id,omitempty"`
-	// RuntimePreset, when set, names a runtime preset (react-vite, nextjs,
-	// node-express, fastapi, worker). runtimed applies the preset's template +
-	// sandbox.yaml on first boot. Takes precedence over Template.
-	RuntimePreset string `json:"runtime_preset,omitempty"`
 
-	// Git carries tokenless import metadata for a private-repo app (the token is
-	// referenced by credential_id and decrypted control-plane-side, never sent
-	// inline). Set by v1CreateAppSandbox; nil for blank/preset apps.
+	// Git clones a PUBLIC repository into the workspace before the container
+	// starts. Private repositories (credential broker) arrive in a later
+	// milestone; a credential_id is rejected for now.
 	Git *createGitReq `json:"git,omitempty"`
 
 	// Image is rejected — per-app image selection is not supported (instance-wide
@@ -95,8 +80,7 @@ type createReq struct {
 type createGitReq struct {
 	RepoURL      string `json:"repo_url"`
 	Branch       string `json:"branch"`
-	CredentialID string `json:"credential_id"`
-	Owner        string `json:"owner"` // owner_token for the owner-scoped decrypt
+	CredentialID string `json:"credential_id,omitempty"`
 }
 
 // --- A1.5a: resolved preview web port ---------------------------------
@@ -106,20 +90,6 @@ type createGitReq struct {
 func webPortOf(sb *store.Sandbox) int {
 	if sb.WebPort.Valid && sb.WebPort.Int64 > 0 {
 		return int(sb.WebPort.Int64)
-	}
-	return 3000
-}
-
-// presetWebPort returns the web.port a preset's manifest declares, or 3000.
-func presetWebPort(presetID string) int {
-	if presetID != "" {
-		if p, ok := preset.Get(presetID); ok {
-			if m, err := manifest.Parse([]byte(p.Manifest)); err == nil {
-				if wp := m.WebPort(); wp > 0 {
-					return wp
-				}
-			}
-		}
 	}
 	return 3000
 }
@@ -310,24 +280,6 @@ func nullStr(s string) sql.NullString {
 	return sql.NullString{String: s, Valid: s != ""}
 }
 
-// validTemplateName guards the optional `template` field on
-// POST /sandbox. A template name is resolved to a host-local file
-// <TemplatesDir>/<name>.img, so it must be a plain identifier — no
-// path separators, no traversal, no dots. New variants are added as
-// new .img files, so no allowlist is hardcoded here — a new variant
-// needs no code change, only the golden .img on the host.
-func validTemplateName(s string) bool {
-	if s == "" || len(s) > 64 {
-		return false
-	}
-	for _, c := range s {
-		if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-') {
-			return false
-		}
-	}
-	return true
-}
-
 // pathUnderRoot reports whether clean (an already filepath.Clean'd
 // path) is the root itself or a descendant of it. root "" never
 // matches. Both sides are cleaned so a trailing slash on root is fine.
@@ -374,6 +326,10 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Image != nil {
 		writeErr(w, http.StatusBadRequest, errPerAppImage)
+		return
+	}
+	if req.Git != nil && req.Git.CredentialID != "" {
+		writeErr(w, http.StatusBadRequest, "git.credential_id is not supported yet; only public repositories can be cloned")
 		return
 	}
 	if req.MemoryHigh == "" {
@@ -429,22 +385,11 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Workspace seed source. Two distinct mechanisms:
-	//   - template_path: a host-side clone of a snapshot (full workspace,
-	//     including node_modules) via ProvisionFromTemplate — the
-	//     snapshot/fork spin-up path.
-	//   - template: a named app scaffold baked into the image at
-	//     /opt/templates/<name>, seeded by runtimed on first boot
-	//     (default react-standard; "blank" leaves the app empty). The
-	//     workspace is still empty-provisioned here — only the seed
-	//     source differs — so no host-side templates dir is required.
+	// Workspace seed source: template_path is a host-side clone of a
+	// snapshot (full workspace) via ProvisionFromTemplate — the snapshot
+	// spin-up path. Without it the workspace is empty-provisioned.
 	var templatePath string
-	var templateName string
-	switch {
-	case req.TemplatePath != "" && req.Template != "":
-		writeErr(w, http.StatusBadRequest, "template and template_path are mutually exclusive")
-		return
-	case req.TemplatePath != "":
+	if req.TemplatePath != "" {
 		// Pre-resolved snapshot spin-up path. Defence in depth: the path
 		// is built by the v1 layer from a snapshot row we wrote, but we
 		// still require it to live under an allowed root so a bug can
@@ -459,13 +404,6 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		templatePath = clean
-	case req.Template != "":
-		if !validTemplateName(req.Template) {
-			writeErr(w, http.StatusBadRequest,
-				"invalid template: must be lowercase [a-z0-9-], <=64 chars")
-			return
-		}
-		templateName = req.Template
 	}
 
 	// Phase 5 — wake admission check applies to brand-new creates too
@@ -514,9 +452,9 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	imgPath, mntPath := s.Loopback.Paths(req.ID)
-	// A1.5a — resolve the preview web port. Start from the selected preset's
-	// manifest (or 3000); a cloned repo sandbox.yaml may override it post-clone.
-	webPort := presetWebPort(req.RuntimePreset)
+	// A1.5a — resolve the preview web port: 3000 unless a cloned repo's
+	// sandbox.yaml declares another one (applied post-clone).
+	webPort := 3000
 	sb := &store.Sandbox{
 		ID:                  req.ID,
 		Status:              "creating",
@@ -531,7 +469,6 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		ExternalUserID:      nullStr(req.External.UserID),
 		ExternalProjectID:   nullStr(req.External.ProjectID),
 		ExternalWorkspaceID: nullStr(req.External.WorkspaceID),
-		AppID:               nullStr(req.AppID),
 	}
 	if err := s.Store.Create(r.Context(), sb); err != nil {
 		if errors.Is(err, store.ErrConflict) {
@@ -543,7 +480,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = metrics.RefreshSandboxGauge(r.Context(), s.Store)
 	s.recordEvent(r, events.Event{Type: events.SandboxCreateStarted, Severity: events.SeverityInfo,
-		Message: "Creating sandbox", AppID: req.AppID, SandboxID: req.ID})
+		Message: "Creating sandbox", SandboxID: req.ID})
 
 	// From here on, any error path also marks the row as 'error' and
 	// attempts best-effort cleanup of the half-built state.
@@ -554,7 +491,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		_ = s.Store.MarkError(r.Context(), req.ID, msg)
 		_ = metrics.RefreshSandboxGauge(r.Context(), s.Store)
 		s.recordEvent(r, events.Event{Type: events.SandboxCreateFailed, Severity: events.SeverityError,
-			Message: "Sandbox create failed", AppID: req.AppID, SandboxID: req.ID,
+			Message: "Sandbox create failed", SandboxID: req.ID,
 			Payload: map[string]any{"reason": msg}})
 	}
 
@@ -594,56 +531,24 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 1c. Git import (A1): clone a private HTTPS repo into the workspace app dir,
-	//     host-side, BEFORE the container starts — so the token (decrypted only
-	//     here) never enters the sandbox. The cloned dir is non-empty, so runtimed
-	//     treats it as a populated workspace: it does NOT seed a template and does
-	//     NOT write the preset sandbox.yaml (applyPreset returns early — see
-	//     cmd/runtimed/manifest.go). The imported repo's own sandbox.yaml, if any,
-	//     is authoritative; with none, runtimed falls back to the Vite defaults.
-	//     (No runtime detection is run on import — that is advisory-only today.)
+	// 1c. Git import (A1): clone an HTTPS repo into the workspace app dir,
+	//     host-side, BEFORE the container starts. Public repositories only for
+	//     now: no credential ever enters this path.
 	if req.Git != nil && req.Git.RepoURL != "" {
 		s.recordEvent(r, events.Event{Type: events.GitRepoCloneStarted, Severity: events.SeverityInfo,
-			Message: "Cloning repository", AppID: req.AppID, SandboxID: req.ID,
+			Message: "Cloning repository", SandboxID: req.ID,
 			Payload: map[string]any{"repo_url": req.Git.RepoURL, "branch": req.Git.Branch}})
 		failClone := func(reason string) {
 			s.recordEvent(r, events.Event{Type: events.GitRepoCloneFailed, Severity: events.SeverityError,
-				Message: "Repository clone failed", AppID: req.AppID, SandboxID: req.ID,
+				Message: "Repository clone failed", SandboxID: req.ID,
 				Payload: map[string]any{"repo_url": req.Git.RepoURL, "branch": req.Git.Branch, "reason": reason}})
 			abort("git clone: " + reason)
-		}
-		// Credential is OPTIONAL: an empty credential_id means a PUBLIC repo (a
-		// curated starter or any public URL) — clone tokenless. Only when a
-		// credential_id is given do we require the secrets store + decrypt it.
-		var token []byte
-		if req.Git.CredentialID != "" {
-			if s.Secrets == nil {
-				failClone("credential store unavailable")
-				writeErr(w, http.StatusServiceUnavailable, "git clone: credential store unavailable")
-				return
-			}
-			enc, nonce, found, err := s.Store.GetGitCredentialSecret(r.Context(), req.Git.Owner, req.Git.CredentialID)
-			if err != nil || !found {
-				failClone("credential not found")
-				writeErr(w, http.StatusBadRequest, "git clone: credential not found")
-				return
-			}
-			tok, derr := s.Secrets.Open(enc, nonce)
-			if derr != nil {
-				failClone("credential decrypt failed")
-				writeErr(w, http.StatusInternalServerError, "git clone: credential decrypt failed")
-				return
-			}
-			token = tok
 		}
 		appDir := filepath.Join(mntPath, "workspace", "app")
 		_ = os.MkdirAll(filepath.Dir(appDir), 0o755) // ensure workspace/ exists; clone creates app/
 		cerr := gitimport.Clone(r.Context(), gitimport.Spec{
-			RepoURL: req.Git.RepoURL, Branch: req.Git.Branch, Token: string(token), DestDir: appDir,
+			RepoURL: req.Git.RepoURL, Branch: req.Git.Branch, DestDir: appDir,
 		})
-		for i := range token { // best-effort scrub of the decrypted token (nil-safe)
-			token[i] = 0
-		}
 		if cerr != nil {
 			failClone(cerr.Error()) // gitimport already redacts the token from messages
 			writeErr(w, http.StatusBadGateway, "git clone failed")
@@ -654,9 +559,8 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusInternalServerError, "git clone: ownership")
 			return
 		}
-		_ = s.Store.SetAppImported(r.Context(), req.AppID, time.Now().Unix())
 		s.recordEvent(r, events.Event{Type: events.GitRepoCloned, Severity: events.SeverityInfo,
-			Message: "Repository cloned", AppID: req.AppID, SandboxID: req.ID,
+			Message: "Repository cloned", SandboxID: req.ID,
 			Payload: map[string]any{"repo_url": req.Git.RepoURL, "branch": req.Git.Branch}})
 	}
 
@@ -686,20 +590,6 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		envFlags = append(envFlags, k+"="+v)
-	}
-	// A named template selects the app scaffold runtimed seeds on first
-	// boot. Unset → runtimed's default (react-standard); "blank" → empty.
-	if templateName != "" {
-		envFlags = append(envFlags, "RUNTIMED_TEMPLATE="+templateName)
-	}
-	// A runtime preset supplies both the starter template and the sandbox.yaml;
-	// runtimed applies it on first boot and prefers it over RUNTIMED_TEMPLATE.
-	if req.RuntimePreset != "" {
-		if !preset.Valid(req.RuntimePreset) {
-			writeErr(w, http.StatusBadRequest, "unknown runtime_preset: "+req.RuntimePreset)
-			return
-		}
-		envFlags = append(envFlags, "RUNTIMED_RUNTIME_PRESET="+req.RuntimePreset)
 	}
 
 	// 2. docker run with the locked flag set + traefik labels.
@@ -814,9 +704,6 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	createDetail := map[string]any{"visibility": visibility, "ports": req.Ports}
-	if req.Template != "" {
-		createDetail["template"] = req.Template
-	}
 	s.auditAction(r, audit.Entry{
 		Action:         "sandbox.create",
 		Target:         req.ID,
@@ -824,7 +711,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		Detail:         createDetail,
 	})
 	s.recordEvent(r, events.Event{Type: events.SandboxStarted, Severity: events.SeverityInfo,
-		Message: "Sandbox started", AppID: req.AppID, SandboxID: req.ID})
+		Message: "Sandbox started", SandboxID: req.ID})
 	writeJSON(w, http.StatusCreated, toRespRow(fresh))
 }
 
@@ -946,7 +833,7 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 		ExternalUserID: extUID,
 	})
 	s.recordEvent(r, events.Event{Type: events.SandboxDeleted, Severity: events.SeverityInfo,
-		Message: "Sandbox deleted", AppID: sb.AppID.String, SandboxID: id})
+		Message: "Sandbox deleted", SandboxID: id})
 	w.WriteHeader(http.StatusNoContent)
 }
 

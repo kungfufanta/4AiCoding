@@ -1,64 +1,26 @@
-# Contributing to sandboxd
+# Contributing to 4AiCoding
 
-Thanks for your interest! sandboxd aims to stay **small, reliable, and easy to
-self-host**. We favour a tight, well-understood core over feature breadth.
+4AiCoding aims to stay a **small, well-tested sandbox lifecycle control plane**.
+Work follows the milestones in [PLAN.md](PLAN.md); each milestone lands as a
+pull request with green CI.
 
-## Project layout
+## Layout
 
 ```
-sandboxd/
-├── docker-compose.yml     # the full stack: traefik + sandboxd
-├── install.sh             # one-click installer
-├── .env.example           # all configuration, with defaults
-├── traefik/               # edge config (static + dynamic/ wake & auth routers)
-├── image/                 # the per-sandbox base image (Dockerfile + skeleton)
-└── control-plane/         # the sandboxd control plane (Go)
-    ├── cmd/sandboxd/       # daemon entrypoint + env wiring
-    ├── cmd/runtimed/       # in-sandbox supervisor (baked into the image)
-    └── internal/           # docker wrapper, storage, traefik labels, reaper,
-                            # wake path, reconciler, store (SQLite), API
+control-plane/   Go control plane (cmd/sandboxd, internal/*, migrations/)
+image/           sandbox base image
+traefik/         edge router config
+scripts/e2e.sh   lifecycle e2e against a real Docker daemon
+docs/            OpenAPI contract and operator notes
 ```
 
-## Dev loop
+## Before you open a PR
 
-The control plane is plain Go (toolchain 1.22+):
-
-```bash
-cd control-plane
-go build ./...      # compile
-go test ./...       # unit tests
-go vet ./...
-```
-
-To exercise the whole stack, run `./install.sh` (or `docker compose up -d
---build`) and hit the API on `SANDBOXD_API_BIND`. The base image build is the
-slow part; it's cached after the first run.
-
-## Guidelines
-
-- **Keep the core lean.** New host dependencies are a hard sell — the headline
-  promise is "runs fully on Docker, one command." If a feature needs more than
-  Docker, it should be optional and default-off.
-- **The control plane shells out to the `docker` CLI** by design (easy to read,
-  easy to debug). Reach for the SDK only with a measured reason.
-- **SQLite is the source of truth**; the reconciler converges Docker to it.
-  Don't add state that lives only in Docker.
-- Match the surrounding code's style and comment density.
-- Include a test for behaviour changes where practical.
-
-## Releases and breaking changes
-
-Releases are cut with `./release.sh`, which generates the notes from merged PR
-titles. If a release changes behaviour operators must act on (a renamed env
-var, a changed default, a removed endpoint), describe it in a `BREAKING.md`
-file at the repo root (committed — `release.sh` needs a clean tree) before
-running `release.sh`: its content becomes a
-"## Breaking changes" section at the top of the release notes and the file is
-removed in the release commit. That section is what the console shows in the
-version panel, and what `./upgrade.sh` prints and asks about, before anyone
-upgrades — so write it for the operator, with the exact steps they need.
-
-## Reporting issues
-
-Please include your Docker version, OS, the relevant `docker compose logs
-sandboxd` output, and the request that triggered the problem.
+- `make lint` and `make test` pass (Go 1.26, `go test -race`).
+- `make e2e` passes if you changed lifecycle behaviour (needs a local Docker daemon).
+- API changes update [docs/openapi.yaml](docs/openapi.yaml); the contract test
+  fails when routes and the spec drift apart.
+- Schema changes add a new numbered file in `control-plane/migrations/`; never
+  edit an applied migration.
+- Security-relevant changes reference the matching row of PLAN.md §8.
+- Add a line to [CHANGELOG.md](CHANGELOG.md) under **Unreleased**.

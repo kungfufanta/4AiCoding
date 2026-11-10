@@ -13,7 +13,7 @@ body:
       label: Component
       description: Which part is affected?
       options:
-        - sandboxd core (control plane / runtimed / Traefik)
+        - control plane (API / lifecycle / Traefik)
         - console (web client)
         - App Store recipe / runtime detection
         - docs
@@ -42,7 +42,7 @@ body:
     id: logs
     attributes:
       label: Logs / events
-      description: Relevant control-plane logs, `runtimed` process logs, or the app's activity events. Redact secrets.
+      description: Relevant control-plane logs, sandbox container logs (`GET /v1/sandboxes/{id}/logs`), or audit entries. Redact secrets.
       render: shell
   - type: input
     id: version

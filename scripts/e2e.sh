@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # End-to-end lifecycle test for sandboxd against a real Docker daemon.
-# Covers: create -> running container -> exec -> stop -> start -> delete,
-# plus input validation. No in-sandbox supervisor and no credentials needed.
+# Covers the /v1 lifecycle: create -> list -> exec -> logs -> stop -> start ->
+# restart -> delete, the container hardening flags, input validation, and the
+# legacy /sandbox create path. No credentials needed.
 #
 # Inputs (env):
 #   SANDBOXD_IMAGE  sandbox image tag (e.g. built from scripts/e2e/Dockerfile)
@@ -10,8 +11,15 @@
 # Run locally:
 #   docker build -t sandboxd-e2e:local scripts/e2e
 #   (cd control-plane && go build -o /tmp/sandboxd ./cmd/sandboxd)
-#   SANDBOXD_IMAGE=sandboxd-e2e:local SANDBOXD_BIN=/tmp/sandboxd bash scripts/e2e.sh
+#   sudo SANDBOXD_IMAGE=sandboxd-e2e:local SANDBOXD_BIN=/tmp/sandboxd bash scripts/e2e.sh
 set -uo pipefail
+
+if [ "$(id -u)" != "0" ]; then
+  # Like production: sandboxd must be able to delete workspace files that the
+  # sandbox user (uid 1000) wrote. Run with sudo.
+  echo "❌ scripts/e2e.sh must run as root (sudo), like sandboxd in production" >&2
+  exit 2
+fi
 
 IMG="${SANDBOXD_IMAGE:?set SANDBOXD_IMAGE}"
 BIN="${SANDBOXD_BIN:?set SANDBOXD_BIN}"
@@ -26,6 +34,7 @@ declare -a IDS=()
 log() { echo "── $*"; }
 fail() {
   echo "❌ FAIL: $*"
+  [ -s "$DD/last.body" ] && { echo "---- last response body ----"; cat "$DD/last.body"; echo; }
   echo "---- sandboxd log (tail) ----"; tail -40 "$DD/sandboxd.log" 2>/dev/null || true
   exit 1
 }
@@ -41,7 +50,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-http() { curl -s -m"${3:-30}" -o /dev/null -w '%{http_code}' -X"$1" "$API$2"; }
+http() { curl -s -m"${3:-30}" -o "$DD/last.body" -w '%{http_code}' -X"$1" "$API$2"; }
 status() { curl -s -m5 "$API/v1/sandboxes/$1" | grep -oE '"status":"[a-z]+"' | head -1 | cut -d'"' -f4; }
 cstate() { docker inspect -f '{{.State.Status}}' "s-$1" 2>/dev/null; }
 wait_status() { # id want tries
@@ -63,51 +72,86 @@ for _ in $(seq 1 60); do curl -s -m2 "$API/healthz" 2>/dev/null | grep -q ok && 
 curl -s -m3 "$API/healthz" | grep -q ok || fail "sandboxd never became healthy"
 log "sandboxd healthy"
 
-# 1. Create -> container running.
-log "create -> container running"
-RESP="$(curl -s -m120 -XPOST "$API/sandbox" -H 'content-type: application/json' -d '{"ports":[3000]}')"
-ID="$(echo "$RESP" | grep -oE '"id":"[^"]+"' | head -1 | cut -d'"' -f4)"
+jget() { # json field from stdin (top-level string/number)
+  python3 -c 'import json,sys; d=json.load(sys.stdin); v=d
+for k in sys.argv[1].split("."): v=v[int(k)] if k.isdigit() else v.get(k)
+print("" if v is None else v)' "$1"
+}
+
+# 1. Create via /v1 -> container running.
+log "create (/v1) -> container running"
+RESP="$(curl -s -m120 -XPOST "$API/v1/sandboxes" -H 'content-type: application/json' -d '{"ports":[3000],"env":{"E2E_MARK":"from-env"}}')"
+ID="$(echo "$RESP" | jget id)"
 [ -n "$ID" ] || fail "create returned no id: $RESP"
 IDS+=("$ID")
+[ "$(echo "$RESP" | jget status)" = "running" ] || fail "create status is not running: $RESP"
+[ "$(echo "$RESP" | jget preview.port)" = "3000" ] || fail "create response has no preview for port 3000: $RESP"
 [ "$(cstate "$ID")" = "running" ] || fail "container s-$ID is '$(cstate "$ID")', want running"
 docker inspect -f '{{index .Config.Labels "sandboxd.managed"}}' "s-$ID" | grep -q true || fail "container missing sandboxd.managed label"
-[ "$(status "$ID")" = "running" ] || fail "v1 status is '$(status "$ID")', want running"
 log "create ✓ ($ID)"
 
-# 2. Hardening flags are applied.
+# 2. List includes it; status filter works.
+log "list"
+curl -s -m10 "$API/v1/sandboxes" | grep -q "\"$ID\"" || fail "list does not include $ID"
+curl -s -m10 "$API/v1/sandboxes?status=stopped" | grep -q "\"$ID\"" && fail "status=stopped returned a running sandbox"
+log "list ✓"
+
+# 3. Hardening flags are applied.
 log "container hardening"
 [ "$(docker inspect -f '{{.HostConfig.ReadonlyRootfs}}' "s-$ID")" = "true" ] || fail "rootfs is not read-only"
 docker inspect -f '{{.HostConfig.CapDrop}}' "s-$ID" | grep -q ALL || fail "capabilities not dropped"
 docker inspect -f '{{.HostConfig.SecurityOpt}}' "s-$ID" | grep -q no-new-privileges || fail "no-new-privileges missing"
+docker inspect -f '{{range .Mounts}}{{.Source}} {{end}}' "s-$ID" | grep -q docker.sock && fail "docker.sock is mounted into the sandbox"
 log "hardening ✓"
 
-# 3. Exec runs inside the sandbox.
+# 4. Exec runs inside the sandbox and sees the requested env; non-zero exit is reported.
 log "exec"
-OUT="$(curl -s -m30 -XPOST "$API/sandbox/$ID/exec" -H 'content-type: application/json' -d '{"cmd":["echo","hello-e2e"]}')"
-echo "$OUT" | grep -q hello-e2e || fail "exec output missing marker: $OUT"
+OUT="$(curl -s -m30 -XPOST "$API/v1/sandboxes/$ID/exec" -H 'content-type: application/json' -d '{"cmd":["sh","-c","echo $E2E_MARK"]}')"
+[ "$(echo "$OUT" | jget stdout | tr -d '\n')" = "from-env" ] || fail "exec output/env mismatch: $OUT"
+OUT="$(curl -s -m30 -XPOST "$API/v1/sandboxes/$ID/exec" -H 'content-type: application/json' -d '{"cmd":["sh","-c","exit 7"]}')"
+[ "$(echo "$OUT" | jget exit_code)" = "7" ] || fail "exec exit code not reported: $OUT"
 log "exec ✓"
 
-# 4. Invalid payload -> 400, unknown id -> 404.
+# 5. Logs: the main process writes nothing, so seed a line via PID 1's stdout.
+log "logs"
+curl -s -m30 -o /dev/null -XPOST "$API/v1/sandboxes/$ID/exec" -H 'content-type: application/json' -d '{"cmd":["sh","-c","echo e2e-log-line > /proc/1/fd/1"]}'
+curl -s -m10 "$API/v1/sandboxes/$ID/logs?tail=50" | grep -q e2e-log-line || fail "logs missing the seeded line"
+# follow=true never ends on its own; -m3 cuts it (curl exit 28), so capture first
+# instead of piping (pipefail would report the timeout, not the grep).
+SSE="$(curl -s -m3 -N "$API/v1/sandboxes/$ID/logs?tail=5&follow=true" 2>/dev/null || true)"
+echo "$SSE" | grep -q "^data: e2e-log-line" || fail "SSE logs missing the seeded line: $SSE"
+log "logs ✓"
+
+# 6. Validation: bad payloads -> 400, unknown id -> 404, exec on stopped -> 409 (below).
 log "validation"
-code="$(curl -s -m10 -o /dev/null -w '%{http_code}' -XPOST "$API/sandbox" -H 'content-type: application/json' -d '{"ports":"nope"}')"
+code="$(curl -s -m10 -o /dev/null -w '%{http_code}' -XPOST "$API/v1/sandboxes" -H 'content-type: application/json' -d '{"ports":"nope"}')"
 [ "$code" = "400" ] || fail "bad payload returned $code, want 400"
+code="$(curl -s -m10 -o /dev/null -w '%{http_code}' -XPOST "$API/v1/sandboxes" -H 'content-type: application/json' -d '{"template":"react-standard"}')"
+[ "$code" = "400" ] || fail "unknown field returned $code, want 400"
 code="$(http GET /v1/sandboxes/01JZZZZZZZZZZZZZZZZZZZZZZZ 10)"
 [ "$code" = "404" ] || fail "unknown id returned $code, want 404"
 log "validation ✓"
 
-# 5. Stop -> container exited; start -> running again.
-log "stop -> start"
+# 7. Stop -> container exited; exec refused; start -> running; restart -> running.
+log "stop -> start -> restart"
 code="$(http POST "/v1/sandboxes/$ID/stop" 60)"
 [ "$code" = "200" ] || fail "stop returned $code"
 wait_status "$ID" stopped 15 || fail "status never became stopped"
 [ "$(cstate "$ID")" = "exited" ] || fail "container is '$(cstate "$ID")' after stop, want exited"
+code="$(curl -s -m10 -o /dev/null -w '%{http_code}' -XPOST "$API/v1/sandboxes/$ID/exec" -H 'content-type: application/json' -d '{"cmd":["true"]}')"
+[ "$code" = "409" ] || fail "exec on stopped sandbox returned $code, want 409"
 code="$(http POST "/v1/sandboxes/$ID/start" 120)"
 [ "$code" = "200" ] || fail "start returned $code"
 wait_status "$ID" running 30 || fail "status never became running after start"
 [ "$(cstate "$ID")" = "running" ] || fail "container is '$(cstate "$ID")' after start, want running"
-log "stop/start ✓"
+STARTED1="$(docker inspect -f '{{.State.StartedAt}}' "s-$ID")"
+code="$(http POST "/v1/sandboxes/$ID/restart" 120)"
+[ "$code" = "200" ] || fail "restart returned $code"
+wait_status "$ID" running 30 || fail "status never became running after restart"
+[ "$(docker inspect -f '{{.State.StartedAt}}' "s-$ID")" != "$STARTED1" ] || fail "restart did not restart the container"
+log "stop/start/restart ✓"
 
-# 6. Delete -> container and row gone.
+# 8. Delete -> container and row gone.
 log "delete"
 code="$(http DELETE "/v1/sandboxes/$ID" 60)"
 [ "$code" = "204" ] || fail "delete returned $code, want 204"
@@ -116,5 +160,16 @@ code="$(http GET "/v1/sandboxes/$ID" 10)"
 [ "$code" = "404" ] || fail "deleted sandbox returned $code, want 404"
 IDS=()
 log "delete ✓"
+
+# 9. Legacy create path still works (deprecated, kept until clients move).
+log "legacy POST /sandbox"
+LID="$(curl -s -m120 -XPOST "$API/sandbox" -H 'content-type: application/json' -d '{}' | jget id)"
+[ -n "$LID" ] || fail "legacy create returned no id"
+IDS+=("$LID")
+[ "$(cstate "$LID")" = "running" ] || fail "legacy sandbox not running"
+code="$(http DELETE "/v1/sandboxes/$LID" 60)"
+[ "$code" = "204" ] || fail "delete of legacy sandbox returned $code"
+IDS=()
+log "legacy ✓"
 
 echo "✅ E2E PASSED"

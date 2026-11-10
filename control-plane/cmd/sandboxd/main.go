@@ -421,11 +421,9 @@ func main() {
 	}
 
 	// Self-healing start: rebuild a container that is missing, or that was
-	// created from an older base image than we now run. The base image carries
-	// runtimed (the in-sandbox supervisor), so without this an upgrade never
-	// reaches long-lived sandboxes and they keep the old supervisor — and miss
-	// new agent/model support. Lossless: everything durable is in the workspace
-	// bind mount, and the container rootfs is read-only by construction.
+	// created from an older base image than we now run, so long-lived sandboxes
+	// move onto the current image. Lossless: everything durable is in the
+	// workspace bind mount, and the container rootfs is read-only by construction.
 	wakeHandler.Image = image
 	wakeHandler.Recreate = func(ctx context.Context, sb *store.Sandbox) error {
 		spec := sandboxspec.Build(sb, sandboxspec.Env{
@@ -439,7 +437,6 @@ func main() {
 			PreviewHostTag:    hosts.Tag,
 			PreviewEntrypoint: previewEntrypoint,
 			PreviewTLS:        previewTLS,
-			RuntimePreset:     runtimePresetForSandbox(ctx, st, sb),
 		})
 		// Remove any existing container first so the name is free; ignore a
 		// not-found (the common case) and let Run surface a real failure.
@@ -855,11 +852,9 @@ func egressModeLabel(m *egress.Manager) string {
 //	-ldflags "-X main.buildVersion=… -X main.buildCommit=…"
 //
 // (see control-plane/Dockerfile + docker-compose build args, fed by
-// upgrade.sh/install.sh from `git describe`). When unset — e.g. a bare
+// the operator from `git describe`). When unset — e.g. a bare
 // `go build` — buildIdent falls back to the module's VCS build info, then to
-// dev/unknown. This is what `sandboxd version`, /v1/settings, and the telemetry
-// heartbeat report, so the version-distribution insight is only meaningful once
-// these are stamped.
+// dev/unknown. This is what `sandboxd version`, /version and /v1/settings report.
 var (
 	buildVersion string
 	buildCommit  string
@@ -890,20 +885,6 @@ func buildIdent() (version, gitCommit string) {
 		gitCommit = gitCommit[:12]
 	}
 	return version, gitCommit
-}
-
-// runtimePresetForSandbox returns the owning app's runtime preset, so a
-// recreated container gets the same RUNTIMED_RUNTIME_PRESET it was created
-// with. Best-effort: an unknown app just means runtimed uses its default.
-func runtimePresetForSandbox(ctx context.Context, st *store.Store, sb *store.Sandbox) string {
-	if sb == nil || !sb.AppID.Valid || sb.AppID.String == "" {
-		return ""
-	}
-	app, err := st.GetApp(ctx, sb.AppID.String)
-	if err != nil || app == nil || !app.RuntimePreset.Valid {
-		return ""
-	}
-	return app.RuntimePreset.String
 }
 
 // legacyAware returns preferred unless it does not exist and the pre-rename

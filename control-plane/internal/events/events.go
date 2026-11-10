@@ -24,7 +24,7 @@ import (
 // interface so this package doesn't import internal/store (mirrors
 // internal/audit). *store.Store satisfies it.
 type Store interface {
-	InsertAppEvent(ctx context.Context, id, ownerToken, appID, sandboxID, taskID, snapshotID, typ, severity, message, payloadJSON, createdAt string) error
+	InsertAppEvent(ctx context.Context, id, ownerToken, sandboxID, snapshotID, typ, severity, message, payloadJSON, createdAt string) error
 }
 
 // Severity values (kept small + stable for export).
@@ -38,10 +38,6 @@ const (
 // add new ones, don't rename. (Messages are human-readable and must NOT be
 // used for programmatic logic.)
 const (
-	AppCreated = "app.created"
-	AppUpdated = "app.updated"
-	AppDeleted = "app.deleted"
-
 	SandboxCreateStarted = "sandbox.create.started"
 	SandboxCreateFailed  = "sandbox.create.failed"
 
@@ -49,29 +45,14 @@ const (
 	GitRepoCloneStarted = "git.repo.clone_started"
 	GitRepoCloned       = "git.repo.cloned"
 	GitRepoCloneFailed  = "git.repo.clone_failed"
-	// Git push (B2). Payloads carry repo_url (tokenless) + branch + result — NEVER a token.
-	GitRepoPushed     = "git.repo.pushed"
-	GitRepoPushFailed = "git.repo.push_failed"
-	SandboxStarted    = "sandbox.started"
-	SandboxStopped    = "sandbox.stopped"
-	SandboxDeleted    = "sandbox.deleted"
-
-	TaskStarted     = "task.started"
-	TaskCompleted   = "task.completed"
-	TaskFailed      = "task.failed"
-	TaskBuildFailed = "task.build.failed"
-
-	PreviewHealthOK     = "preview.health.ok"
-	PreviewHealthFailed = "preview.health.failed"
+	SandboxStarted      = "sandbox.started"
+	SandboxStopped      = "sandbox.stopped"
+	SandboxDeleted      = "sandbox.deleted"
 
 	SnapshotCaptured      = "snapshot.captured"
 	SnapshotCaptureFailed = "snapshot.capture.failed"
 	SnapshotRestored      = "snapshot.restored"
 	SnapshotForked        = "snapshot.forked"
-
-	ConfigCreated = "config.created"
-	ConfigUpdated = "config.updated"
-	ConfigDeleted = "config.deleted"
 )
 
 // Event is one timeline entry. OwnerToken (tenant) + Type + Severity +
@@ -79,9 +60,7 @@ const (
 // JSON-encoded into payload_json — pass keys/ids/reasons, never secret values.
 type Event struct {
 	OwnerToken string
-	AppID      string
 	SandboxID  string
-	TaskID     string
 	SnapshotID string
 	Type       string
 	Severity   string
@@ -95,7 +74,7 @@ type Recorder struct {
 	log   *slog.Logger
 
 	// Monotonic ULID source so events emitted in the same millisecond (e.g.
-	// a task's completion burst) still sort in emission order by id — which
+	// a create/start burst) still sort in emission order by id — which
 	// is the timeline's page cursor. MonotonicEntropy is not concurrency-
 	// safe, so id generation is guarded by mu.
 	mu      sync.Mutex
@@ -138,8 +117,8 @@ func (r *Recorder) Record(_ context.Context, e Event) {
 
 	wctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := r.store.InsertAppEvent(wctx, id, e.OwnerToken, e.AppID, e.SandboxID,
-		e.TaskID, e.SnapshotID, e.Type, e.Severity, e.Message, payload, createdAt); err != nil && r.log != nil {
+	if err := r.store.InsertAppEvent(wctx, id, e.OwnerToken, e.SandboxID,
+		e.SnapshotID, e.Type, e.Severity, e.Message, payload, createdAt); err != nil && r.log != nil {
 		r.log.Warn("events: write failed", "type", e.Type, "err", err.Error())
 	}
 }

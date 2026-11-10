@@ -102,49 +102,49 @@ func TestMiddlewareDisabledRollback(t *testing.T) {
 }
 
 func TestScopeTable(t *testing.T) {
-	allowed := []string{"GET /v1/upgrade", "POST /v1/upgrade", "GET /healthz", "GET /readyz", "GET /version", "GET /v1/auth/status"}
+	allowed := []string{"GET /healthz", "GET /readyz", "GET /version", "GET /v1/auth/status"}
 	for _, route := range allowed {
 		m, p, _ := strings.Cut(route, " ")
-		if !ScopesAllow([]string{ScopeUpgrade}, m, p) {
-			t.Errorf("upgrade scope should allow %s", route)
+		if !ScopesAllow([]string{ScopeHealth}, m, p) {
+			t.Errorf("health scope should allow %s", route)
 		}
 	}
-	denied := []string{"GET /v1/sandboxes", "GET /v1/api-keys", "DELETE /v1/api-keys/x", "DELETE /v1/upgrade", "POST /v1/auth/status", "GET /v1/upgrade/"}
+	denied := []string{"GET /v1/sandboxes", "GET /v1/api-keys", "DELETE /v1/api-keys/x", "GET /v1/upgrade", "POST /v1/auth/status", "GET /healthz/"}
 	for _, route := range denied {
 		m, p, _ := strings.Cut(route, " ")
-		if ScopesAllow([]string{ScopeUpgrade}, m, p) {
-			t.Errorf("upgrade scope should deny %s", route)
+		if ScopesAllow([]string{ScopeHealth}, m, p) {
+			t.Errorf("health scope should deny %s", route)
 		}
 	}
 	if !ScopesAllow(nil, "DELETE", "/v1/api-keys/x") {
 		t.Error("empty scopes must be unrestricted")
 	}
-	if ScopesAllow([]string{"bogus"}, "GET", "/v1/upgrade") {
+	if ScopesAllow([]string{"bogus"}, "GET", "/healthz") {
 		t.Error("unknown scope must allow nothing")
 	}
-	if !ValidScope(ScopeUpgrade) || ValidScope("bogus") {
+	if !ValidScope(ScopeHealth) || ValidScope("bogus") {
 		t.Error("ValidScope")
 	}
-	if got := KnownScopes(); len(got) != 1 || got[0] != ScopeUpgrade {
+	if got := KnownScopes(); len(got) != 1 || got[0] != ScopeHealth {
 		t.Errorf("KnownScopes = %v", got)
 	}
 }
 
 func TestMiddlewareScopedKey(t *testing.T) {
 	res := stubResolver{
-		keys:   map[string]string{"upg-key": "default", "full-key": "default"},
-		scopes: map[string][]string{"upg-key": {ScopeUpgrade}},
+		keys:   map[string]string{"mon-key": "default", "full-key": "default"},
+		scopes: map[string][]string{"mon-key": {ScopeHealth}},
 	}
 	mw := newMW(false, res)
 	cases := []struct {
 		method, path, bearer string
 		want                 int
 	}{
-		{"GET", "/v1/upgrade", "upg-key", 200},
-		{"POST", "/v1/upgrade", "upg-key", 200},
-		{"GET", "/v1/auth/status", "upg-key", 200},
-		{"GET", "/v1/apps", "upg-key", 403},
-		{"GET", "/v1/api-keys", "upg-key", 403},
+		{"GET", "/healthz", "mon-key", 200},
+		{"GET", "/v1/sandboxes", "mon-key", 403},
+		{"GET", "/v1/auth/status", "mon-key", 200},
+		{"POST", "/v1/sandboxes", "mon-key", 403},
+		{"GET", "/v1/api-keys", "mon-key", 403},
 		{"GET", "/v1/apps", "full-key", 200},
 	}
 	for _, tc := range cases {
@@ -158,10 +158,10 @@ func TestMiddlewareScopedKey(t *testing.T) {
 		if w.Code != tc.want {
 			t.Fatalf("%s %s with %s: code = %d, want %d (%s)", tc.method, tc.path, tc.bearer, w.Code, tc.want, w.Body.String())
 		}
-		if tc.want == 403 && !strings.Contains(w.Body.String(), `"this API key is limited to: upgrade"`) {
+		if tc.want == 403 && !strings.Contains(w.Body.String(), `"this API key is limited to: health"`) {
 			t.Fatalf("403 body = %s", w.Body.String())
 		}
-		if tc.want == 200 && tc.bearer == "upg-key" && len(seen.Scopes) != 1 {
+		if tc.want == 200 && tc.bearer == "mon-key" && len(seen.Scopes) != 1 {
 			t.Fatalf("actor scopes not propagated: %+v", seen)
 		}
 	}

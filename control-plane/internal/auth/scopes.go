@@ -5,16 +5,17 @@ import (
 	"strings"
 )
 
-// ScopeUpgrade lets a key start and observe in-place upgrades and nothing else —
-// the credential an external updater should hold.
-const ScopeUpgrade = "upgrade"
+// ScopeHealth lets a key read liveness/readiness/version and nothing else —
+// the credential an external monitor should hold. Finer-grained,
+// resource-scoped keys arrive with the policy engine (PLAN.md M3b).
+// A key stored with a scope that no longer exists (e.g. the removed
+// "upgrade" scope) matches nothing, so it is denied everywhere.
+const ScopeHealth = "health"
 
 // scopeRoutes is the single source of truth for what each scope permits, as
 // "METHOD /path" entries matched exactly against the request.
 var scopeRoutes = map[string]map[string]bool{
-	ScopeUpgrade: {
-		"GET /v1/upgrade":     true,
-		"POST /v1/upgrade":    true,
+	ScopeHealth: {
 		"GET /healthz":        true,
 		"GET /readyz":         true,
 		"GET /version":        true,

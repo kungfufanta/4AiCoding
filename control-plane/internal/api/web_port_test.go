@@ -10,18 +10,6 @@ import (
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/traefik"
 )
 
-func TestPresetWebPort(t *testing.T) {
-	// Built-in presets all declare 3000 today; unknown/empty default to 3000.
-	for _, id := range []string{"nextjs", "react-vite", "fastapi", "node-express"} {
-		if got := presetWebPort(id); got != 3000 {
-			t.Errorf("presetWebPort(%q) = %d; want 3000", id, got)
-		}
-	}
-	if presetWebPort("") != 3000 || presetWebPort("nope") != 3000 {
-		t.Error("empty/unknown preset should default to 3000")
-	}
-}
-
 func TestWorkspaceWebPort(t *testing.T) {
 	dir := t.TempDir()
 	// no file -> 0

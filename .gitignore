@@ -10,7 +10,7 @@
 
 # Build artifacts
 /control-plane/sandboxd
-/control-plane/runtimed
+/bin/
 *.test
 *.out
 
