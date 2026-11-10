@@ -11,9 +11,6 @@ image:
   tag: ""
   pullPolicy: IfNotPresent
 
-imagePullSecrets:
-  - name: ghcr-4aicoding-pull
-
 nodeSelector:
   kubernetes.io/hostname: k3s-1
 
