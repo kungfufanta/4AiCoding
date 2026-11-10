@@ -55,8 +55,13 @@ fail() {
   echo "❌ FAIL: $*"
   echo "---- control plane log (tail) ----"; tail -30 "$DD/cp.log" 2>/dev/null || true
   echo "---- pods ----"; kubectl -n "$NS" get pods -o wide 2>/dev/null || true
-  kubectl -n "$NS" describe pods 2>/dev/null | tail -30 || true
-  echo "---- worker logs ----"; kubectl -n "$NS" logs -l "app.kubernetes.io/instance=$REL" --tail=30 2>/dev/null || true
+  kubectl -n "$NS" describe pods 2>/dev/null | tail -40 || true
+  echo "---- all pod logs (current + previous crash) ----"
+  for p in $(kubectl -n "$NS" get pods -o name 2>/dev/null); do
+    echo "== $p (current)"; kubectl -n "$NS" logs "$p" --tail=40 2>/dev/null || true
+    echo "== $p (previous)"; kubectl -n "$NS" logs "$p" --previous --tail=40 2>/dev/null || true
+  done
+  echo "---- events ----"; kubectl -n "$NS" get events --sort-by=.lastTimestamp 2>/dev/null | tail -20 || true
   exit 1
 }
 EXEC_DIR=/var/lib/sandboxd-e2e-exec
@@ -223,6 +228,7 @@ helm -n "$NS" install "$REL-k8s" "$CHART" \
   --wait --timeout 120s >/dev/null || fail "helm install (k8s engine)"
 wait_for 60 is_status "k8s-engine" online || fail "k8s-engine node never came online: $(nodes_json)"
 [ "$(node_field "k8s-engine" engine)" = "kubernetes" ] || fail "node engine: $(nodes_json)"
+echo "k8s-engine pod: $(kubectl -n "$NS" get pods -l "app.kubernetes.io/instance=$REL-k8s" -o jsonpath='{.items[*].metadata.name}')"
 CREATED="$(api -XPOST "$API/v1/sandboxes" -d '{"ports":[3000]}')"
 SID="$(echo "$CREATED" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("id",""))')"
 [ -n "$SID" ] || fail "create returned no id: $CREATED"
