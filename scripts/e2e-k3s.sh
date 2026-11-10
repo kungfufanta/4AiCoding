@@ -10,6 +10,9 @@
 #   - draining the node reaches the pod through the heartbeat reply
 #   - a pod restart keeps the same node id (no duplicate node)
 #   - uninstalling the chart takes the node offline after the lease
+#   - executor mode (M7b): the chart with executor.enabled runs sandboxd on
+#     the node's Docker; a sandbox created on the control plane runs there,
+#     exec goes through the control plane, delete removes the container
 #
 # Inputs (env):
 #   SANDBOXD_BIN     built sandboxd binary (the control plane runs on the host)
@@ -52,8 +55,12 @@ fail() {
   echo "---- worker logs ----"; kubectl -n "$NS" logs -l "app.kubernetes.io/instance=$REL" --tail=30 2>/dev/null || true
   exit 1
 }
+EXEC_DIR=/var/lib/sandboxd-e2e-exec
 cleanup() {
   helm -n "$NS" uninstall "$REL" >/dev/null 2>&1 || true
+  helm -n "$NS" uninstall "$REL-exec" >/dev/null 2>&1 || true
+  docker ps -aq --filter "label=sandboxd.managed=true" | xargs -r docker rm -f >/dev/null 2>&1 || true
+  rm -rf "$EXEC_DIR" 2>/dev/null || true
   kubectl delete namespace "$NS" --wait=false >/dev/null 2>&1 || true
   [ -n "$CP_PID" ] && kill "$CP_PID" >/dev/null 2>&1 || true
   rm -rf "$DD" 2>/dev/null || true
@@ -97,7 +104,7 @@ SANDBOXD_ADDR="0.0.0.0:$PORT" SANDBOXD_IMAGE="$IMG" SANDBOXD_DATA_DIR="$DD" \
   SANDBOXD_LOG_DIR="$DD/log" SANDBOXD_MIGRATIONS="$HERE/control-plane/migrations" \
   SANDBOXD_DB="$DD/sandboxd.db" SANDBOXD_API_AUTH_DISABLED=false \
   SANDBOXD_API_TOKENS="default=$TOKEN" SANDBOXD_WORKER_TOKEN="$WTOKEN" \
-  SANDBOXD_NODE_LEASE_SECONDS="$LEASE" \
+  SANDBOXD_NODE_LEASE_SECONDS="$LEASE" SANDBOXD_CAPACITY_MEMORY_MB=1024 \
   "$BIN" >"$DD/cp.log" 2>&1 &
 CP_PID=$!
 wait_for 60 healthy || fail "control plane never became healthy"
@@ -170,5 +177,31 @@ log "uninstall -> offline"
 helm -n "$NS" uninstall "$REL" --wait --timeout 60s >/dev/null || fail "helm uninstall"
 wait_for $((LEASE + 20)) is_status "$K8S_NODE" offline || fail "node still $(node_field "$K8S_NODE" status) after uninstall"
 log "offline ✓"
+
+# 8. Executor mode: the pod runs sandboxd on the node's Docker and the
+#    control plane places a sandbox on it.
+log "executor mode"
+helm -n "$NS" install "$REL-exec" "$CHART" \
+  --set controlPlane.url="http://$HOST_IP:$PORT" \
+  --set workerToken.value="$WTOKEN" \
+  --set image.repository="${WIMG%:*}" --set image.tag="${WIMG##*:}" --set image.pullPolicy=Never \
+  --set executor.enabled=true --set executor.sandboxImage="$IMG" --set executor.dataDir="$EXEC_DIR" \
+  --set capacity.memoryMB=8192 --set heartbeatIntervalSeconds="$BEAT" \
+  --wait --timeout 120s >/dev/null || fail "helm install (executor)"
+POD="$(kubectl -n "$NS" get pods -l "app.kubernetes.io/instance=$REL-exec" -o jsonpath='{.items[0].metadata.name}')"
+wait_for 60 is_status "$K8S_NODE" online || fail "executor node never came online: $(nodes_json)"
+api() { curl -s -m120 -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' "$@"; }
+CREATED="$(api -XPOST "$API/v1/sandboxes" -d '{"ports":[3000]}')"
+SID="$(echo "$CREATED" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("id",""))')"
+NODE_OF="$(echo "$CREATED" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("node",""))')"
+[ -n "$SID" ] || fail "create returned no id: $CREATED"
+[ "$NODE_OF" = "$K8S_NODE" ] || fail "sandbox placed on '$NODE_OF', want $K8S_NODE: $CREATED"
+docker inspect "s-$SID" >/dev/null 2>&1 || fail "no container s-$SID on the node"
+OUT="$(api -XPOST "$API/v1/sandboxes/$SID/exec" -d '{"cmd":["sh","-c","echo from-k3s"]}')"
+echo "$OUT" | grep -q from-k3s || fail "exec through the control plane: $OUT"
+code="$(curl -s -m60 -o /dev/null -w '%{http_code}' -XDELETE -H "Authorization: Bearer $TOKEN" "$API/v1/sandboxes/$SID")"
+[ "$code" = "204" ] || fail "delete = $code"
+docker inspect "s-$SID" >/dev/null 2>&1 && fail "container still exists after delete"
+log "executor ✓ (sandbox $SID ran on $K8S_NODE, pod $POD)"
 
 echo "✅ K3S E2E PASSED"

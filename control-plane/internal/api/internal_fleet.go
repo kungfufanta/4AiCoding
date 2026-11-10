@@ -24,6 +24,7 @@ type internalRegisterReq struct {
 	Address  string         `json:"address,omitempty"`
 	Version  string         `json:"version,omitempty"`
 	Capacity store.Capacity `json:"capacity"`
+	APIToken string         `json:"api_token,omitempty"` // M7b executor credential
 }
 
 type internalRegisterResp struct {
@@ -54,6 +55,17 @@ func (s *Server) internalNodeRegister(w http.ResponseWriter, r *http.Request) {
 		writeV1Err(w, http.StatusBadRequest, "invalid_request", "capacity must be non-negative")
 		return
 	}
+	if len(req.APIToken) > 256 {
+		writeV1Err(w, http.StatusBadRequest, "invalid_request", "api_token too long")
+		return
+	}
+	// M7b: a node that registered an API token is bound to it. Another
+	// holder of the (shared) worker token cannot take over its id and
+	// redirect the control plane's traffic; an operator resets a lost
+	// worker with DELETE /v1/nodes/{id}.
+	if ok := s.checkNodeToken(w, r, req.NodeID, req.APIToken); !ok {
+		return
+	}
 	n := &store.Node{
 		NodeID:   req.NodeID,
 		Role:     store.RoleWorker,
@@ -64,6 +76,12 @@ func (s *Server) internalNodeRegister(w http.ResponseWriter, r *http.Request) {
 	if err := s.Store.UpsertNode(r.Context(), n); err != nil {
 		writeV1Err(w, http.StatusInternalServerError, "internal", "register node: "+err.Error())
 		return
+	}
+	if req.APIToken != "" {
+		if err := s.storeNodeToken(r.Context(), req.NodeID, req.APIToken); err != nil {
+			writeV1Err(w, http.StatusInternalServerError, "internal", "store node token: "+err.Error())
+			return
+		}
 	}
 	s.auditAction(r, audit.Entry{Action: "node.register", Target: req.NodeID,
 		Detail: map[string]any{"address": n.Address, "cpus": n.Capacity.CPUs,
@@ -83,9 +101,10 @@ type internalHeartbeatReq struct {
 }
 
 type internalHeartbeatResp struct {
-	NodeID     string `json:"node_id"`
-	DrainState string `json:"drain_state"`
-	Now        string `json:"now"`
+	NodeID     string          `json:"node_id"`
+	DrainState string          `json:"drain_state"`
+	Now        string          `json:"now"`
+	Policy     json.RawMessage `json:"policy,omitempty"`
 }
 
 func (s *Server) internalNodeHeartbeat(w http.ResponseWriter, r *http.Request) {
@@ -113,7 +132,11 @@ func (s *Server) internalNodeHeartbeat(w http.ResponseWriter, r *http.Request) {
 		writeV1Err(w, http.StatusInternalServerError, "internal", "heartbeat: "+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, internalHeartbeatResp{
+	resp := internalHeartbeatResp{
 		NodeID: n.NodeID, DrainState: n.DrainState, Now: time.Now().UTC().Format(time.RFC3339),
-	})
+	}
+	if p, err := s.policy(r.Context()); err == nil {
+		resp.Policy, _ = json.Marshal(p)
+	}
+	writeJSON(w, http.StatusOK, resp)
 }

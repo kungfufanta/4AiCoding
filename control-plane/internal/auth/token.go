@@ -50,3 +50,8 @@ func matchWorkerToken(presented string, tokens []string) bool {
 	}
 	return found
 }
+
+// TokenEqual constant-time compares two secrets.
+func TokenEqual(a, b string) bool {
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}

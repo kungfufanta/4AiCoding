@@ -28,7 +28,7 @@ See [PLAN.md](PLAN.md) for the roadmap and the security baseline.
 
 | Console | Web UI at `http://console.<domain>`: sandboxes, logs, exec, metrics, network, policy, approvals, nodes, users, API keys, audit, domain |
 
-Planned next (see PLAN.md): executing sandboxes on the registered workers (M7b) and a Kubernetes runtime (M8).
+Planned next (see PLAN.md): a Kubernetes runtime adapter (M8).
 
 ## Quickstart (single host)
 
@@ -106,7 +106,7 @@ curl -s -H "$AUTH" -X POST $API/v1/nodes/$ID/drain    # admin: refuse NEW sandbo
 curl -s -H "$AUTH" -X POST $API/v1/nodes/$ID/undrain  # admin: back to the pool
 ```
 
-Every sandbox response carries its `node` (its placement). Draining the `local` node blocks sandbox creation on the control plane itself; draining a worker is preparation for moving work onto it — execution lands on workers in M7b. The console shows the fleet in **Admin → Nodes**, refreshed live.
+Every sandbox response carries its `node` (its placement). Draining the `local` node blocks sandbox creation on the control plane itself; draining a worker is preparation for moving work onto it — sandboxes run on workers in executor mode (below). The console shows the fleet in **Admin → Nodes**, refreshed live.
 
 ### Workers on Kubernetes / k3s (M7a)
 
@@ -122,7 +122,17 @@ helm install sandboxd-worker deploy/helm/sandboxd-worker \
   --set workerToken.value="$SANDBOXD_WORKER_TOKEN"   # or workerToken.existingSecret
 ```
 
-The pod runs as a non-root user with a read-only root filesystem, no capabilities and no service account token, and mounts nothing from the host: in M7a the worker only registers, heartbeats and honours drain. Running sandboxes on the worker (with the node's container runtime) is M7b. `kind=Deployment` with a fixed `nodeId` runs a single worker instead; see `values.yaml` for capacity, scheduling and image options.
+By default the pod runs as a non-root user with a read-only root filesystem, no capabilities and no service account token, and mounts nothing from the host: it only registers, heartbeats and honours drain. `kind=Deployment` with a fixed `nodeId` runs a single worker instead; see `values.yaml` for capacity, scheduling and image options.
+
+### Running sandboxes on workers (M7b)
+
+A worker in **executor mode** is a full sandboxd on its own machine that runs sandboxes for the control plane. Start any sandboxd with `SANDBOXD_CONTROL_PLANE_URL`, `SANDBOXD_WORKER_TOKEN`, `SANDBOXD_NODE_ID` and `SANDBOXD_NODE_ADDRESS` (see `.env.example`), or install the chart with `--set executor.enabled=true --set executor.sandboxImage=<image>`: each pod then drives its node's Docker (host network, Docker socket, a host data dir, root with only `CHOWN`/`DAC_OVERRIDE`/`FOWNER`), so keep it to nodes dedicated to sandboxes.
+
+- The executor registers with its own API token. The control plane stores it encrypted and is the only caller the executor's API accepts. A node id stays bound to that token; `DELETE /v1/nodes/{id}` (admin) resets a node that lost its state.
+- `POST /v1/sandboxes` on the control plane places the sandbox on the schedulable node with the most free memory (the control plane itself wins ties; drained and offline nodes are skipped). The response's `node` names it.
+- Every `/v1/sandboxes/{id}/...` call (exec, logs, metrics, ports, lifecycle, delete, ...) is routed to that node, and `GET /v1/sandboxes` merges all nodes (`unreachable_nodes` lists any that did not answer). Consoles, CLIs and API keys keep talking to the control plane only.
+- Approvals stay on the control plane: a gated request (public preview, deleting a keep-alive sandbox, egress outside the policy) is parked and approved there, then forwarded. The control plane's policy is pushed to every executor on each heartbeat.
+- Limits today: snapshots and `from_snapshot` creates stay on the control plane, and each executor serves previews through its own edge (set its `PREVIEW_DOMAIN`). Private preview auth across nodes is not wired yet.
 
 ## Repository layout
 
@@ -145,7 +155,8 @@ make lint   # gofmt + go vet
 make e2e    # build sandboxd + a tiny test image, then run scripts/e2e.sh
 make e2e-auth     # same, with auth on: login, roles, keys, keep-alive, approvals, audit
 make e2e-fleet    # same, plus 2 workers registering, draining and going offline
-make e2e-k3s      # Helm chart worker on a local k3s joins the fleet (needs k3s + helm)
+make e2e-fleet-exec  # control plane + executor worker: sandboxes run on the worker
+make e2e-k3s      # Helm chart worker on a local k3s joins the fleet and runs a sandbox (needs k3s + helm)
 make preview      # full docker compose stack + browser smoke of the console
 make console      # typecheck + build the console
 make console-dev  # console dev server against a local sandboxd on 127.0.0.1:9090

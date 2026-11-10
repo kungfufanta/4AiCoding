@@ -284,7 +284,24 @@ func (s *Server) v1ListSandboxes(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, s.v1SandboxFromRow(r, sb))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"sandboxes": out})
+	// M7b — sandboxes running on workers.
+	remote, unreachable := s.remoteSandboxes(r)
+	if len(remote) == 0 && len(unreachable) == 0 {
+		writeJSON(w, http.StatusOK, map[string]any{"sandboxes": out})
+		return
+	}
+	all := make([]any, 0, len(out)+len(remote))
+	for _, sb := range out {
+		all = append(all, sb)
+	}
+	for _, raw := range remote {
+		all = append(all, raw)
+	}
+	resp := map[string]any{"sandboxes": all}
+	if len(unreachable) > 0 {
+		resp["unreachable_nodes"] = unreachable
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // --- POST /v1/sandboxes ---------------------------------------------
@@ -350,14 +367,31 @@ func (s *Server) v1CreateSandbox(w http.ResponseWriter, r *http.Request) {
 	if vis == "" {
 		vis = "private"
 	}
+	grant := ""
 	if vis == "public" {
 		pol, err := s.policy(r.Context())
 		if err != nil {
 			writeV1Err(w, http.StatusInternalServerError, "internal", err.Error())
 			return
 		}
-		if pol.RequiresApproval(policy.ApprovePublic) &&
-			s.requestApproval(w, r, policy.ApprovePublic, "sandbox:new", req) {
+		if pol.RequiresApproval(policy.ApprovePublic) {
+			if s.requestApproval(w, r, policy.ApprovePublic, "sandbox:new", req) {
+				return
+			}
+			grant = policy.ApprovePublic
+		}
+	}
+	// M7b — fleet placement: a worker with more free memory than this node
+	// runs the sandbox. Snapshots live on this node, so a from_snapshot
+	// create always stays local.
+	if s.Store != nil && req.FromSnapshot == "" {
+		en, err := s.pickNode(r.Context())
+		if err != nil {
+			writeV1Err(w, http.StatusInternalServerError, "internal", "placement: "+err.Error())
+			return
+		}
+		if en != nil {
+			s.createRemote(w, r, en, req, grant)
 			return
 		}
 	}

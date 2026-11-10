@@ -278,10 +278,19 @@ paths:
                 type: object
                 properties:
                   sandboxes: { type: array, items: { $ref: "#/components/schemas/Sandbox" } }
+                  unreachable_nodes:
+                    type: array
+                    items: { type: string }
+                    description: Executor workers that did not answer; their sandboxes are missing from this page.
     post:
       operationId: createSandbox
       tags: [sandboxes]
       summary: Create a sandbox
+      description: >-
+        The control plane places the sandbox on the schedulable node with the
+        most free memory: itself, or an executor worker (M7b). The response's
+        `node` names it; every /v1/sandboxes/{id} call is then routed there.
+        A create from a snapshot always runs on the control plane.
       requestBody:
         required: true
         content:
@@ -1054,6 +1063,23 @@ paths:
                     type: array
                     items: { $ref: "#/components/schemas/Node" }
                   now: { type: string, example: "2026-11-10T09:00:00Z" }
+
+  /v1/nodes/{id}:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    delete:
+      operationId: deleteNode
+      tags: [nodes]
+      summary: Forget a worker (admin)
+      description: >-
+        Removes a worker from the fleet, e.g. a retired machine, or one that
+        lost its state dir and now registers with a new API token (a node id
+        stays bound to the token it first registered with). A worker that is
+        still running registers again on its next heartbeat.
+      responses:
+        "204": { description: Removed }
+        "400": { description: The control plane's own node cannot be removed }
+        "404": { description: No such node }
+        "409": { description: The control plane still routes sandboxes to this node }
 
   /v1/nodes/{id}/capacity:
     parameters: [ { $ref: "#/components/parameters/Id" } ]

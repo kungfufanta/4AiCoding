@@ -192,6 +192,10 @@ type RegisterRequest struct {
 	Address  string         `json:"address,omitempty"`
 	Version  string         `json:"version,omitempty"`
 	Capacity store.Capacity `json:"capacity,omitempty"`
+	// APIToken (M7b) is the credential the control plane must use to call
+	// this worker's API. Only executor workers send one; once stored, a
+	// re-register of the same node id must present the same token.
+	APIToken string `json:"api_token,omitempty"`
 }
 
 type RegisterResponse struct {
@@ -210,6 +214,9 @@ type HeartbeatResponse struct {
 	NodeID     string `json:"node_id"`
 	DrainState string `json:"drain_state"`
 	Now        string `json:"now"`
+	// Policy (M7b) is the control plane's admin policy. An executor worker
+	// applies it, so sandboxes on every node obey the same policy.
+	Policy json.RawMessage `json:"policy,omitempty"`
 }
 
 // APIError is a non-2xx from the control plane.

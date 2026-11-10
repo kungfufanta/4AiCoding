@@ -1,8 +1,14 @@
 # sandboxd-worker: joins Kubernetes nodes to a sandboxd control plane fleet.
 #
-# M7a scope: the worker registers, heartbeats its capacity and honours drain.
-# It does not run sandboxes yet (M7b), so the pod needs no container runtime
-# socket, no host mounts and no privileges.
+# Two modes:
+#   - default (executor.enabled=false): the worker only registers, heartbeats
+#     its capacity and honours drain. The pod runs non-root, read-only, with
+#     no host access at all.
+#   - executor (executor.enabled=true, M7b, PLAN "B1"): each pod is a full
+#     sandboxd that RUNS sandboxes on its node's Docker daemon, and the
+#     control plane places sandboxes on it. This needs the node's Docker
+#     socket, a host data directory and the host network: root on the node.
+#     Only enable it on nodes dedicated to sandboxes.
 
 controlPlane:
   # Base URL of the control plane API as seen from the pods (required),
@@ -35,6 +41,31 @@ capacity:
   diskMB: 0
 
 heartbeatIntervalSeconds: 10
+
+executor:
+  enabled: false
+  # Sandbox image the node runs (must be available to the node's Docker).
+  sandboxImage: ""
+  # Port the node API listens on, on the node's IP (host network). The
+  # control plane calls http://<node InternalIP>:<port>; only its node token
+  # is accepted there.
+  port: 9300
+  # Host directory for workspaces and state; mounted at the same path
+  # (sandboxd bind-mounts workspaces into sibling containers by host path).
+  dataDir: /var/lib/sandboxd-worker
+  dockerSocket: /var/run/docker.sock
+  # Docker network sandboxes join ("" = the default bridge). Create it on
+  # each node first, e.g. `docker network create --internal sandboxd_net`.
+  network: ""
+  # Resources of the executor pod (sandboxd itself, not the sandboxes).
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 512Mi
+  # Extra sandboxd settings (SANDBOXD_MAX_MEMORY_MB, PREVIEW_DOMAIN, ...).
+  env: []
 
 image:
   repository: sandboxd

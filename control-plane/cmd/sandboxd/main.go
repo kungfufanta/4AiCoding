@@ -238,10 +238,38 @@ func main() {
 	auditLog := audit.New(st, log.With("component", "audit"))
 	eventRec := events.New(st, log.With("component", "events"))
 	envFile := envDefault("SANDBOXD_ENV_FILE", legacyAware("/etc/sandboxd/sandboxd.env", legacyEtcDir+"/sandboxd.env"))
+	// M7b — executor mode: this sandboxd runs sandboxes for a control plane.
+	// Its SANDBOXD_WORKER_TOKEN is the credential it presents there, never
+	// one it accepts, so it is taken out of the environment before the auth
+	// config is read.
+	var exec *executorConfig
+	if cpURL := strings.TrimSpace(os.Getenv("SANDBOXD_CONTROL_PLANE_URL")); cpURL != "" {
+		exec = &executorConfig{
+			ControlPlaneURL: cpURL,
+			WorkerToken:     strings.TrimSpace(os.Getenv("SANDBOXD_WORKER_TOKEN")),
+			NodeID:          strings.TrimSpace(os.Getenv("SANDBOXD_NODE_ID")),
+			Address:         strings.TrimSpace(os.Getenv("SANDBOXD_NODE_ADDRESS")),
+			Interval:        durationFromEnvSec("SANDBOXD_HEARTBEAT_INTERVAL_SECONDS", int(defaultHeartbeatInterval.Seconds())),
+		}
+		_ = os.Unsetenv("SANDBOXD_WORKER_TOKEN")
+		if exec.WorkerToken == "" || exec.NodeID == "" || exec.Address == "" {
+			fmt.Fprintln(os.Stderr, "executor mode (SANDBOXD_CONTROL_PLANE_URL) needs SANDBOXD_WORKER_TOKEN, SANDBOXD_NODE_ID and SANDBOXD_NODE_ADDRESS")
+			os.Exit(2)
+		}
+		tok, terr := loadNodeAPIToken(stateDir)
+		if terr != nil {
+			log.Error("startup: node API token", "err", terr.Error())
+			os.Exit(1)
+		}
+		exec.APIToken = tok
+	}
 	authCfg := auth.ParseConfig(os.Getenv)
 	// The credential resolver validates DB-backed console sessions and API keys;
 	// env-configured SANDBOXD_API_TOKENS remain a fallback for the bootstrap key.
 	authMw := auth.NewMiddleware(authCfg, api.NewStoreResolver(st), auditLog, log.With("component", "auth"))
+	if exec != nil {
+		authMw.SetFleetToken(exec.APIToken)
+	}
 	denyMode := envDefault("SANDBOXD_FORWARD_AUTH_DENY_MODE", "redirect")
 	{
 		ac := authMw.Snapshot()
@@ -657,6 +685,9 @@ func main() {
 	// M6 — keep the local node's heartbeat fresh so the fleet view
 	// reflects liveness even though role='local' is always online.
 	go bumpLocalNodeLoop(gctx, st, log, localNodeID)
+	if exec != nil {
+		go runExecutorAgent(gctx, log.With("component", "fleet-executor"), st, server, *exec)
+	}
 
 	// Idle reaper.
 	idle := &reaper.Idle{

@@ -24,6 +24,12 @@ import (
 // ApprovalHeader carries the approval id on the repeated request.
 const ApprovalHeader = "X-Sandboxd-Approval"
 
+// FleetGrantHeader (M7b) names the approval action the control plane already
+// cleared before forwarding a request to the worker that runs the sandbox.
+// It is honoured ONLY from the fleet actor (the control plane's own node
+// token), so approvals stay decided in one place: the control plane.
+const FleetGrantHeader = "X-Sandboxd-Fleet-Grant"
+
 const (
 	approvalPendingTTL = 24 * time.Hour   // time an admin has to decide
 	approvalUseTTL     = 15 * time.Minute // time the caller has to use an approval
@@ -48,6 +54,9 @@ func (s *Server) requestApproval(w http.ResponseWriter, r *http.Request, action,
 	if err != nil {
 		writeV1Err(w, http.StatusInternalServerError, "internal", err.Error())
 		return true
+	}
+	if a := auth.ActorFrom(r.Context()); a.Kind == auth.ActorFleet && r.Header.Get(FleetGrantHeader) == action {
+		return false // cleared on the control plane (see forwardRemote)
 	}
 	hash := approvalHash(action, target, body)
 	now := time.Now()

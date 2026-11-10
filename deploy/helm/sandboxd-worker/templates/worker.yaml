@@ -41,17 +41,29 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- if .Values.executor.enabled }}
+      # Executor: sandboxd drives the node's Docker and owns workspace files
+      # written by the sandbox user, so it runs as root on the host network.
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      {{- else }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
         runAsGroup: 65532
         seccompProfile:
           type: RuntimeDefault
+      {{- end }}
       containers:
         - name: worker
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- if not .Values.executor.enabled }}
           args: ["worker"]
+          {{- end }}
           env:
             - name: SANDBOXD_CONTROL_PLANE_URL
               value: {{ .Values.controlPlane.url | quote }}
@@ -86,6 +98,31 @@ spec:
             {{- end }}
             - name: SANDBOXD_HEARTBEAT_INTERVAL_SECONDS
               value: {{ .Values.heartbeatIntervalSeconds | quote }}
+            {{- if .Values.executor.enabled }}
+            - name: HOST_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            - name: SANDBOXD_ADDR
+              value: "$(HOST_IP):{{ .Values.executor.port }}"
+            {{- if not .Values.address }}
+            - name: SANDBOXD_NODE_ADDRESS
+              value: "http://$(HOST_IP):{{ .Values.executor.port }}"
+            {{- end }}
+            - name: SANDBOXD_IMAGE
+              value: {{ .Values.executor.sandboxImage | quote }}
+            - name: SANDBOXD_DATA_DIR
+              value: {{ .Values.executor.dataDir | quote }}
+            - name: SANDBOXD_LOG_DIR
+              value: "{{ .Values.executor.dataDir }}/log"
+            - name: SANDBOXD_NETWORK
+              value: {{ .Values.executor.network | quote }}
+            - name: SANDBOXD_API_AUTH_DISABLED
+              value: "false"
+            {{- with .Values.executor.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -93,13 +130,43 @@ spec:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             privileged: false
+            {{- if .Values.executor.enabled }}
+            # root without privileges: CHOWN/DAC_OVERRIDE/FOWNER for the
+            # workspace files, nothing else.
             capabilities:
               drop: ["ALL"]
-          {{- with .Values.resources }}
+              add: ["CHOWN", "DAC_OVERRIDE", "FOWNER"]
+            {{- else }}
+            capabilities:
+              drop: ["ALL"]
+            {{- end }}
+          {{- if .Values.executor.enabled }}
+          volumeMounts:
+            - name: docker-sock
+              mountPath: /var/run/docker.sock
+            - name: data
+              mountPath: {{ .Values.executor.dataDir }}
+            - name: tmp
+              mountPath: /tmp
+          {{- end }}
+          {{- with (ternary .Values.executor.resources .Values.resources .Values.executor.enabled) }}
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-      terminationGracePeriodSeconds: 10
+      terminationGracePeriodSeconds: {{ if .Values.executor.enabled }}30{{ else }}10{{ end }}
+      {{- if .Values.executor.enabled }}
+      volumes:
+        - name: docker-sock
+          hostPath:
+            path: {{ .Values.executor.dockerSocket }}
+            type: Socket
+        - name: data
+          hostPath:
+            path: {{ .Values.executor.dataDir }}
+            type: DirectoryOrCreate
+        - name: tmp
+          emptyDir: {}
+      {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

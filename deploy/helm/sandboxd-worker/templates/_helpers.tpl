@@ -39,6 +39,12 @@ helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version }}
 {{- if and (eq .Values.kind "Deployment") (not .Values.nodeId) -}}
 {{- fail "kind=Deployment needs nodeId, so the node keeps its id across pod restarts" -}}
 {{- end -}}
+{{- if and .Values.executor.enabled (ne .Values.kind "DaemonSet") -}}
+{{- fail "executor.enabled needs kind=DaemonSet (one executor per node, id = node name)" -}}
+{{- end -}}
+{{- if and .Values.executor.enabled (not .Values.executor.sandboxImage) -}}
+{{- fail "executor.enabled needs executor.sandboxImage" -}}
+{{- end -}}
 {{- if and .Values.nodeId (not (regexMatch "^[a-z0-9][a-z0-9.-]{0,62}$" .Values.nodeId)) -}}
 {{- fail "nodeId must match [a-z0-9][a-z0-9.-]{0,62}" -}}
 {{- end -}}
