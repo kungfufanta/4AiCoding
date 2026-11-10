@@ -6,6 +6,33 @@ All notable changes to 4AiCoding. The project started from
 
 ## Unreleased
 
+### Portal S1 — login and tenants (docs/PORTAL_PLAN.md 6/S1)
+- Migration `0002_tenants_rls.sql`: `users`, `orgs`, `memberships`,
+  `invites`, `projects`, `audit_events`, `web_sessions` + Row Level
+  Security (org visibility by `app.org_id` or membership in the row's
+  org) and the non-owner `portal_app` role the serving pool assumes
+  (`PORTAL_DB_ROLE`, `-` to disable) — superusers/owners bypass RLS.
+- SSO login (plan 3.1): OIDC Authorization Code + PKCE
+  (`internal/oidcauth`, works with Zitadel/Keycloak/Auth0), BFF
+  callbacks, first-login personal org bootstrap, `web_sessions` with
+  sha256-hashed tokens, HttpOnly `SameSite=Lax` cookies (Secure on
+  https) and double-submit CSRF bound to the session hash. Logout,
+  session sweep.
+- Dashboard BFF: `/api/me`, org create, projects create/list,
+  members list, role change (admin/owner only, owner protected),
+  invites (token shown once, sha256 stored, single-use accept via
+  link carrying the org id), audit trail. Foreign orgs answer 404,
+  never 403.
+- Dashboard SPA (`portal/web`): sign-in screen, org switcher +
+  creation, Projects / Members / Audit tabs, invite flow with the
+  one-time link, role selects.
+- RLS proof test (`rls_test.go`): WHERE-less SELECT/UPDATE/DELETE
+  from an org-A session cannot read or write org B, INSERTs into a
+  foreign org are rejected by `WITH CHECK`; invite accept is the one
+  sanctioned cross-org path and the token is single-use.
+- Tests: hermetic cookie-flag + CSRF middleware tests; full BFF e2e
+  against Postgres (CI `postgres:16` service; `PORTAL_TEST_DATABASE_URL`).
+
 ### Portal S0 — project skeleton (docs/PORTAL_PLAN.md 6/S0)
 - New `portal/` Go module (`cmd/portal`): reads `PORTAL_*` env config
   (`PORTAL_ADDR`, required `PORTAL_DATABASE_URL`, `PORTAL_DEBUG`,

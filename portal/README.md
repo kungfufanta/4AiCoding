@@ -5,18 +5,35 @@ projects, API keys + agent tokens, the public `/v1` API and the
 dashboard. **This is the contract** for what gets built here and in
 which order: [`docs/PORTAL_PLAN.md`](../docs/PORTAL_PLAN.md).
 
-## Layout (S0)
+## Layout (S0 + S1)
 
 | Path | What |
 |---|---|
-| `cmd/portal` | The single binary: env config → Postgres pool → migrations → HTTP |
+| `cmd/portal` | The single binary: env config → migrate (owner pool) → serve (app role pool) |
 | `internal/config` | `PORTAL_*` env parsing |
-| `internal/db` | pgx pool + embedded migration runner (advisory-locked, idempotent) |
-| `internal/httpapi` | `/healthz`, `/readyz` (Postgres ping); S1 mounts the BFF here |
+| `internal/db` | pgx pools + embedded migration runner + RLS tx helpers (`WithTx` / `WithOrg` / `BootstrapTx`) |
+| `internal/tenants` | Tenant repositories: users, orgs, memberships, invites, projects, audit |
+| `internal/session` | `web_sessions`: hashed tokens, HttpOnly cookie, double-submit CSRF |
+| `internal/oidcauth` | OIDC Authorization Code + PKCE client (works with any provider) |
+| `internal/httpapi` | `/healthz`, `/readyz`, the BFF (`/auth/*`, `/api/*`) |
 | `internal/webfs` | The embedded SPA (`web/dist`); same origin as the BFF (plan 3.1) |
 | `internal/logging` | slog JSON + request-id middleware (mirrors control-plane) |
 | `migrations/` | Plain SQL, `NNNN_name.sql`, applied in order |
 | `web/` | Vite + React 19 + TypeScript SPA |
+
+## Tenancy & RLS (S1)
+
+Migration `0002_tenants_rls.sql` creates the tenant tables and turns
+on Row Level Security. Every request transaction pins two settings
+(`app.org_id`, `app.user_id`); the policies make a row visible only to
+its own org or to a member of the row's org. Queries may "forget"
+`WHERE org_id` — RLS is the last line of defence, and `rls_test.go`
+proves a WHERE-less UPDATE/DELETE/SELECT cannot cross orgs.
+
+The serving pool assumes the non-owner role `portal_app` (created by
+the migration; `PORTAL_DB_ROLE` overrides, `-` disables) because
+superusers and table owners bypass RLS. The default compose stack and
+the CI service container satisfy this automatically.
 
 ## Run it (dev)
 
@@ -40,9 +57,10 @@ Or without Docker: point `PORTAL_DATABASE_URL` at any Postgres 16+ and
 | `PORTAL_DATABASE_URL` | — (required) | Postgres DSN of the portal's own DB |
 | `PORTAL_ADDR` | `:8080` | HTTP listen address |
 | `PORTAL_DEBUG` | off | Debug-level JSON logs |
-| `PORTAL_PUBLIC_URL` | — | External base URL (S1 cookies/OIDC) |
-| `PORTAL_SESSION_TTL` | `12h` | Web-session lifetime (S1) |
-| `PORTAL_OIDC_ISSUER` / `_CLIENT_ID` / `_CLIENT_SECRET` | — | OIDC login (S1) |
+| `PORTAL_PUBLIC_URL` | — | External base URL (cookies/OIDC redirect) |
+| `PORTAL_SESSION_TTL` | `12h` | Web-session lifetime |
+| `PORTAL_OIDC_ISSUER` / `_CLIENT_ID` / `_CLIENT_SECRET` | — | OIDC login (empty = login disabled, `/auth/login` answers 503) |
+| `PORTAL_DB_ROLE` | `portal_app` | Non-owner role for RLS; `-` disables the `SET ROLE` |
 
 ## Tests
 

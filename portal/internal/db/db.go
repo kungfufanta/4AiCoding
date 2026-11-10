@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/tastyeffectco/sandboxd/portal/migrations"
@@ -24,8 +25,11 @@ const (
 	pingReadyTimeout = 2 * time.Second
 )
 
-// Open connects to databaseURL and returns a pgx pool.
-func Open(ctx context.Context, log *slog.Logger, databaseURL string) (*pgxpool.Pool, error) {
+// Open connects to databaseURL and returns a pgx pool. dbRole names
+// the non-owner role every pooled connection assumes (SET ROLE) so
+// Row Level Security applies even when the login user is a superuser
+// or the table owner; empty disables the switch.
+func Open(ctx context.Context, log *slog.Logger, databaseURL, dbRole string) (*pgxpool.Pool, error) {
 	cfg, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("parse database url: %w", err)
@@ -34,6 +38,9 @@ func Open(ctx context.Context, log *slog.Logger, databaseURL string) (*pgxpool.P
 	cfg.ConnConfig.ConnectTimeout = connectTimeout
 	cfg.MaxConnLifetime = time.Hour
 	cfg.MaxConnIdleTime = 15 * time.Minute
+	cfg.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+		return SetRoleConn(ctx, conn, dbRole)
+	}
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("connect: %w", err)
@@ -45,7 +52,7 @@ func Open(ctx context.Context, log *slog.Logger, databaseURL string) (*pgxpool.P
 		pool.Close()
 		return nil, fmt.Errorf("ping: %w", err)
 	}
-	log.Info("database connected", "max_conns", maxConns)
+	log.Info("database connected", "max_conns", maxConns, "db_role", dbRole)
 	return pool, nil
 }
 

@@ -63,3 +63,79 @@ body {
   color: #8b949e;
   font-size: 0.85rem;
 }
+
+/* --- S1 dashboard --- */
+.muted { color: #8b949e; }
+.spacer { flex: 1; }
+
+.btn {
+  display: inline-block;
+  background: #238636;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 0.55rem 1rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: none;
+}
+.btn:hover { background: #2ea043; }
+.btn.small { padding: 0.3rem 0.7rem; font-size: 0.85rem; }
+.btn.ghost { background: transparent; border: 1px solid #30363d; color: #e6edf3; }
+
+.login-card { margin-top: 1.5rem; display: grid; gap: 0.75rem; justify-items: start; }
+.login-card h2 { margin: 0; }
+
+.topbar { display: flex; align-items: center; gap: 0.75rem; }
+.org-select {
+  background: #161b22;
+  color: #e6edf3;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 0.35rem 0.6rem;
+}
+
+.tabs { display: flex; gap: 0.25rem; margin: 1.25rem 0; }
+.tab {
+  background: transparent;
+  border: none;
+  color: #8b949e;
+  padding: 0.4rem 0.9rem;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 0.95rem;
+}
+.tab.active { background: #161b22; color: #e6edf3; }
+
+.rows { list-style: none; margin: 0 0 1rem; padding: 0; display: grid; gap: 0.5rem; }
+.rows li { padding: 0.35rem 0; border-bottom: 1px solid #21262d; }
+.rows.mono li { font-size: 0.85rem; }
+
+.row-form { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+.row-form input, .row-form select {
+  background: #0d1117;
+  color: #e6edf3;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 0.45rem 0.7rem;
+}
+
+.member-row { display: flex; justify-content: space-between; align-items: center; gap: 1rem; }
+
+.pill {
+  background: #1f2937;
+  border: 1px solid #30363d;
+  border-radius: 999px;
+  padding: 0.1rem 0.6rem;
+  font-size: 0.8rem;
+}
+
+.invite-once {
+  background: #2d2305;
+  border: 1px solid #9e6a03;
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  word-break: break-all;
+}
+.invite-once code { display: block; margin-top: 0.35rem; color: #f0c674; }

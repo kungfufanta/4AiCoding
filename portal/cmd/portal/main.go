@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -20,6 +21,8 @@ import (
 	"github.com/tastyeffectco/sandboxd/portal/internal/db"
 	"github.com/tastyeffectco/sandboxd/portal/internal/httpapi"
 	"github.com/tastyeffectco/sandboxd/portal/internal/logging"
+	"github.com/tastyeffectco/sandboxd/portal/internal/oidcauth"
+	"github.com/tastyeffectco/sandboxd/portal/internal/session"
 	"github.com/tastyeffectco/sandboxd/portal/internal/webfs"
 )
 
@@ -40,17 +43,52 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	pool, err := db.Open(ctx, log, cfg.DatabaseURL)
+	// Migrations run as the (owner) login user; serving runs as the
+	// non-owner app role so Row Level Security applies. Two pools,
+	// because SET ROLE sticks per connection.
+	adminPool, err := db.Open(ctx, log, cfg.DatabaseURL, "")
+	if err != nil {
+		return err
+	}
+	if err := db.Migrate(ctx, adminPool, log); err != nil {
+		adminPool.Close()
+		return fmt.Errorf("migrate: %w", err)
+	}
+	adminPool.Close()
+
+	pool, err := db.Open(ctx, log, cfg.DatabaseURL, cfg.DBRole)
 	if err != nil {
 		return err
 	}
 	defer pool.Close()
 
-	if err := db.Migrate(ctx, pool, log); err != nil {
-		return fmt.Errorf("migrate: %w", err)
+	// OIDC login (plan 3.1): enabled only when issuer + client id are
+	// set. The callback URL is <public>/auth/callback, so SSO needs a
+	// public URL too.
+	var provider *oidcauth.Provider
+	if cfg.OIDCIssuer != "" && cfg.OIDCClientID != "" {
+		if cfg.PublicURL == "" {
+			log.Warn("PORTAL_OIDC_* set but PORTAL_PUBLIC_URL missing — login disabled")
+		} else {
+			pctx, pcancel := context.WithTimeout(ctx, 15*time.Second)
+			provider, err = oidcauth.New(pctx, cfg.OIDCIssuer, cfg.OIDCClientID, cfg.OIDCClientSecret,
+				cfg.PublicURL+"/auth/callback")
+			pcancel()
+			if err != nil {
+				return fmt.Errorf("oidc: %w", err)
+			}
+			log.Info("oidc login enabled", "issuer", cfg.OIDCIssuer, "client_id", cfg.OIDCClientID)
+		}
 	}
 
-	srv := &httpapi.Server{Log: log, Pool: pool}
+	srv := &httpapi.Server{
+		Log:           log,
+		Pool:          pool,
+		Sessions:      session.New(pool, cfg.SessionTTL),
+		OIDC:          provider,
+		PublicURL:     cfg.PublicURL,
+		SecureCookies: strings.HasPrefix(cfg.PublicURL, "https://"),
+	}
 	mux := srv.Handler()
 	// The SPA (embedded via internal/webfs) rides on the same origin:
 	// dashboard and BFF share cookies (PORTAL_PLAN 3.1).

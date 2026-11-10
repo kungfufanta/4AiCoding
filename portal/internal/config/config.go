@@ -36,6 +36,12 @@ type Config struct {
 	OIDCIssuer       string // PORTAL_OIDC_ISSUER
 	OIDCClientID     string // PORTAL_OIDC_CLIENT_ID
 	OIDCClientSecret string // PORTAL_OIDC_CLIENT_SECRET
+
+	// DBRole is the non-owner role pooled connections assume (SET
+	// ROLE) so RLS applies even when the login user is the table
+	// owner. PORTAL_DB_ROLE, default "portal_app"; set to "-" (or
+	// "") to disable.
+	DBRole string
 }
 
 // Parse reads the environment (from getenv, swapped in tests) and
@@ -50,6 +56,16 @@ func Parse(getenv func(string) string) (Config, error) {
 		OIDCClientID:     strings.TrimSpace(getenv("PORTAL_OIDC_CLIENT_ID")),
 		OIDCClientSecret: getenv("PORTAL_OIDC_CLIENT_SECRET"),
 		SessionTTL:       12 * time.Hour,
+	}
+	// "-" explicitly disables the SET ROLE switch (local psql-style
+	// debugging); the default is the portal_app role.
+	switch role := strings.TrimSpace(getenv("PORTAL_DB_ROLE")); role {
+	case "":
+		cfg.DBRole = "portal_app"
+	case "-":
+		cfg.DBRole = ""
+	default:
+		cfg.DBRole = role
 	}
 	if v := getenv("PORTAL_SESSION_TTL"); v != "" {
 		d, err := time.ParseDuration(v)
