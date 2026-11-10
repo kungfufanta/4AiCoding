@@ -37,3 +37,16 @@ func MatchToken(presented string, tokens []NamedToken) (string, bool) {
 	}
 	return name, found
 }
+
+// matchWorkerToken constant-time compares the presented token against the
+// SANDBOXD_WORKER_TOKEN list. An empty list matches nothing — the fleet
+// door is closed when no token is configured.
+func matchWorkerToken(presented string, tokens []string) bool {
+	found := false
+	for _, t := range tokens {
+		if subtle.ConstantTimeCompare([]byte(presented), []byte(t)) == 1 {
+			found = true
+		}
+	}
+	return found
+}

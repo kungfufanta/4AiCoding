@@ -18,6 +18,7 @@ See [PLAN.md](PLAN.md) for the roadmap and the security baseline.
 | Resources | Idle reaper, memory-pressure reaper, wake-on-request through Traefik, keepalive |
 | Workspaces | Persistent bind-mounted workspace per sandbox; snapshots; clone a public git repo at create time |
 | Access | Console users with roles (admin, operator, viewer), session login with CSRF protection, API keys with role, scopes, TTL and optional binding to one sandbox |
+| Fleet | Worker mode (`sandboxd worker`): workers register with a worker token, heartbeat, and appear in `/v1/nodes` + `/v1/capacity`; drain/undrain per node; every sandbox records its placement |
 | Policy | One instance policy (`/v1/policy`) checked for every create, port, egress and lifecycle change; requests are clamped or refused |
 | Egress | Sandboxes have no route out; the only exit is an HTTP/CONNECT proxy that allows each sandbox's allowlist only and always blocks metadata/loopback |
 | Approvals | Risky actions (delete a keep-alive sandbox, change policy, egress outside policy, public preview) can require a console admin's single-use approval |
@@ -25,9 +26,9 @@ See [PLAN.md](PLAN.md) for the roadmap and the security baseline.
 | Domain | `/v1/domain` stores domain and TLS mode, checks DNS, installs custom wildcard certificates for Traefik |
 | Preview | Per-port Traefik routes: `http://s-<id>-<port>.preview.<domain>` |
 
-| Console | Web UI at `http://console.<domain>`: sandboxes, logs, exec, metrics, network, policy, approvals, users, API keys, audit, domain |
+| Console | Web UI at `http://console.<domain>`: sandboxes, logs, exec, metrics, network, policy, approvals, nodes, users, API keys, audit, domain |
 
-Planned next (see PLAN.md): multi-node workers and a Kubernetes runtime.
+Planned next (see PLAN.md): executing sandboxes on the registered workers (k3s) and a Kubernetes runtime.
 
 ## Quickstart (single host)
 
@@ -78,6 +79,35 @@ curl -s -H "$AUTH" -X DELETE $API/v1/sandboxes/$ID
 
 The full contract is [docs/openapi.yaml](docs/openapi.yaml). The older `/sandbox` routes still work but will be deprecated.
 
+### Worker fleet (M6)
+
+The control plane is itself a node (`local`). Remote machines join the fleet with the **same binary** in worker mode:
+
+```bash
+# on the control plane host: choose a shared secret
+echo 'SANDBOXD_WORKER_TOKEN=change-me' >> .env && docker compose up -d
+
+# on each worker machine:
+sandboxd worker \
+  --control-plane-url http://<control-plane-host>:9090 \
+  --worker-token change-me \
+  --node-id worker-1 \
+  --address http://worker-1.example:9000 \
+  --capacity-cpus 8 --capacity-memory-mb 16384
+```
+
+Workers register, heartbeat every 10 s and drop to `offline` in the fleet view after ~90 s of silence. The operator API:
+
+```bash
+curl -s -H "$AUTH" $API/v1/nodes            # membership: role, status, drain state, capacity, usage
+curl -s -H "$AUTH" $API/v1/capacity         # fleet totals + per-node breakdown
+curl -s -H "$AUTH" $API/v1/nodes/$ID/capacity
+curl -s -H "$AUTH" -X POST $API/v1/nodes/$ID/drain    # admin: refuse NEW sandboxes there
+curl -s -H "$AUTH" -X POST $API/v1/nodes/$ID/undrain  # admin: back to the pool
+```
+
+Every sandbox response carries its `node` (its placement). Draining the `local` node blocks sandbox creation on the control plane itself; draining a worker is preparation for moving work onto it — execution lands on workers from M7 (k3s). The console shows the fleet in **Admin → Nodes**, refreshed live.
+
 ## Repository layout
 
 ```
@@ -97,12 +127,13 @@ make test   # go test -race ./...
 make lint   # gofmt + go vet
 make e2e    # build sandboxd + a tiny test image, then run scripts/e2e.sh
 make e2e-auth     # same, with auth on: login, roles, keys, keep-alive, approvals, audit
+make e2e-fleet    # same, plus 2 workers registering, draining and going offline
 make preview      # full docker compose stack + browser smoke of the console
 make console      # typecheck + build the console
 make console-dev  # console dev server against a local sandboxd on 127.0.0.1:9090
 ```
 
-CI (`.github/workflows/ci.yml`) runs the Go unit job, the console build and the Docker integration jobs (lifecycle and access-control e2e) on every push and pull request. The `preview` workflow builds the whole compose stack on each pull request, drives the console in a browser through Traefik, and attaches screenshots of every screen to the run.
+CI (`.github/workflows/ci.yml`) runs the Go unit job, the console build and the Docker integration jobs (lifecycle, access-control and fleet e2e) on every push and pull request. The `preview` workflow builds the whole compose stack on each pull request, drives the console in a browser through Traefik, and attaches screenshots of every screen to the run.
 
 ## License
 

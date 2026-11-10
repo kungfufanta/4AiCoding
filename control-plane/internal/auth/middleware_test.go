@@ -145,6 +145,108 @@ func TestScopeTable(t *testing.T) {
 	}
 }
 
+func TestMiddlewareWorkerToken(t *testing.T) {
+	mw := NewMiddleware(&Config{WorkerTokens: []string{"wsecret", "wrot"}}, nil, nil, nil)
+	cases := []struct {
+		name     string
+		method   string
+		path     string
+		bearer   string
+		wantCode int
+		wantKind string
+	}{
+		// /internal is the worker door: only a worker token opens it.
+		{"worker token on internal", "POST", "/internal/nodes/heartbeat", "wsecret", 200, "worker"},
+		{"rotated worker token", "POST", "/internal/nodes/register", "wrot", 200, "worker"},
+		{"no token on internal", "POST", "/internal/nodes/heartbeat", "", 404, ""},
+		{"wrong token on internal", "POST", "/internal/nodes/heartbeat", "nope", 404, ""},
+		{"session cookie on internal", "POST", "/internal/nodes/heartbeat", "", 404, ""},
+		// A worker credential is valid ONLY for /internal.
+		{"worker token on v1", "GET", "/v1/sandboxes", "wsecret", 403, ""},
+		{"worker token on legacy", "POST", "/sandbox", "wsecret", 403, ""},
+		// Exempt paths stay open to everyone (no credential).
+		{"exempt stays open", "GET", "/healthz", "", 200, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var seen Actor
+			// The echo handler records the actor; for /internal
+			// requests with a worker token the handler runs.
+			h := mw.Wrap(echoActor(&seen))
+			r := httptest.NewRequest(tc.method, tc.path, nil)
+			r.RemoteAddr = "203.0.113.9:5000"
+			if tc.bearer != "" {
+				r.Header.Set("Authorization", "Bearer "+tc.bearer)
+			}
+			// Give the request a cookie resolver-free session that
+			// would normally authenticate (nil resolver -> ignored).
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+			if w.Code != tc.wantCode {
+				t.Fatalf("code = %d, want %d (%s)", w.Code, tc.wantCode, w.Body.String())
+			}
+			if tc.wantCode == 200 && tc.wantKind != "" && seen.Kind != tc.wantKind {
+				t.Fatalf("actor kind = %q, want %q", seen.Kind, tc.wantKind)
+			}
+		})
+	}
+}
+
+// TestMiddlewareWorkerTokenClosedDoor pins the misconfiguration case: with
+// NO worker token configured, /internal is 404 for everyone — including
+// the auth-disabled rollback.
+func TestMiddlewareWorkerTokenClosedDoor(t *testing.T) {
+	mw := NewMiddleware(&Config{}, nil, nil, nil)
+	h := mw.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("handler must not run for /internal without a worker token")
+	}))
+	r := httptest.NewRequest("POST", "/internal/nodes/register", nil)
+	r.Header.Set("Authorization", "Bearer anything")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != 404 {
+		t.Fatalf("code = %d, want 404", w.Code)
+	}
+
+	// The auth-disabled rollback must not open the fleet door either.
+	disabled := NewMiddleware(&Config{Disabled: true}, nil, nil, nil)
+	h = disabled.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("handler must not run for /internal in rollback mode")
+	}))
+	r = httptest.NewRequest("POST", "/internal/nodes/heartbeat", nil)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != 404 {
+		t.Fatalf("rollback code = %d, want 404", w.Code)
+	}
+	// ...while /v1 stays open in rollback mode.
+	var seen Actor
+	h2 := disabled.Wrap(echoActor(&seen))
+	r2 := httptest.NewRequest("GET", "/v1/sandboxes", nil)
+	w2 := httptest.NewRecorder()
+	h2.ServeHTTP(w2, r2)
+	if w2.Code != 200 {
+		t.Fatalf("rollback /v1 code = %d, want 200", w2.Code)
+	}
+}
+
+// TestParseWorkerTokens covers the env parsing of SANDBOXD_WORKER_TOKEN.
+func TestParseWorkerTokens(t *testing.T) {
+	cfg := ParseConfig(MapGetter(map[string]string{
+		"SANDBOXD_WORKER_TOKEN": " alpha , beta ,,",
+	}))
+	if len(cfg.WorkerTokens) != 2 || cfg.WorkerTokens[0] != "alpha" || cfg.WorkerTokens[1] != "beta" {
+		t.Fatalf("worker tokens = %v", cfg.WorkerTokens)
+	}
+	cfg = ParseConfig(MapGetter(nil))
+	if len(cfg.WorkerTokens) != 0 {
+		t.Fatalf("empty env = %v, want no tokens", cfg.WorkerTokens)
+	}
+	if matchWorkerToken("alpha", cfg.WorkerTokens) {
+		t.Fatal("empty token list must match nothing")
+	}
+}
+
 func TestMiddlewareScopedKey(t *testing.T) {
 	res := stubResolver{
 		keys:   map[string]string{"mon-key": "default", "full-key": "default"},

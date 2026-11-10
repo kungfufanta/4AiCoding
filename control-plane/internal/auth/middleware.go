@@ -14,7 +14,7 @@ import (
 // middleware attaches it to the request context; handlers read it via
 // ActorFrom to populate the audit log.
 type Actor struct {
-	Kind string // service | operator | system | unknown
+	Kind string // service | user | worker | system | unknown
 	Name string // token name, or "loopback" for the operator path
 	IP   string
 	// Scopes restricts a service actor to the routes in scopes.go; nil/empty =
@@ -29,6 +29,12 @@ type Actor struct {
 }
 
 type actorCtxKey struct{}
+
+// ActorWorker is the credential class of fleet members (M6): a worker
+// token holder. Its surface is exactly /internal (enforced in Wrap), and
+// its role ("worker") is intentionally unknown to RoleAllows so a leaked
+// worker credential cannot act on /v1 even if the path guard were bypassed.
+const ActorWorker = "worker"
 
 // WithActor stores an Actor in ctx.
 func WithActor(ctx context.Context, a Actor) context.Context {
@@ -108,6 +114,27 @@ func (m *Middleware) Wrap(next http.Handler) http.Handler {
 		// API key (DB-stored via the resolver, else env-configured tokens).
 		actor, authed := m.resolve(r, cfg, ip)
 
+		// M6 — the /internal surface is the worker fleet's only door. It is
+		// closed to everyone else, always — even in the auth-disabled
+		// rollback (a sandbox must never reach it, and the rollback must
+		// not silently widen the fleet API). A request here with NO
+		// worker token configured is a misconfiguration: 404, not 401,
+		// so probing learns nothing either way.
+		if strings.HasPrefix(r.URL.Path, "/internal/") {
+			if authed && actor.Kind == ActorWorker {
+				next.ServeHTTP(w, r.WithContext(WithActor(r.Context(), actor)))
+				return
+			}
+			http.NotFound(w, r)
+			return
+		}
+		// A worker credential is valid ONLY for /internal (the mirror of
+		// the rule above); it must never reach /v1 or legacy routes.
+		if authed && actor.Kind == ActorWorker {
+			writeForbidden(w, "worker tokens may only call /internal endpoints")
+			return
+		}
+
 		// Exempt paths serve regardless of whether a credential was present
 		// (they carry nothing sensitive, or self-guard). Attach whatever actor
 		// resolved so handlers like /v1/auth/status can report authenticated.
@@ -168,6 +195,11 @@ func (m *Middleware) resolve(r *http.Request, cfg *Config, ip string) (Actor, bo
 	}
 	// 2. bearer API key — DB-stored, then env-configured.
 	if tok := bearerToken(r); tok != "" {
+		// Worker fleet token (M6): identifies a fleet member, valid
+		// only for the /internal surface (enforced in Wrap).
+		if matchWorkerToken(tok, cfg.WorkerTokens) {
+			return Actor{Kind: ActorWorker, Name: "worker", IP: ip, Role: "worker"}, true
+		}
 		if m.resolver != nil {
 			if p, ok := m.resolver.ResolveAPIKey(r.Context(), tok); ok {
 				return Actor{Kind: "service", Name: p.Owner, IP: ip, Scopes: p.Scopes,

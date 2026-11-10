@@ -6,6 +6,40 @@ All notable changes to 4AiCoding. The project started from
 
 ## Unreleased
 
+### M6 — worker fleet: registration, placement, drain
+- `sandboxd worker` subcommand: the same binary joins the control plane as a
+  fleet member — `--control-plane-url`, `--worker-token`, `--node-id`,
+  `--address`, `--capacity-{cpus,memory-mb,disk-mb}`, `--heartbeat-interval-sec`
+  (env fallbacks: `SANDBOXD_CONTROL_PLANE_URL`, `SANDBOXD_WORKER_TOKEN`, …).
+  It registers with backoff, heartbeats, re-registers when the control plane
+  forgets it and logs the drain state it learns from each heartbeat.
+- New internal fleet API, reachable ONLY with the `SANDBOXD_WORKER_TOKEN`
+  bearer (any other credential — or no credential — gets 404; a worker token
+  gets 403 on every non-internal route): `POST /internal/nodes/register` and
+  `POST /internal/nodes/heartbeat` (response carries the node's desired
+  `drain_state`).
+- New operator API (PLAN §4 "Node / cluster"): `GET /v1/nodes`,
+  `GET /v1/nodes/{id}/capacity`, `GET /v1/capacity` and the admin-only
+  `POST /v1/nodes/{id}/drain` / `undrain`. Node status is derived from the
+  heartbeat lease (`SANDBOXD_NODE_LEASE_SECONDS`, default 90). Drain/undrain
+  are audited (`node.register`, `node.drain`, `node.undrain`).
+- Migration `0032`: `nodes` (role local/worker, capacity JSON, drain state,
+  heartbeat) and `sandbox_placements` (sandbox → node, FK cascade on delete).
+  The control plane registers itself as the role=`local` node at boot.
+- Placement: every sandbox create picks the executor node via
+  `fleet.Executor` and stores the placement in the same transaction as the
+  sandbox row; `GET /v1/sandboxes/{id}` reports it as `node`. In M6 the only
+  executor is the `local` node — draining it refuses new sandboxes with a 503
+  (Retry-After: 30). Workers already drain for membership; executing on them
+  lands in M7 (k3s).
+- Console: new **Admin → Nodes** tab (live refresh, every 10 s) showing each
+  node's role, status, drain state, capacity vs. used and heartbeat, with
+  admin-only Drain/Undrain actions.
+- CI: new `fleet e2e` integration step (`scripts/e2e-fleet.sh`, `make
+  e2e-fleet`) — two real worker processes register, drain, learn the drain
+  from their heartbeat, go offline after the lease, and the local node
+  blocks/unblocks creation around it.
+
 ### M5 — full CI and PR preview
 - `scripts/e2e-auth.sh` (CI integration job, `make e2e-auth`): the access
   layer end to end with auth on — login, CSRF, roles, disabled users, API key

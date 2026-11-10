@@ -10,15 +10,17 @@ import {
   type Approval,
   type AuditEntry,
   type DomainInfo,
+  type NodeInfo,
   type Policy,
   type Role,
   type User,
 } from "../api";
-import { can, Curl, fmtTime, LinesInput, Link, Loading, Section, StatusBadge, useAction, useLoad, useMe } from "../ui";
+import { can, Curl, fmtTime, fmtBytes, LinesInput, Link, Loading, Section, StatusBadge, useAction, useLoad, useMe } from "../ui";
 
 const TABS: { id: string; label: string; admin: boolean }[] = [
   { id: "policy", label: "Policy", admin: false },
   { id: "approvals", label: "Approvals", admin: false },
+  { id: "nodes", label: "Nodes", admin: false },
   { id: "users", label: "Users", admin: true },
   { id: "keys", label: "API keys", admin: true },
   { id: "audit", label: "Audit log", admin: true },
@@ -41,6 +43,7 @@ export function AdminPage({ tab }: { tab: string }) {
       </nav>
       {cur.id === "policy" && <PolicyTab editable={isAdmin} />}
       {cur.id === "approvals" && <ApprovalsTab canDecide={isAdmin && me?.kind === "user"} />}
+      {cur.id === "nodes" && <NodesTab isAdmin={isAdmin} />}
       {cur.id === "users" && <UsersTab />}
       {cur.id === "keys" && <KeysTab />}
       {cur.id === "audit" && <AuditTab />}
@@ -169,6 +172,104 @@ function PolicyTab({ editable }: { editable: boolean }) {
         </div>
       )}
       <Curl method="PUT" path="/v1/policy" body={p} />
+    </Section>
+  );
+}
+
+// --- nodes (fleet, M6) ------------------------------------------------------
+
+function NodesTab({ isAdmin }: { isAdmin: boolean }) {
+  const { data, error, reload } = useLoad(() => get<{ nodes: NodeInfo[] }>("/v1/nodes"));
+  const { run, busy } = useAction();
+
+  // The fleet is a live view: workers appear and go offline as they
+  // heartbeat, so refresh on a short interval.
+  useEffect(() => {
+    const t = setInterval(reload, 10_000);
+    return () => clearInterval(t);
+  }, [reload]);
+
+  const drain = async (n: NodeInfo, to: "drain" | "undrain") => {
+    if (to === "drain" && !confirm(`Drain node ${n.node_id}? New sandboxes are refused on a draining node.`)) return;
+    await run(() => post(`/v1/nodes/${n.node_id}/${to}`), to === "drain" ? `Drained ${n.node_id}` : `Undrained ${n.node_id}`);
+    reload();
+  };
+
+  return (
+    <Section title="Nodes">
+      <p className="muted">
+        The control plane itself is the <code>local</code> node; workers register with the worker token and stay online
+        by heartbeating. A draining node refuses new sandboxes; its running sandboxes are untouched.
+      </p>
+      {!data ? (
+        <Loading error={error} />
+      ) : data.nodes.length === 0 ? (
+        <p className="muted">No nodes registered yet.</p>
+      ) : (
+        <table>
+          <thead>
+            <tr>
+              <th>Node</th>
+              <th>Role</th>
+              <th>Status</th>
+              <th>Drain</th>
+              <th>Capacity</th>
+              <th>Used</th>
+              <th>Sandboxes</th>
+              <th>Heartbeat</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {data.nodes.map((n) => (
+              <tr key={n.node_id}>
+                <td>
+                  <b>{n.node_id}</b>
+                  {n.version && <div className="small muted mono">{n.version}</div>}
+                  {n.address && <div className="small muted mono">{n.address}</div>}
+                </td>
+                <td>{n.role}</td>
+                <td>
+                  <StatusBadge status={n.status} />
+                </td>
+                <td>
+                  {n.drain_state === "drain" ? (
+                    <span className="badge st-error">draining</span>
+                  ) : (
+                    <span className="badge st-running">active</span>
+                  )}
+                </td>
+                <td className="small">
+                  {n.capacity.cpus} CPUs · {fmtBytes(n.capacity.memory_mb * 1024 * 1024)}
+                  {n.capacity.disk_mb > 0 && <> · {fmtBytes(n.capacity.disk_mb * 1024 * 1024)} disk</>}
+                </td>
+                <td className="small">
+                  {n.used.cpus > 0 && <>{n.used.cpus} CPUs · </>}
+                  {n.used.memory_mb > 0 && <>{fmtBytes(n.used.memory_mb * 1024 * 1024)}</>}
+                  {!n.used.cpus && !n.used.memory_mb && <span className="muted">—</span>}
+                </td>
+                <td>{n.sandboxes}</td>
+                <td className="small" title={n.heartbeat_at}>
+                  {n.role === "local" ? "self" : fmtTime(n.heartbeat_at)}
+                </td>
+                <td className="row right">
+                  {isAdmin &&
+                    (n.drain_state === "drain" ? (
+                      <button disabled={busy} onClick={() => drain(n, "undrain")}>
+                        Undrain
+                      </button>
+                    ) : (
+                      <button className="ghost danger" disabled={busy} onClick={() => drain(n, "drain")}>
+                        Drain
+                      </button>
+                    ))}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <Curl method="GET" path="/v1/nodes" />
     </Section>
   );
 }

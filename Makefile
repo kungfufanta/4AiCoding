@@ -1,6 +1,6 @@
 # 4AiCoding — control plane (control-plane/, Go).
 .DEFAULT_GOAL := help
-.PHONY: help test lint fmt build e2e e2e-auth preview console console-dev up down logs clean
+.PHONY: help test lint fmt build e2e e2e-auth e2e-fleet preview console console-dev up down logs clean
 
 CP := control-plane
 
@@ -28,6 +28,10 @@ e2e: build ## Lifecycle e2e against the local Docker daemon
 e2e-auth: build ## Access-control e2e (auth on) against the local Docker daemon
 	docker build -t sandboxd-e2e:local scripts/e2e
 	sudo SANDBOXD_IMAGE=sandboxd-e2e:local SANDBOXD_BIN=$(CURDIR)/bin/sandboxd bash scripts/e2e-auth.sh
+
+e2e-fleet: build ## Fleet e2e: 2 workers register, drain, offline (M6)
+	docker build -t sandboxd-e2e:local scripts/e2e
+	sudo SANDBOXD_IMAGE=sandboxd-e2e:local SANDBOXD_BIN=$(CURDIR)/bin/sandboxd bash scripts/e2e-fleet.sh
 
 preview: ## Full compose stack + browser smoke of the console (screenshots in preview-shots/)
 	docker build -t sandboxd-e2e:local scripts/e2e

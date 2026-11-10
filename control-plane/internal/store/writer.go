@@ -119,6 +119,15 @@ func (s *Store) Create(ctx context.Context, sb *Sandbox) error {
 		if err := putSpec(ctx, tx, sb.ID, sb.Spec); err != nil {
 			return err
 		}
+		// M6 — record the fleet placement in the SAME transaction as the
+		// sandbox row, so a sandbox is never visible without a node (and
+		// the reverse can't happen either). Empty NodeID = unplaced
+		// (fleet not bootstrapped; unit tests, legacy paths).
+		if sb.NodeID != "" {
+			if err := placeSandboxTx(ctx, tx, sb.ID, sb.NodeID); err != nil {
+				return err
+			}
+		}
 		if sb.ExternalUserID.Valid {
 			_, err = tx.ExecContext(ctx, `
 				INSERT INTO workspace_owner

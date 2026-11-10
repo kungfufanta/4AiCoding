@@ -205,7 +205,7 @@ Mọi thứ chạy trong sandbox, kể cả một agent "toàn quyền" sau này
 | **M3c** | Hàng đợi phê duyệt (human-in-the-loop) | API approvals + unit test | ✅ |
 | **M4** | Viết lại `console/` (Login + 5 trang) | `pnpm build` xanh; smoke test trình duyệt với sandboxd thật | ✅ |
 | **M5** | CI đầy đủ (unit + e2e + console build) + PR preview workflow | CI xanh trên PR | ✅ |
-| **M6** | Worker mode: `--control-plane-url`, đăng ký fleet, `/v1/nodes/*` | 2 worker đăng ký từ 2 máy | |
+| **M6** | Worker mode: `--control-plane-url`, đăng ký fleet, `/v1/nodes/*` | 2 worker đăng ký từ 2 máy | ✅ (đăng ký + heartbeat + drain + placement; worker thực thi sandbox ở M7) |
 | **M7** | k3s B1: worker pod + Helm chart tối giản | Worker k3s join fleet | |
 | **M8** | k3s B2 (tuỳ chọn): runtime adapter Pod/Service/NetworkPolicy | Sandbox = Pod | |
 
