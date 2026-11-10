@@ -84,6 +84,10 @@ type createReq struct {
 	// Egress is the sandbox's outbound allowlist (hostnames), checked
 	// against the policy. Empty = no egress.
 	Egress []string `json:"egress,omitempty"`
+	// EgressMode is none | allowlist | open ("" = allowlist).
+	EgressMode string `json:"egress_mode,omitempty"`
+	// EgressDeny is always refused (hosts, IPs, CIDRs).
+	EgressDeny []string `json:"egress_deny,omitempty"`
 	// IdleTimeoutSecs overrides the instance idle threshold (clamped by policy).
 	IdleTimeoutSecs int `json:"idle_timeout_secs,omitempty"`
 	// KeepAlive = idle_policy "always_on" (needs policy.lifecycle.allow_keep_alive).
@@ -342,7 +346,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	spec, decision, specErr := s.buildSpec(r.Context(), specInput{
 		Image: req.Image, Command: req.Command, Env: req.Env, CPUs: req.CPUs, MemoryMB: req.MemoryMB,
-		Ports: req.Ports, Egress: req.Egress, KeepAlive: req.IdlePolicy == "always_on", IdleTimeout: req.IdleTimeoutSecs,
+		Ports: req.Ports, Egress: req.Egress, EgressMode: req.EgressMode, EgressDeny: req.EgressDeny, KeepAlive: req.IdlePolicy == "always_on", IdleTimeout: req.IdleTimeoutSecs,
 	})
 	if specErr != nil {
 		writeErr(w, http.StatusBadRequest, specErr.Error())
@@ -801,6 +805,9 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	// Cardinality hygiene: drop any per-sandbox metric label values
 	// before the row goes away. The gauge will simply stop reporting
 	// for this id rather than carry a stale series forever.
+	if s.NetLog != nil {
+		s.NetLog.Forget(id)
+	}
 	metrics.EgressConnections.DeleteLabelValues(id, "http")
 	metrics.EgressConnections.DeleteLabelValues(id, "https")
 	metrics.EgressConnections.DeleteLabelValues(id, "ssh")

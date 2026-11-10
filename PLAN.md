@@ -82,7 +82,8 @@ POST|DELETE /v1/sandboxes/{id}/keep-alive
 GET    /v1/sandboxes/{id}/metrics | /metrics/stream (SSE) | /volumes
 
 # Network
-GET|PUT /v1/sandboxes/{id}/network/egress    { allow: [...] }
+GET|PUT /v1/sandboxes/{id}/network/egress    { mode: none|allowlist|open, allow: [...], deny: [...] }
+GET /v1/sandboxes/{id}/network/activity      live request log + per-host summary (?after=cursor)
 GET|PUT|POST /v1/sandboxes/{id}/network/ports
 DELETE /v1/sandboxes/{id}/network/ports/{container_port}
 

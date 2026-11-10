@@ -2,7 +2,6 @@ package policy
 
 import (
 	"fmt"
-	"sort"
 )
 
 // Request is what Decide judges. Only the fields of the action are read.
@@ -15,6 +14,8 @@ type Request struct {
 	CPUs          float64
 	MemoryMB      int
 	Egress        []string
+	EgressMode    string   // "" = NetAllowlist
+	EgressDeny    []string // block list; never needs policy
 	KeepAlive     bool
 	IdleTimeout   int // seconds; 0 = instance default
 }
@@ -40,6 +41,8 @@ type Decision struct {
 	EffectiveMemoryMB    int      `json:"effective_memory_mb,omitempty"`
 	EffectiveIdleTimeout int      `json:"effective_idle_timeout_secs,omitempty"`
 	Egress               []string `json:"egress,omitempty"`
+	EgressMode           string   `json:"egress_mode,omitempty"`
+	EgressDeny           []string `json:"egress_deny,omitempty"`
 	Clamped              []string `json:"clamped,omitempty"`
 	NeedsApproval        string   `json:"needs_approval,omitempty"`
 }
@@ -59,7 +62,7 @@ func Decide(p Policy, r Request) Decision {
 		}
 		return Decision{Allow: true}
 	case ActionEgress:
-		return decideEgress(p, r.Egress)
+		return decideEgress(p, r)
 	case ActionLifecycle:
 		return decideLifecycle(p, r)
 	case ActionExec:
@@ -100,7 +103,7 @@ func decideCreate(p Policy, r Request) Decision {
 		out.EffectiveMemoryMB = p.Resources.MaxMemoryMB
 		out.Clamped = append(out.Clamped, "memory_mb")
 	}
-	eg := decideEgress(p, r.Egress)
+	eg := decideEgress(p, r)
 	if !eg.Allow {
 		if eg.NeedsApproval != "" {
 			// Approvals bind to one request; create the sandbox inside the
@@ -111,6 +114,8 @@ func decideCreate(p Policy, r Request) Decision {
 		return eg
 	}
 	out.Egress = eg.Egress
+	out.EgressMode = eg.EgressMode
+	out.EgressDeny = eg.EgressDeny
 	lc := decideLifecycle(p, r)
 	if !lc.Allow {
 		return lc
@@ -147,25 +152,27 @@ func checkPorts(p Policy, ports []int) Decision {
 	return Decision{Allow: true}
 }
 
-// decideEgress validates a sandbox egress allowlist. In strict mode every
-// entry must be covered by the policy allowlist; an entry outside it is
-// denied, or (when the policy gates it) sent for approval.
-func decideEgress(p Policy, hosts []string) Decision {
-	norm := make([]string, 0, len(hosts))
-	seen := map[string]bool{}
-	for _, h := range hosts {
-		n, err := NormalizeHost(h)
-		if err != nil {
-			return deny("egress: %v", err)
-		}
-		if !seen[n] {
-			seen[n] = true
-			norm = append(norm, n)
-		}
+// decideEgress validates a sandbox's egress rules (mode, allow list, deny
+// list). In strict mode every allow entry must be covered by the policy
+// allowlist and "open" is refused; an entry outside it (or "open") is denied,
+// or (when the policy gates it) sent for approval. The deny list only ever
+// narrows access, so it is never checked against the policy.
+func decideEgress(p Policy, r Request) Decision {
+	mode, err := NormalizeNetMode(r.EgressMode)
+	if err != nil {
+		return deny("egress: %v", err)
 	}
-	sort.Strings(norm)
+	norm, err := normalizeList(r.Egress)
+	if err != nil {
+		return deny("egress: %v", err)
+	}
+	denyList, err := normalizeList(r.EgressDeny)
+	if err != nil {
+		return deny("egress deny: %v", err)
+	}
+	ok := Decision{Allow: true, Egress: norm, EgressMode: mode, EgressDeny: denyList}
 	if p.Egress.Mode == EgressPermissive {
-		return Decision{Allow: true, Egress: norm}
+		return ok
 	}
 	var outside []string
 	for _, h := range norm {
@@ -173,14 +180,24 @@ func decideEgress(p Policy, hosts []string) Decision {
 			outside = append(outside, h)
 		}
 	}
-	if len(outside) > 0 {
+	if mode == NetOpen || len(outside) > 0 {
+		what := fmt.Sprintf("egress to %v is outside the policy allowlist", outside)
+		if mode == NetOpen {
+			what = "open egress (network mode \"open\") is outside the strict policy"
+		}
 		if p.RequiresApproval(ApproveEgressOutside) {
-			return Decision{Allow: false, Egress: norm, NeedsApproval: ApproveEgressOutside,
-				Reason: fmt.Sprintf("egress to %v is outside the policy allowlist and needs approval", outside)}
+			ap := ok
+			ap.Allow = false
+			ap.NeedsApproval = ApproveEgressOutside
+			ap.Reason = what + " and needs approval"
+			return ap
+		}
+		if mode == NetOpen {
+			return deny("%s; set policy egress.mode to %q to allow it", what, EgressPermissive)
 		}
 		return deny("egress to %v is not allowed by policy (strict mode; allowlist: %v)", outside, p.Egress.Allow)
 	}
-	return Decision{Allow: true, Egress: norm}
+	return ok
 }
 
 func decideLifecycle(p Policy, r Request) Decision {

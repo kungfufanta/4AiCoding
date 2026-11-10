@@ -958,7 +958,15 @@ paths:
     put:
       operationId: putSandboxEgress
       tags: [network]
-      summary: Replace the outbound allowlist (hosts, *.domains or IPs). Entries outside the instance policy are denied, or return 202 when policy gates sandbox.egress_outside_policy behind an approval. Applies to the next connection, no restart.
+      summary: >-
+        Change the sandbox's network mode and lists. mode is none (nothing
+        leaves), allowlist (only allow entries) or open (everything except
+        deny entries); deny always wins, also against the addresses an allowed
+        name resolves to. Entries are hosts, *.domains, IPs or CIDRs. Omitted
+        fields keep their current value. Under a strict policy, allow entries
+        outside the policy allowlist and mode open are denied, or return 202
+        when policy gates sandbox.egress_outside_policy behind an approval.
+        Applies to the next connection, no restart.
       parameters: [ { $ref: "#/components/parameters/ApprovalHeader" } ]
       requestBody:
         required: true
@@ -966,9 +974,10 @@ paths:
           application/json:
             schema:
               type: object
-              required: [allow]
               properties:
+                mode: { type: string, enum: [none, allowlist, open] }
                 allow: { type: array, items: { type: string } }
+                deny: { type: array, items: { type: string } }
       responses:
         "200":
           description: OK
@@ -978,6 +987,26 @@ paths:
         "202": { $ref: "#/components/responses/ApprovalPending" }
         "400": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/PolicyDenied" }
+
+  /v1/sandboxes/{id}/network/activity:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    get:
+      operationId: getSandboxNetworkActivity
+      tags: [network]
+      summary: >-
+        Live network view: every request the sandbox made through the egress
+        proxy after the given cursor, a per-host summary, and the current
+        rules. Kept in memory (bounded, cleared on restart). Poll with the
+        returned cursor.
+      parameters:
+        - { name: after, in: query, schema: { type: string }, description: Cursor from the previous response; omit for everything kept }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 1000, default: 200 } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NetworkActivity" }
 
   /v1/approvals:
     get:
@@ -1305,8 +1334,51 @@ components:
     Egress:
       type: object
       properties:
+        mode: { type: string, enum: [none, allowlist, open] }
         allow: { type: array, items: { type: string } }
+        deny: { type: array, items: { type: string } }
         proxy: { type: string, description: The HTTP(S) proxy sandboxes reach the internet through; empty when egress enforcement is off }
+    NetworkActivity:
+      type: object
+      properties:
+        sandbox_id: { type: string }
+        recording: { type: boolean, description: false when no egress proxy runs, so nothing is recorded }
+        rules:
+          type: object
+          properties:
+            mode: { type: string, enum: [none, allowlist, open] }
+            allow: { type: array, items: { type: string } }
+            deny: { type: array, items: { type: string } }
+        cursor: { type: string }
+        events:
+          type: array
+          items:
+            type: object
+            properties:
+              seq: { type: integer }
+              time: { type: string, format: date-time }
+              method: { type: string }
+              host: { type: string }
+              port: { type: string }
+              ip: { type: string }
+              allowed: { type: boolean }
+              reason: { type: string }
+        hosts:
+          type: array
+          items:
+            type: object
+            properties:
+              host: { type: string }
+              ips: { type: array, items: { type: string } }
+              ports: { type: array, items: { type: string } }
+              allowed: { type: integer }
+              denied: { type: integer }
+              bytes_up: { type: integer }
+              bytes_down: { type: integer }
+              first_seen: { type: string, format: date-time }
+              last_seen: { type: string, format: date-time }
+              last_allowed: { type: boolean }
+              last_reason: { type: string }
     Approval:
       type: object
       properties:
@@ -1361,6 +1433,9 @@ components:
         command: { type: array, items: { type: string } }
         env: { type: object, additionalProperties: { type: string } }
         resources: { $ref: "#/components/schemas/Resources" }
+        egress: { type: array, items: { type: string }, description: "Allow list." }
+        egress_mode: { type: string, enum: [none, allowlist, open] }
+        egress_deny: { type: array, items: { type: string } }
         ports: { type: array, items: { type: integer } }
         preview: { $ref: "#/components/schemas/Preview" }
         visibility: { type: string, enum: [public, private] }
@@ -1394,6 +1469,9 @@ components:
           additionalProperties: false
           properties:
             ports: { type: array, items: { $ref: "#/components/schemas/PortRequest" }, description: "Structured form of `ports`; use one or the other." }
+            egress: { type: array, items: { type: string }, description: "Allow list (hosts, *.domains, IPs, CIDRs)." }
+            egress_mode: { type: string, enum: [none, allowlist, open], default: allowlist, description: "open needs a permissive egress policy." }
+            egress_deny: { type: array, items: { type: string }, description: "Always refused, in every mode." }
         ports: { type: array, items: { type: integer, minimum: 1, maximum: 65535 } }
         env: { type: object, additionalProperties: { type: string }, description: "Visible to every process in the sandbox. Never pass secrets." }
         visibility: { type: string, enum: [public, private], default: private }

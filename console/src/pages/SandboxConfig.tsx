@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { get, post, type Policy, type Sandbox } from "../api";
+import { get, post, type NetMode, type Policy, type Sandbox } from "../api";
 import { Curl, LinesInput, navigate, Section, useAction, useLoad } from "../ui";
 
 // One form field per sandboxspec field (PLAN §6): what you fill in here is
@@ -15,7 +15,9 @@ export function SandboxConfigPage() {
   const [visibility, setVisibility] = useState("private");
   const [repo, setRepo] = useState("");
   const [branch, setBranch] = useState("");
+  const [netMode, setNetMode] = useState<NetMode>("allowlist");
   const [egress, setEgress] = useState<string[]>([]);
+  const [deny, setDeny] = useState<string[]>([]);
   const [idle, setIdle] = useState("");
   const [keepAlive, setKeepAlive] = useState(false);
   const { run, busy } = useAction();
@@ -29,10 +31,12 @@ export function SandboxConfigPage() {
     .split(/[\s,]+/)
     .filter(Boolean)
     .map(Number);
-  if (portList.length || egress.length)
+  if (portList.length || egress.length || deny.length || netMode !== "allowlist")
     body.network = {
       ...(portList.length ? { ports: portList.map((container) => ({ container })) } : {}),
+      ...(netMode !== "allowlist" ? { egress_mode: netMode } : {}),
       ...(egress.length ? { egress } : {}),
+      ...(deny.length ? { egress_deny: deny } : {}),
     };
   if (visibility !== "private") body.visibility = visibility;
   if (repo) body.workspace = { repo_url: repo, ...(branch ? { branch } : {}) };
@@ -109,13 +113,31 @@ export function SandboxConfigPage() {
           </label>
         </div>
         <label>
-          Egress allowlist
-          <LinesInput value={egress} onChange={setEgress} placeholder={"github.com\n*.npmjs.org"} rows={3} />
+          Network
+          <select value={netMode} onChange={(e) => setNetMode(e.target.value as NetMode)}>
+            <option value="none">No network: nothing leaves the sandbox</option>
+            <option value="allowlist">Allow list: only the hosts below</option>
+            <option value="open">Open, monitored: everything except the block list</option>
+          </select>
           <small>
-            Hosts this sandbox may reach through the egress proxy. Empty = no internet. Policy mode: {policy?.egress.mode ?? "…"}
+            Policy mode: {policy?.egress.mode ?? "…"}
             {policy?.egress.mode === "strict" && policy.egress.allow.length > 0 && ` (allowed: ${policy.egress.allow.join(", ")})`}
+            {policy?.egress.mode === "strict" && netMode === "open" && ". Open needs a permissive policy."}
+            {" "}Every request is visible live on the sandbox's Network page.
           </small>
         </label>
+        <div className="cols">
+          <label>
+            Allow list
+            <LinesInput value={egress} onChange={setEgress} placeholder={"github.com\n*.npmjs.org"} rows={3} />
+            <small>Used in allow-list mode. example.com includes its subdomains.</small>
+          </label>
+          <label>
+            Block list
+            <LinesInput value={deny} onChange={setDeny} placeholder={"tracker.example\n10.0.0.0/8"} rows={3} />
+            <small>Always blocked: hosts, IPs or CIDR ranges.</small>
+          </label>
+        </div>
         <div className="cols">
           <label>
             Idle timeout (seconds)

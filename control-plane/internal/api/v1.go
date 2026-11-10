@@ -55,6 +55,8 @@ type v1Sandbox struct {
 	Resources  v1Resources       `json:"resources"`
 	Lifecycle  v1Lifecycle       `json:"lifecycle"`
 	Egress     []string          `json:"egress"`
+	EgressMode string            `json:"egress_mode"`
+	EgressDeny []string          `json:"egress_deny"`
 	Ports      []int             `json:"ports"`
 	Preview    *v1Preview        `json:"preview,omitempty"` // only when the sandbox exposes ports
 	Visibility string            `json:"visibility"`
@@ -205,9 +207,8 @@ func (s *Server) v1SandboxFromRow(_ *http.Request, sb *store.Sandbox) v1Sandbox 
 	if out.Ports == nil {
 		out.Ports = []int{}
 	}
-	if out.Egress == nil {
-		out.Egress = []string{}
-	}
+	rules := EgressRulesOf(sb.Spec)
+	out.Egress, out.EgressMode, out.EgressDeny = rules.Allow, rules.Mode, rules.Deny
 	if len(sb.Ports) > 0 {
 		p := s.v1PreviewView(sb.ID, sb.Status, webPortOf(sb))
 		out.Preview = &p
@@ -332,6 +333,10 @@ type v1CreateReq struct {
 	Network *struct {
 		Ports  []v1PortReq `json:"ports,omitempty"`
 		Egress []string    `json:"egress,omitempty"`
+		// EgressMode: none | allowlist (default) | open.
+		EgressMode string `json:"egress_mode,omitempty"`
+		// EgressDeny is always refused, in every mode.
+		EgressDeny []string `json:"egress_deny,omitempty"`
 	} `json:"network,omitempty"`
 	// Lifecycle sets the idle timeout and keep-alive (policy-checked).
 	Lifecycle *v1Lifecycle `json:"lifecycle,omitempty"`
@@ -409,6 +414,8 @@ func (s *Server) v1CreateSandbox(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Network != nil {
 		createBody["egress"] = req.Network.Egress
+		createBody["egress_mode"] = req.Network.EgressMode
+		createBody["egress_deny"] = req.Network.EgressDeny
 	}
 	if req.Lifecycle != nil {
 		createBody["idle_timeout_secs"] = req.Lifecycle.IdleTimeoutSecs

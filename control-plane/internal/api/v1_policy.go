@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/audit"
+	"github.com/tastyeffectco/sandboxd/control-plane/internal/netlog"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/policy"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/store"
 )
@@ -230,31 +232,86 @@ func (s *Server) updateLifecycle(w http.ResponseWriter, r *http.Request, idle *i
 
 // --- GET/PUT /v1/sandboxes/{id}/network/egress ----------------------
 
+// EgressRulesOf returns the effective egress rules stored in a spec.
+func EgressRulesOf(sp store.Spec) policy.EgressRules {
+	mode, err := policy.NormalizeNetMode(sp.EgressMode)
+	if err != nil {
+		mode = policy.NetNone // an unreadable mode fails closed
+	}
+	allow, deny := sp.Egress, sp.EgressDeny
+	if allow == nil {
+		allow = []string{}
+	}
+	if deny == nil {
+		deny = []string{}
+	}
+	return policy.EgressRules{Mode: mode, Allow: allow, Deny: deny}
+}
+
+// v1EgressReq is the body of PUT /network/egress. Omitted fields keep their
+// current value, so {"allow":[...]} (the pre-mode shape) still only edits
+// the allow list.
+type v1EgressReq struct {
+	Mode  *string   `json:"mode,omitempty"`
+	Allow *[]string `json:"allow,omitempty"`
+	Deny  *[]string `json:"deny,omitempty"`
+}
+
+// merge applies the request onto the current rules.
+func (req v1EgressReq) merge(cur policy.EgressRules) policy.EgressRules {
+	next := cur
+	if req.Mode != nil {
+		next.Mode = *req.Mode
+	}
+	if req.Allow != nil {
+		next.Allow = *req.Allow
+	}
+	if req.Deny != nil {
+		next.Deny = *req.Deny
+	}
+	return next
+}
+
+func decodeEgressReq(w http.ResponseWriter, r *http.Request) (v1EgressReq, bool) {
+	var body v1EgressReq
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64*1024))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		writeV1Err(w, http.StatusBadRequest, "invalid_request", "invalid json: "+err.Error())
+		return body, false
+	}
+	return body, true
+}
+
+func egressDecide(p policy.Policy, rules policy.EgressRules) policy.Decision {
+	return policy.Decide(p, policy.Request{Action: policy.ActionEgress,
+		EgressMode: rules.Mode, Egress: rules.Allow, EgressDeny: rules.Deny})
+}
+
+// egressApprovalPayload is what an egress approval binds to.
+func egressApprovalPayload(d policy.Decision) map[string]any {
+	return map[string]any{"mode": d.EgressMode, "allow": d.Egress, "deny": d.EgressDeny}
+}
+
 func (s *Server) v1GetEgress(w http.ResponseWriter, r *http.Request) {
 	sb, ok := s.v1Lookup(w, r, r.PathValue("id"))
 	if !ok {
 		return
 	}
-	s.writeEgress(w, sb.Spec.Egress)
+	s.writeEgress(w, EgressRulesOf(sb.Spec))
 }
 
-func (s *Server) writeEgress(w http.ResponseWriter, allow []string) {
-	if allow == nil {
-		allow = []string{}
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"allow": allow, "proxy": s.EgressProxyURL})
+func (s *Server) writeEgress(w http.ResponseWriter, rules policy.EgressRules) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"mode": rules.Mode, "allow": rules.Allow, "deny": rules.Deny, "proxy": s.EgressProxyURL,
+	})
 }
 
-// v1PutEgress {allow: [...]} replaces the sandbox's egress allowlist. It takes
-// effect on the next proxied connection; no restart.
+// v1PutEgress {mode?, allow?, deny?} changes the sandbox's egress rules. It
+// takes effect on the next proxied connection; no restart.
 func (s *Server) v1PutEgress(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Allow []string `json:"allow"`
-	}
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16*1024))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&body); err != nil {
-		writeV1Err(w, http.StatusBadRequest, "invalid_request", "invalid json: "+err.Error())
+	body, ok := decodeEgressReq(w, r)
+	if !ok {
 		return
 	}
 	id := r.PathValue("id")
@@ -267,28 +324,74 @@ func (s *Server) v1PutEgress(w http.ResponseWriter, r *http.Request) {
 		writeV1Err(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	d := policy.Decide(p, policy.Request{Action: policy.ActionEgress, Egress: body.Allow})
+	d := egressDecide(p, body.merge(EgressRulesOf(sb.Spec)))
 	if !d.Allow {
 		if d.NeedsApproval == "" {
 			writePolicyErr(w, &policyError{d: d})
 			return
 		}
-		if s.requestApproval(w, r, d.NeedsApproval, "sandbox:"+id+":egress", d.Egress) {
+		if s.requestApproval(w, r, d.NeedsApproval, "sandbox:"+id+":egress", egressApprovalPayload(d)) {
 			return
 		}
-		// Approved for exactly this (normalized) list.
+		// Approved for exactly these (normalized) rules.
 	}
-	s.setEgress(w, r, sb, d.Egress)
+	s.setEgress(w, r, sb, d)
 }
 
-func (s *Server) setEgress(w http.ResponseWriter, r *http.Request, sb *store.Sandbox, allow []string) {
+func (s *Server) setEgress(w http.ResponseWriter, r *http.Request, sb *store.Sandbox, d policy.Decision) {
+	from := EgressRulesOf(sb.Spec)
 	sp := sb.Spec
-	sp.Egress = allow
+	sp.Egress = d.Egress
+	sp.EgressDeny = d.EgressDeny
+	sp.EgressMode = d.EgressMode
 	if err := s.Store.UpdateSpec(r.Context(), sb.ID, sp); err != nil {
 		writeV1Err(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
+	to := EgressRulesOf(sp)
 	s.auditAction(r, audit.Entry{Action: "sandbox.egress", Target: sb.ID,
-		Detail: map[string]any{"from": sb.Spec.Egress, "to": allow}})
-	s.writeEgress(w, allow)
+		Detail: map[string]any{"from": from, "to": to}})
+	s.writeEgress(w, to)
+}
+
+// --- GET /v1/sandboxes/{id}/network/activity -------------------------
+
+// v1NetworkActivity returns the live network view of a sandbox: its current
+// egress rules, the proxied requests after ?after=<cursor> (at most ?limit,
+// default 200) and a per-host summary. Poll it with the returned cursor.
+func (s *Server) v1NetworkActivity(w http.ResponseWriter, r *http.Request) {
+	sb, ok := s.v1Lookup(w, r, r.PathValue("id"))
+	if !ok {
+		return
+	}
+	var after uint64
+	if v := r.URL.Query().Get("after"); v != "" {
+		n, err := strconv.ParseUint(v, 10, 64)
+		if err != nil {
+			writeV1Err(w, http.StatusBadRequest, "invalid_request", "after must be a number")
+			return
+		}
+		after = n
+	}
+	limit := 200
+	if v := r.URL.Query().Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 1000 {
+			writeV1Err(w, http.StatusBadRequest, "invalid_request", "limit must be 1..1000")
+			return
+		}
+		limit = n
+	}
+	events, hosts, cursor := []netlog.Event{}, []netlog.Host{}, uint64(0)
+	if s.NetLog != nil {
+		events, hosts, cursor = s.NetLog.Snapshot(sb.ID, after, limit)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"sandbox_id": sb.ID,
+		"recording":  s.NetLog != nil && s.EgressProxyURL != "",
+		"rules":      EgressRulesOf(sb.Spec),
+		"cursor":     strconv.FormatUint(cursor, 10),
+		"events":     events,
+		"hosts":      hosts,
+	})
 }

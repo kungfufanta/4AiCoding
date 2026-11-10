@@ -4,8 +4,10 @@
 //
 //   - identifies the sandbox by its source IP (never by anything the sandbox
 //     says about itself),
-//   - allows a destination only if its host is on that sandbox's egress
-//     allowlist (deny-by-default: an empty list allows nothing),
+//   - applies that sandbox's egress rules: mode "none" allows nothing,
+//     "allowlist" only listed hosts (deny-by-default: an empty list allows
+//     nothing), "open" everything; the deny list (hosts, IPs, CIDRs) wins in
+//     every mode, also against the addresses an allowed name resolves to,
 //   - resolves names itself and refuses loopback, link-local (including the
 //     cloud metadata endpoint 169.254.169.254), multicast and unspecified
 //     addresses always, and private (RFC 1918 / ULA) addresses unless the
@@ -29,8 +31,19 @@ import (
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/policy"
 )
 
-// Lookup maps a source IP to the sandbox and its egress allowlist.
-type Lookup func(ctx context.Context, ip string) (sandboxID string, allow []string, ok bool)
+// Lookup maps a source IP to the sandbox and its egress rules.
+type Lookup func(ctx context.Context, ip string) (sandboxID string, rules policy.EgressRules, ok bool)
+
+// Decision describes one request, for logging and the live network view.
+type Decision struct {
+	SandboxID string
+	Method    string
+	Host      string
+	Port      string
+	IP        string // the address dialled, for allowed requests
+	Allowed   bool
+	Reason    string
+}
 
 // Proxy is an http.Handler implementing a forward proxy.
 type Proxy struct {
@@ -38,7 +51,9 @@ type Proxy struct {
 	Log      *slog.Logger
 	Resolver *net.Resolver // nil = net.DefaultResolver
 	// OnDecision is called for every request (audit / metrics). Optional.
-	OnDecision func(sandboxID, host string, allowed bool, reason string)
+	OnDecision func(Decision)
+	// OnBytes is called when an allowed connection closes. Optional.
+	OnBytes func(sandboxID, host string, up, down int64)
 	// DialTimeout bounds upstream connects (default 10s).
 	DialTimeout time.Duration
 }
@@ -58,42 +73,54 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		src = r.RemoteAddr
 	}
-	sandboxID, allow, ok := p.Lookup(r.Context(), src)
+	d := Decision{Method: r.Method}
+	sandboxID, rules, ok := p.Lookup(r.Context(), src)
 	if !ok {
-		p.refuse(w, "", "", "source is not a running sandbox")
+		p.refuse(w, d, "source is not a running sandbox")
 		return
 	}
+	d.SandboxID = sandboxID
 	host, port, err := targetOf(r)
 	if err != nil {
-		p.refuse(w, sandboxID, "", err.Error())
+		p.refuse(w, d, err.Error())
 		return
 	}
-	if !policy.HostAllowed(allow, host) {
-		p.refuse(w, sandboxID, host, "host is not on this sandbox's egress allowlist")
+	d.Host, d.Port = host, port
+	if allowed, reason := rules.Check(host); !allowed {
+		p.refuse(w, d, reason)
 		return
 	}
-	conn, err := p.dial(r.Context(), host, port, allow)
+	conn, err := p.dial(r.Context(), host, port, rules)
 	if err != nil {
-		p.refuse(w, sandboxID, host, err.Error())
+		p.refuse(w, d, err.Error())
 		return
 	}
-	p.decided(sandboxID, host, true, "")
+	if ap, err := netip.ParseAddrPort(conn.RemoteAddr().String()); err == nil {
+		d.IP = ap.Addr().Unmap().String()
+	}
+	d.Allowed = true
+	p.decided(d)
+	var up, down int64
 	if r.Method == http.MethodConnect {
-		p.tunnel(w, conn)
-		return
+		up, down = p.tunnel(w, conn)
+	} else {
+		up, down = p.forward(w, r, conn)
 	}
-	p.forward(w, r, conn)
+	if p.OnBytes != nil {
+		p.OnBytes(sandboxID, host, up, down)
+	}
 }
 
-func (p *Proxy) decided(sandboxID, host string, allowed bool, reason string) {
+func (p *Proxy) decided(d Decision) {
 	if p.OnDecision != nil {
-		p.OnDecision(sandboxID, host, allowed, reason)
+		p.OnDecision(d)
 	}
 }
 
-func (p *Proxy) refuse(w http.ResponseWriter, sandboxID, host, reason string) {
-	p.decided(sandboxID, host, false, reason)
-	p.log().Info("egress denied", "sandbox_id", sandboxID, "host", host, "reason", reason)
+func (p *Proxy) refuse(w http.ResponseWriter, d Decision, reason string) {
+	d.Allowed, d.Reason = false, reason
+	p.decided(d)
+	p.log().Info("egress denied", "sandbox_id", d.SandboxID, "host", d.Host, "reason", reason)
 	http.Error(w, "egress denied: "+reason, http.StatusForbidden)
 }
 
@@ -135,7 +162,7 @@ func Blocked(a netip.Addr) (never bool, private bool) {
 	return false, a.IsPrivate()
 }
 
-func (p *Proxy) dial(ctx context.Context, host, port string, allow []string) (net.Conn, error) {
+func (p *Proxy) dial(ctx context.Context, host, port string, rules policy.EgressRules) (net.Conn, error) {
 	if _, err := strconv.Atoi(port); err != nil {
 		return nil, fmt.Errorf("bad port")
 	}
@@ -158,12 +185,17 @@ func (p *Proxy) dial(ctx context.Context, host, port string, allow []string) (ne
 		timeout = 10 * time.Second
 	}
 	var lastErr error = ErrBlocked
+	denied := false
 	for _, a := range addrs {
 		never, private := Blocked(a)
 		if never {
 			continue
 		}
-		if private && !explicitlyAllowed(allow, a) {
+		if rules.AddrDenied(a) {
+			denied = true
+			continue
+		}
+		if private && !rules.AddrAllowedExplicitly(a) {
 			continue
 		}
 		d := net.Dialer{Timeout: timeout}
@@ -174,47 +206,46 @@ func (p *Proxy) dial(ctx context.Context, host, port string, allow []string) (ne
 		lastErr = err
 	}
 	if errors.Is(lastErr, ErrBlocked) {
+		if denied {
+			return nil, fmt.Errorf("%s resolves only to addresses on this sandbox's block list", host)
+		}
 		return nil, fmt.Errorf("%s resolves only to blocked addresses", host)
 	}
 	return nil, lastErr
 }
 
-func explicitlyAllowed(allow []string, a netip.Addr) bool {
-	s := a.Unmap().String()
-	for _, x := range allow {
-		if x == s {
-			return true
-		}
-	}
-	return false
-}
-
-func (p *Proxy) tunnel(w http.ResponseWriter, upstream net.Conn) {
+// tunnel relays a CONNECT stream and returns the bytes sent up and down.
+func (p *Proxy) tunnel(w http.ResponseWriter, upstream net.Conn) (up, down int64) {
 	hj, ok := w.(http.Hijacker)
 	if !ok {
 		upstream.Close()
 		http.Error(w, "hijack unsupported", http.StatusInternalServerError)
-		return
+		return 0, 0
 	}
 	client, buf, err := hj.Hijack()
 	if err != nil {
 		upstream.Close()
-		return
+		return 0, 0
 	}
 	_, _ = client.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
+	upc := make(chan int64, 1)
 	go func() {
+		var n int64
 		if buf.Reader.Buffered() > 0 {
-			_, _ = io.CopyN(upstream, buf, int64(buf.Reader.Buffered()))
+			n, _ = io.CopyN(upstream, buf, int64(buf.Reader.Buffered()))
 		}
-		_, _ = io.Copy(upstream, client)
+		m, _ := io.Copy(upstream, client)
 		_ = upstream.Close()
+		upc <- n + m
 	}()
-	_, _ = io.Copy(client, upstream)
+	down, _ = io.Copy(client, upstream)
 	_ = client.Close()
+	return <-upc, down
 }
 
-// forward relays one plain-HTTP request over an already-checked connection.
-func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, upstream net.Conn) {
+// forward relays one plain-HTTP request over an already-checked connection
+// and returns the request and response body sizes.
+func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, upstream net.Conn) (up, down int64) {
 	defer upstream.Close()
 	out := r.Clone(r.Context())
 	out.RequestURI = ""
@@ -225,10 +256,14 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, upstream net.Con
 		DialContext:       func(context.Context, string, string) (net.Conn, error) { return upstream, nil },
 		DisableKeepAlives: true,
 	}
+	cb := &countingBody{rc: out.Body}
+	if out.Body != nil && out.Body != http.NoBody {
+		out.Body = cb
+	}
 	resp, err := tr.RoundTrip(out)
 	if err != nil {
 		http.Error(w, "upstream error: "+err.Error(), http.StatusBadGateway)
-		return
+		return cb.n, 0
 	}
 	defer resp.Body.Close()
 	for k, vs := range resp.Header {
@@ -237,5 +272,19 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, upstream net.Con
 		}
 	}
 	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
+	down, _ = io.Copy(w, resp.Body)
+	return cb.n, down
 }
+
+type countingBody struct {
+	rc io.ReadCloser
+	n  int64
+}
+
+func (c *countingBody) Read(b []byte) (int, error) {
+	n, err := c.rc.Read(b)
+	c.n += int64(n)
+	return n, err
+}
+
+func (c *countingBody) Close() error { return c.rc.Close() }

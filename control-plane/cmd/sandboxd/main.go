@@ -48,6 +48,8 @@ import (
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/loopback"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/metrics"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/netguard"
+	"github.com/tastyeffectco/sandboxd/control-plane/internal/netlog"
+	"github.com/tastyeffectco/sandboxd/control-plane/internal/policy"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/previewhost"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/reaper"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/reconcile"
@@ -527,6 +529,8 @@ func main() {
 		return err
 	}
 
+	// Live record of egress-proxy requests (console network view).
+	netLog := netlog.New()
 	server := &api.Server{
 		Store:               st,
 		Secrets:             secretsCipher,
@@ -575,6 +579,7 @@ func main() {
 		Limits:         limits,
 		APIKeyMaxTTL:   durationFromEnvSec("SANDBOXD_API_KEY_MAX_TTL_SECONDS", 0),
 		EgressProxyURL: egressProxyURL,
+		NetLog:         netLog,
 		DomainTLSMode:  domainTLSMode,
 		Certs: &domainpkg.CertStore{
 			Dir:        os.Getenv("SANDBOXD_TRAEFIK_DYNAMIC_DIR"),
@@ -656,16 +661,20 @@ func main() {
 		elog := log.With("component", "egress-proxy")
 		px := &egressproxy.Proxy{
 			Log: elog,
-			Lookup: func(ctx context.Context, ip string) (string, []string, bool) {
+			Lookup: func(ctx context.Context, ip string) (string, policy.EgressRules, bool) {
 				sb, err := st.RunningByIP(ctx, ip)
 				if err != nil {
-					return "", nil, false
+					return "", policy.EgressRules{}, false
 				}
-				return sb.ID, sb.Spec.Egress, true
+				return sb.ID, api.EgressRulesOf(sb.Spec), true
 			},
-			OnDecision: func(id, host string, allowed bool, reason string) {
-				elog.Info("egress", "sandbox_id", id, "host", host, "allowed", allowed, "reason", reason)
+			OnDecision: func(d egressproxy.Decision) {
+				elog.Info("egress", "sandbox_id", d.SandboxID, "method", d.Method, "host", d.Host, "port", d.Port,
+					"ip", d.IP, "allowed", d.Allowed, "reason", d.Reason)
+				netLog.Record(d.SandboxID, netlog.Event{Method: d.Method, Host: d.Host, Port: d.Port,
+					IP: d.IP, Allowed: d.Allowed, Reason: d.Reason})
 			},
+			OnBytes: netLog.AddBytes,
 		}
 		egressSrv = &http.Server{Addr: egressProxyAddr, Handler: px, ReadHeaderTimeout: 10 * time.Second}
 		go func() {

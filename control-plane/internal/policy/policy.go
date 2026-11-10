@@ -7,7 +7,7 @@ package policy
 
 import (
 	"fmt"
-	"net"
+	"net/netip"
 	"sort"
 	"strings"
 )
@@ -166,15 +166,22 @@ func (p Policy) RequiresApproval(action string) bool {
 }
 
 // NormalizeHost lower-cases a hostname allowlist entry and checks its shape.
-// Entries are hostnames, "*.domain" wildcards, or IP literals.
+// Entries are hostnames, "*.domain" wildcards, IP literals or CIDR ranges.
 func NormalizeHost(h string) (string, error) {
 	h = strings.ToLower(strings.TrimSpace(h))
 	h = strings.TrimSuffix(h, ".")
 	if h == "" || len(h) > 253 {
 		return "", fmt.Errorf("invalid host %q", h)
 	}
-	if net.ParseIP(h) != nil {
-		return h, nil
+	if a, err := netip.ParseAddr(h); err == nil {
+		return a.Unmap().String(), nil
+	}
+	if strings.Contains(h, "/") {
+		p, err := netip.ParsePrefix(h)
+		if err != nil {
+			return "", fmt.Errorf("invalid CIDR %q", h)
+		}
+		return p.Masked().String(), nil
 	}
 	body := strings.TrimPrefix(h, "*.")
 	for _, label := range strings.Split(body, ".") {
@@ -192,11 +199,18 @@ func NormalizeHost(h string) (string, error) {
 
 // HostAllowed reports whether host matches an allowlist entry.
 // "example.com" matches itself and its subdomains; "*.example.com" only
-// subdomains; IP literals match exactly.
+// subdomains; IP literals match exactly; a CIDR matches IP hosts inside it.
 func HostAllowed(allow []string, host string) bool {
 	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	ip, ipErr := netip.ParseAddr(host)
 	for _, a := range allow {
 		switch {
+		case strings.Contains(a, "/"):
+			if ipErr == nil {
+				if p, err := netip.ParsePrefix(a); err == nil && p.Contains(ip.Unmap()) {
+					return true
+				}
+			}
 		case strings.HasPrefix(a, "*."):
 			if strings.HasSuffix(host, a[1:]) {
 				return true

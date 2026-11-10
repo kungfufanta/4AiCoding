@@ -23,6 +23,7 @@ import (
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/instancecfg"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/loopback"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/metrics"
+	"github.com/tastyeffectco/sandboxd/control-plane/internal/netlog"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/sandboxspec"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/secrets"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/snapshot"
@@ -47,6 +48,9 @@ type Server struct {
 	// traffic (http://host:port as seen from a sandbox). Empty = egress
 	// enforcement not wired (sandboxes keep the network's default reach).
 	EgressProxyURL string
+	// NetLog is the live record of egress-proxy requests (network
+	// activity view). nil = not recorded.
+	NetLog *netlog.Recorder
 	// Domain manager (v1_domain.go): DomainTLSMode is the running TLS mode
 	// (custom / letsencrypt) when PreviewTLS is on; Certs stores custom
 	// certificates for Traefik; DomainResolver is for verify (nil = system).
@@ -214,6 +218,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/sandboxes/{id}/keep-alive", s.observe("DELETE /v1/sandboxes/{id}/keep-alive", s.remoteRoute(s.v1KeepAliveOff)))
 	mux.HandleFunc("GET /v1/sandboxes/{id}/network/egress", s.observe("GET /v1/sandboxes/{id}/network/egress", s.remoteRoute(s.v1GetEgress)))
 	mux.HandleFunc("PUT /v1/sandboxes/{id}/network/egress", s.observe("PUT /v1/sandboxes/{id}/network/egress", s.remoteRoute(s.v1PutEgress)))
+	mux.HandleFunc("GET /v1/sandboxes/{id}/network/activity", s.observe("GET /v1/sandboxes/{id}/network/activity", s.remoteRoute(s.v1NetworkActivity)))
 	mux.HandleFunc("GET /v1/domain", s.observe("GET /v1/domain", s.v1GetDomain))
 	mux.HandleFunc("PUT /v1/domain", s.observe("PUT /v1/domain", s.v1PutDomain))
 	mux.HandleFunc("POST /v1/domain/verify", s.observe("POST /v1/domain/verify", s.v1VerifyDomain))
