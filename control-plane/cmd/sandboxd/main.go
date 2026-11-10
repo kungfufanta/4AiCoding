@@ -19,14 +19,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -35,11 +32,9 @@ import (
 	"time"
 
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/activity"
-	"github.com/tastyeffectco/sandboxd/control-plane/internal/agentauth"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/api"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/audit"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/auth"
-	"github.com/tastyeffectco/sandboxd/control-plane/internal/authproxy"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/docker"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/egress"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/events"
@@ -48,8 +43,6 @@ import (
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/logging"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/loopback"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/metrics"
-	"github.com/tastyeffectco/sandboxd/control-plane/internal/modelprovider"
-	nginxwatch "github.com/tastyeffectco/sandboxd/control-plane/internal/nginx"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/previewhost"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/reaper"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/reconcile"
@@ -57,8 +50,6 @@ import (
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/secrets"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/snapshot"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/store"
-	"github.com/tastyeffectco/sandboxd/control-plane/internal/telemetry"
-	"github.com/tastyeffectco/sandboxd/control-plane/internal/upgrade"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/wake"
 )
 
@@ -337,9 +328,8 @@ func main() {
 			IdleEnabled:          persisted.IdleReapEnabled,
 			IdleThresholdSeconds: persisted.IdleThresholdSeconds,
 			KeepaliveMaxSeconds:  persisted.KeepaliveMaxSeconds,
-			DefaultModels:        persisted.AgentDefaultModels,
 		})
-		log.Info("instance settings: loaded persisted lifecycle tunables + agent default models")
+		log.Info("instance settings: loaded persisted lifecycle tunables")
 	}
 
 	inflight := activity.NewInflightExec()
@@ -400,58 +390,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Phase 10B A0 — host-side agent auth store (read-only here). Best-effort
-	// root creation; never fatal.
-	agentAuth := agentauth.NewStore(dataDir)
-	if err := agentAuth.EnsureRoot(); err != nil {
-		log.Warn("agent-auth: could not create store root", "err", err.Error())
-	}
-	// A1 — which provider's auth dir gets mounted into new sandboxes (as the
-	// agent's HOME) when connected. Must match the agent runtimed runs.
-	defaultAgent := envDefault("SANDBOXD_DEFAULT_AGENT", "opencode")
-
-	// Credential-injecting auth proxy for claude-code (internal/authproxy). The
-	// sandbox reaches it at SANDBOXD_AGENT_PROXY_URL (in-network name of THIS
-	// process); we listen on SANDBOXD_AGENT_PROXY_ADDR. The real credential stays
-	// here and is never mounted into the sandbox. Empty URL disables the proxy
-	// (legacy mounted-credential behaviour).
-	// Claude subscriptions sign in to Claude Code inside each project (Anthropic
-	// doesn't allow third parties to store or relay Claude.ai logins). Remove a
-	// subscription login stored by an earlier version; an API key is kept.
-	if agentAuth != nil {
-		legacy := filepath.Join(agentAuth.Dir("claude-code"), ".claude", ".credentials.json")
-		if err := os.Remove(legacy); err == nil {
-			log.Info("removed a stored Claude subscription login; sign in with Claude inside each project")
-		}
-	}
-
-	modelProviders, err := modelprovider.New(st, secretsCipher)
-	if err != nil {
-		log.Error("initialize model providers", "err", err)
-		os.Exit(1)
-	}
-	agentProxyURL := envDefault("SANDBOXD_AGENT_PROXY_URL", "http://sandboxd:9100")
-	var proxyMux *http.ServeMux // agents are mounted on it once the API server exists
-	if proxy := authproxy.New(agentAuth, log.With("component", "authproxy")); proxy != nil && agentProxyURL != "" {
-		proxyAddr := envDefault("SANDBOXD_AGENT_PROXY_ADDR", "0.0.0.0:9100")
-		proxyMux = http.NewServeMux()
-		proxyMux.Handle("/providers/", modelProviders)
-		proxyMux.Handle("/", proxy)
-		go func() {
-			log.Info("auth proxy listening", "addr", proxyAddr, "url", agentProxyURL)
-			if err := (&http.Server{Addr: proxyAddr, Handler: proxyMux, ReadHeaderTimeout: 10 * time.Second}).ListenAndServe(); err != nil {
-				log.Error("auth proxy stopped", "err", err.Error())
-			}
-		}()
-	} else {
-		agentProxyURL = ""
-	}
-
-	// Update checker (best-effort): fetches the latest GitHub release, cached
-	// ~6h, and surfaces update_available in GET /v1/settings. nil-safe in the
-	// handler; a background goroutine below keeps its cache warm.
-	updateChecker := &telemetry.Checker{}
-
 	// gVisor (opt-in): SANDBOXD_RUNTIME=runsc runs sandboxes under runsc.
 	// gVisor's netstack can't reach Docker's embedded DNS (127.0.0.11) on a
 	// user-defined network, so we write a resolv.conf with real nameservers
@@ -480,24 +418,6 @@ func main() {
 		} else {
 			log.Info("gvisor runtime enabled", "runtime", sbxRuntime, "dns", ns)
 		}
-		// gVisor sandboxes use public DNS (above) and can't reach Docker's
-		// embedded resolver, so an internal service name like "sandboxd" won't
-		// resolve inside them. Pin the agent proxy URL to its IP — the control
-		// plane (not under gVisor) can resolve it — so sandboxes reach the proxy
-		// by address. Without this, every agent task hangs/fails on DNS.
-		if u, perr := url.Parse(agentProxyURL); perr == nil && u.Hostname() != "" && net.ParseIP(u.Hostname()) == nil {
-			if ips, lerr := net.LookupHost(u.Hostname()); lerr == nil && len(ips) > 0 {
-				if p := u.Port(); p != "" {
-					u.Host = net.JoinHostPort(ips[0], p)
-				} else {
-					u.Host = ips[0]
-				}
-				log.Info("gvisor: pinned agent proxy to IP", "from", agentProxyURL, "to", u.String())
-				agentProxyURL = u.String()
-			} else {
-				log.Warn("gvisor: could not resolve agent proxy host to IP; sandboxes may fail to reach it", "host", u.Hostname())
-			}
-		}
 	}
 
 	// Self-healing start: rebuild a container that is missing, or that was
@@ -519,9 +439,6 @@ func main() {
 			PreviewHostTag:    hosts.Tag,
 			PreviewEntrypoint: previewEntrypoint,
 			PreviewTLS:        previewTLS,
-			AgentProxyURL:     agentProxyURL,
-			OpencodeModel:     envDefault("SANDBOXD_OPENCODE_MODEL", ""),
-			OpencodeZenPath:   envDefault("SANDBOXD_OPENCODE_ZEN_PATH", ""),
 			RuntimePreset:     runtimePresetForSandbox(ctx, st, sb),
 		})
 		// Remove any existing container first so the name is free; ignore a
@@ -534,35 +451,22 @@ func main() {
 	}
 
 	server := &api.Server{
-		Store:             st,
-		Secrets:           secretsCipher,
-		ModelProviders:    modelProviders,
-		Update:            updateChecker,
-		AgentAuth:         agentAuth,
-		OpencodeModel:     envDefault("SANDBOXD_OPENCODE_MODEL", ""),
-		OpencodeZenPath:   envDefault("SANDBOXD_OPENCODE_ZEN_PATH", ""),
-		DefaultAgent:      defaultAgent,
-		AgentProxyURL:     agentProxyURL,
-		Docker:            dockerClient,
-		Loopback:          loopMgr,
-		Log:               log.With("component", "api"),
-		PreviewDomain:     domain,
-		PreviewHostStyle:  hosts.Style,
-		PreviewHostTag:    hosts.Tag,
-		Image:             image,
-		Network:           network,
-		Userns:            userns,
-		Runtime:           sbxRuntime,
-		DNSResolvConf:     dnsResolvConf,
-		PreviewEntrypoint: previewEntrypoint,
-		PreviewTLS:        previewTLS,
-		PreviewURLScheme:  previewURLScheme,
-		Upgrade: &upgrade.Manager{
-			Docker: dockerClient, DataDir: dataDir, Version: version,
-			SrcDir:        os.Getenv("SANDBOXD_SRC_DIR"),
-			UpgraderImage: envDefault("SANDBOXD_UPGRADER_IMAGE", "sandboxd-upgrader:"+version),
-			ReleaseExists: releaseExists,
-		},
+		Store:               st,
+		Secrets:             secretsCipher,
+		Docker:              dockerClient,
+		Loopback:            loopMgr,
+		Log:                 log.With("component", "api"),
+		PreviewDomain:       domain,
+		PreviewHostStyle:    hosts.Style,
+		PreviewHostTag:      hosts.Tag,
+		Image:               image,
+		Network:             network,
+		Userns:              userns,
+		Runtime:             sbxRuntime,
+		DNSResolvConf:       dnsResolvConf,
+		PreviewEntrypoint:   previewEntrypoint,
+		PreviewTLS:          previewTLS,
+		PreviewURLScheme:    previewURLScheme,
 		PublicHTTPPort:      publicHTTPPort,
 		SetMemoryHigh:       setMemoryHigh,
 		Inflight:            inflight,
@@ -579,7 +483,6 @@ func main() {
 		ForwardAuthDenyMode: denyMode,
 		TemplatesDir:        envDefault("SANDBOXD_TEMPLATES_DIR", templatesRoot),
 		LibraryRoot:         envDefault("SANDBOXD_LIBRARY_DIR", libraryRoot),
-		AgentRoot:           filepath.Join(dataDir, "agents"),
 		LLMTxtPath:          envDefault("SANDBOXD_LLM_TXT_PATH", legacyAware("/etc/sandboxd/llm.txt", legacyEtcDir+"/llm.txt")),
 		Instance: api.InstanceInfo{
 			Version:              version,
@@ -587,16 +490,11 @@ func main() {
 			AuthEnabled:          !authCfg.Disabled,
 			StorageMode:          "directory", // OSS bind-mounted workspaces (see internal/loopback)
 			EgressMode:           egressModeLabel(egressMgr),
-			AgentProviders:       []string{"opencode"},
 			IdleReapEnabled:      idleInterval > 0,
 			IdleThresholdSeconds: int(idleThreshold.Seconds()),
 		},
 		Live: live,
 	}
-
-	// Finalize any coding task left `running` by a previous sandboxd
-	// run before the idle reaper (which trusts the task table) starts.
-	server.ReconcileTasks(ctx)
 
 	// Phase 5 — after reconcile, if MemAvailable is
 	// already below the healthy floor, run one synchronous pressure
@@ -621,11 +519,6 @@ func main() {
 	// the browser preview path and stays unauthenticated; a private
 	// sandbox's stopped-wake is gated inside the wake handler itself.
 	apiMux := authMw.Wrap(server.Handler())
-	// Agents reach their model and sandboxd's app tools on the proxy port,
-	// authenticated by their own agent secret.
-	if proxyMux != nil {
-		proxyMux.Handle("/agents/", server.AgentProxy())
-	}
 	root := hostDispatch(wakeHandler, apiMux, log)
 	root = logging.Middleware(log, root)
 
@@ -639,100 +532,6 @@ func main() {
 	// --- Phase 5 background goroutines ---------------------------------
 	gctx, gcancel := context.WithCancel(context.Background())
 	defer gcancel()
-
-	// --- Anonymous telemetry + update check (internal/telemetry) -------
-	// Keep the release-checker cache warm regardless of the telemetry opt-out:
-	// GET /v1/settings surfaces update_available from it, and no data leaves the
-	// host until a client asks. A single fetch every 6h; best-effort.
-	go func() {
-		t := time.NewTicker(6 * time.Hour)
-		defer t.Stop()
-		for {
-			if _, _, err := updateChecker.Latest(gctx); err != nil {
-				log.Debug("update check failed (ignored)", "err", err.Error())
-			}
-			select {
-			case <-gctx.Done():
-				return
-			case <-t.C:
-			}
-		}
-	}()
-
-	// Anonymous usage heartbeat. ON by default; disabled via SANDBOXD_TELEMETRY=off
-	// or DO_NOT_TRACK=1. Everything sent is bucketed or enumerated — no hostnames,
-	// IPs, paths, names, or user content. docs/telemetry.md lists every field.
-	if telemetry.EnabledFromEnv(os.Getenv) {
-		instanceID, isNew, idErr := telemetry.InstanceID(filepath.Join(stateDir, "instance-id"))
-		if idErr != nil {
-			log.Warn("telemetry: could not establish instance id — telemetry disabled", "err", idErr.Error())
-		} else {
-			log.Info("telemetry: anonymous version + daily heartbeat enabled (no code/PII); disable with SANDBOXD_TELEMETRY=off")
-			cloudOrg := strings.TrimSpace(os.Getenv("SANDBOXD_CLOUD_ORG"))
-			if cloudOrg != "" {
-				// Cloud subscribers explicitly opt into linked product analytics in
-				// the Cloud installer. This joins acquisition, billing and safe usage
-				// buckets without sending app names, prompts, code, or file paths.
-				instanceID = "cloud:" + cloudOrg
-			}
-			reporter := &telemetry.Reporter{
-				InstanceID: instanceID,
-				Version:    version,
-				Arch:       runtime.GOARCH,
-				OS:         runtime.GOOS,
-				NewInstall: isNew,
-				Send: telemetry.PostHogSend(
-					envDefault("SANDBOXD_POSTHOG_HOST", telemetry.DefaultPostHogHost),
-					envDefault("SANDBOXD_POSTHOG_KEY", telemetry.DefaultPostHogKey),
-				),
-				Snapshot: func() telemetry.Snapshot {
-					s := telemetry.Snapshot{
-						CloudOrg:      cloudOrg,
-						AuthEnabled:   !authCfg.Disabled,
-						PreviewDomain: domain,
-						PreviewTLS:    previewTLS,
-						AgentDefault:  envDefault("SANDBOXD_DEFAULT_AGENT", "opencode"),
-						Runtime:       runtimeLabel(sbxRuntime),
-						EgressMode:    egressModeLabel(egressMgr),
-						StorageMode:   "directory",
-						InstallMethod: envDefault("SANDBOXD_INSTALL_METHOD", "unknown"),
-						CPUs:          runtime.NumCPU(),
-						MemBytes:      telemetry.HostMemBytes(),
-					}
-					if list, err := st.List(gctx); err == nil {
-						s.SandboxCount = len(list)
-					}
-					if n, err := st.CountApps(gctx); err == nil {
-						s.AppCount = n
-					}
-					if n, err := st.CountTasksSince(gctx, time.Now().Add(-7*24*time.Hour).Unix()); err == nil {
-						s.Tasks7d = n
-					}
-					if h, err := st.GetPasswordHash(gctx); err == nil && h != "" {
-						s.ConsoleEnabled = true
-					}
-					if v, err := dockerClient.ServerVersion(gctx); err == nil {
-						s.DockerVersion = v
-					}
-					return s
-				},
-				Log: log.With("component", "telemetry"),
-			}
-			go reporter.Run(gctx)
-			// A finished console-driven upgrade (recorded in <data>/state/upgrade.json
-			// by the upgrader) is reported once: from → to → result. CLI upgrades
-			// leave no state file and are therefore not reported.
-			if server.Upgrade != nil {
-				if ust := server.Upgrade.Status(gctx); !ust.Reported &&
-					(ust.Phase == "succeeded" || ust.Phase == "failed" || ust.Phase == "rolled_back") {
-					go reporter.Emit(gctx, "upgrade", telemetry.UpgradeProps(ust.From, ust.Target, ust.Phase, "console"))
-					if err := server.Upgrade.MarkReported(); err != nil {
-						log.Debug("telemetry: could not mark upgrade reported", "err", err.Error())
-					}
-				}
-			}
-		}
-	}
 
 	// Idle reaper.
 	idle := &reaper.Idle{
@@ -819,15 +618,6 @@ func main() {
 	// egressMgr == nil there is nothing to collect, so these goroutines
 	// are intentionally not started.
 	_ = egressMgr // documents the deliberate nil
-
-	// --- nginx registry-proxy hot-reloader: DISABLED in the OSS build -
-	// Earlier deployments ran a single host-side nginx caching proxy
-	// for npm/pypi/crates/bun and hot-reloaded it on config change. The
-	// OSS image points package managers at the public registries
-	// directly, so there is no proxy container to watch. Re-enable by
-	// running your own proxy and setting SANDBOXD_NGINX_WATCH_PATHS +
-	// SANDBOXD_NGINX_CONTAINER (the watcher code is retained).
-	_ = nginxwatch.ExecResult{} // keep the import referenced
 
 	// --- Auto-snapshotter: DISABLED in the OSS build ------------------
 	// The hourly auto-snapshotter zstd-compresses each sandbox's
@@ -979,16 +769,6 @@ func splitNonEmpty(s, sep string) []string {
 	return out
 }
 
-// dockerExecAdapter bridges *docker.Client to nginxwatch.Execer
-// (same shape, different ExecResult type, avoiding an import cycle if
-// docker grew nginx-specific types later).
-type dockerExecAdapter struct{ d *docker.Client }
-
-func (a dockerExecAdapter) Exec(ctx context.Context, name string, cmd []string) (nginxwatch.ExecResult, error) {
-	r, err := a.d.Exec(ctx, name, cmd)
-	return nginxwatch.ExecResult{Stdout: r.Stdout, Stderr: r.Stderr, ExitCode: r.ExitCode}, err
-}
-
 func durationFromEnvSec(k string, dSec int) time.Duration {
 	v := os.Getenv(k)
 	if v == "" {
@@ -1059,18 +839,6 @@ func pollerModeLabel(re *regexp.Regexp) string {
 		return "fallback"
 	}
 	return "active"
-}
-
-// runtimeLabel reduces SANDBOXD_RUNTIME to the enumerated label telemetry sends.
-func runtimeLabel(r string) string {
-	switch {
-	case r == "":
-		return "runc"
-	case strings.Contains(r, "runsc") || strings.Contains(r, "gvisor"):
-		return "gvisor"
-	default:
-		return "other"
-	}
 }
 
 // egressModeLabel is the safe egress mode string for GET /v1/settings. A nil
@@ -1149,20 +917,4 @@ func legacyAware(preferred, legacy string) string {
 		return legacy
 	}
 	return preferred
-}
-
-// releaseExists reports whether tag is a published GitHub release — the only
-// targets the console may upgrade to. Best-effort: network failure = false.
-func releaseExists(ctx context.Context, tag string) bool {
-	req, err := http.NewRequestWithContext(ctx,
-		"GET", "https://api.github.com/repos/tastyeffectco/sandboxd/releases/tags/"+tag, nil)
-	if err != nil {
-		return false
-	}
-	resp, err := (&http.Client{Timeout: 8 * time.Second}).Do(req)
-	if err != nil {
-		return false
-	}
-	defer resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
 }

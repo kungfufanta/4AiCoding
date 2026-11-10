@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/audit"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/auth"
@@ -169,4 +170,17 @@ func (s *Server) auditAPIKey(r *http.Request, action, id, name string) {
 		Target:    id,
 		Detail:    detail,
 	})
+}
+
+// validLabel: 1..max printable, non-control characters.
+func validLabel(s string, max int) bool {
+	if s == "" || len(s) > max {
+		return false
+	}
+	for _, r := range s {
+		if unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
 }

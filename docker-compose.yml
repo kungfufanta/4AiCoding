@@ -78,32 +78,12 @@ services:
       SANDBOXD_IMAGE: ${SANDBOXD_IMAGE:-sandboxd-base:0.3.0}
       SANDBOXD_NETWORK: ${SANDBOXD_NETWORK:-sandboxd_net}
       SANDBOXD_USERNS: ${SANDBOXD_USERNS:-host}
-      # Default coding agent for tasks that don't specify one. Explicit
-      # agent:"claude-code" tasks work regardless (creds are mounted per provider).
-      SANDBOXD_DEFAULT_AGENT: ${SANDBOXD_DEFAULT_AGENT:-opencode}
-      # Anonymous telemetry (docs/telemetry.md). Opt out with SANDBOXD_TELEMETRY=off
-      # or DO_NOT_TRACK=1 in .env; point at your own collector with the two below.
-      SANDBOXD_TELEMETRY: ${SANDBOXD_TELEMETRY:-}
-      DO_NOT_TRACK: ${DO_NOT_TRACK:-}
-      SANDBOXD_POSTHOG_HOST: ${SANDBOXD_POSTHOG_HOST:-}
-      SANDBOXD_POSTHOG_KEY: ${SANDBOXD_POSTHOG_KEY:-}
-      SANDBOXD_INSTALL_METHOD: ${SANDBOXD_INSTALL_METHOD:-unknown}
-      # Set by sandboxd Cloud to join privacy-safe usage buckets to the
-      # subscriber funnel. It is empty for ordinary self-hosted installs.
-      SANDBOXD_CLOUD_ORG: ${SANDBOXD_CLOUD_ORG:-}
-      # Which OpenCode Zen endpoint opencode routes through the auth proxy:
-      # "zen" (pay-as-you-go, full catalog) or "zengo" (Zen "go" subscription).
-      SANDBOXD_OPENCODE_ZEN_PATH: ${SANDBOXD_OPENCODE_ZEN_PATH:-zen}
       # Sandbox container runtime: empty = docker default (runc); "runsc" = gVisor
       # (stronger per-sandbox kernel isolation). SANDBOXD_DNS overrides resolv.conf
       # for gVisor sandboxes (netstack can't reach Docker's embedded DNS).
       SANDBOXD_RUNTIME: ${SANDBOXD_RUNTIME:-}
       SANDBOXD_DNS: ${SANDBOXD_DNS:-}
       SANDBOXD_DATA_DIR: ${SANDBOXD_DATA_DIR:-/var/lib/sandboxd}
-      # In-place upgrades from the console: host path of this checkout (set by
-      # install.sh) and the upgrader image built alongside the control plane.
-      SANDBOXD_SRC_DIR: ${SANDBOXD_SRC_DIR:-}
-      SANDBOXD_UPGRADER_IMAGE: ${SANDBOXD_UPGRADER_IMAGE:-sandboxd-upgrader:${SANDBOXD_VERSION:-dev}}
       SANDBOXD_LOG_DIR: ${SANDBOXD_LOG_DIR:-/var/lib/sandboxd/log}
       SANDBOXD_ACCESS_LOG: ${SANDBOXD_LOG_DIR:-/var/lib/sandboxd/log}/traefik-access.log
       # --- routing (HTTP by default) ---

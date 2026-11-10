@@ -2,8 +2,9 @@
 #
 # sandboxd-base:0.3.0 — durable base image (Phase 2 lineage).
 #
-# 0.3.0 adds the in-sandbox supervisor `runtimed` as the container's
-# main process (CMD) — see control-plane/cmd/runtimed.
+# 4AiCoding: the in-sandbox supervisor (runtimed), coding-agent CLIs and
+# app templates are removed. The container's main process is a plain
+# `sleep infinity` under tini; the control plane only manages lifecycle.
 #
 # Successor to Phase 1's sandbox-base:0.1.0 (validation image). Phase 2
 # trims the validation-only tooling (stress-ng, netcat-openbsd), bakes
@@ -45,19 +46,7 @@
 #     depend on file location. The roadmap's `PNPM_REGISTRY` env var
 #     is dropped because it doesn't exist for pnpm.
 
-# --- Stage 1: build runtimed (the in-sandbox supervisor) -------------
-# Compiling here means the host only needs Docker, not a Go toolchain.
-# CGO disabled -> a static binary that runs in the slim base with no
-# extra runtime deps. Build context is the repo ROOT (see install.sh
-# / docker-compose), so the control-plane source is at ./control-plane.
-FROM golang:1.27-bookworm AS runtimed-builder
-WORKDIR /src
-COPY control-plane/go.mod control-plane/go.sum ./control-plane/
-RUN cd control-plane && go mod download
-COPY control-plane/ ./control-plane/
-RUN cd control-plane && CGO_ENABLED=0 go build -trimpath -o /runtimed ./cmd/runtimed
-
-# --- Stage 2: the sandbox base image ---------------------------------
+# --- The sandbox base image ---------------------------------
 FROM debian:stable-slim
 
 ARG NODE_VERSION=22.x
@@ -112,18 +101,6 @@ RUN curl -fsSL https://bun.sh/install | bash -s "bun-v${BUN_VERSION}" \
  && mv /root/.bun/bin/bun /usr/local/bin/bun \
  && rm -rf /root/.bun
 
-# Versions verified by the real-agent compatible-provider integration tests.
-ARG OPENCODE_VERSION=1.19.5
-ARG PI_VERSION=1.4.0
-# Pi requires Node >=22.19.0; the NodeSource 22.x install above supplies it.
-RUN node -e 'const [a,b]=process.versions.node.split(".").map(Number); if(a<22||(a===22&&b<19)) process.exit(1)' \
- && npm install -g opencode-ai@${OPENCODE_VERSION} @earendil-works/pi-coding-agent@${PI_VERSION} @openai/codex@0.162.1 \
- && test "$(opencode --version)" = "${OPENCODE_VERSION}" \
- && test "$(pi --version)" = "${PI_VERSION}" \
- && curl -fsSL https://claude.ai/install.sh | bash \
- && cp /root/.local/bin/claude /usr/local/bin/claude \
- && chmod 755 /usr/local/bin/claude
-
 # Registry-proxy config + shell env file. /etc/npmrc and /usr/etc/npmrc
 # both ship the same content; /usr/etc/npmrc is the path Node 20's npm
 # treats as globalconfig (see header), /etc/npmrc is the documented
@@ -138,11 +115,6 @@ COPY image/etc/profile.d/sandbox-env.sh /etc/profile.d/sandbox-env.sh
 # for the contract.
 COPY image/skel/ /opt/sandbox-skel/
 
-# Baked app templates. runtimed seeds the chosen one (RUNTIMED_TEMPLATE,
-# default react-standard) into an empty workspace/app on first boot.
-# Add a template = drop a new dir here; the registry is additive.
-COPY image/templates/ /opt/templates/
-
 # Base-image self-check (Node 22, npm/pnpm/bun, python3/uv/setuptools, build
 # tools). Run: `docker run --rm <image> bash /opt/verify-base.sh`.
 COPY image/verify-base.sh /opt/verify-base.sh
@@ -152,7 +124,7 @@ COPY image/verify-base.sh /opt/verify-base.sh
 # DOCKREMAP_BASE+1000, typically 101000).
 RUN /usr/sbin/groupadd -g 1000 sandbox \
  && /usr/sbin/useradd -u 1000 -g 1000 -m -s /bin/bash sandbox \
- && chown -R 1000:1000 /opt/sandbox-skel /opt/templates \
+ && chown -R 1000:1000 /opt/sandbox-skel \
  && chmod 700 /opt/sandbox-skel
 
 # Public registries. The original platform pointed these at a host-side
@@ -167,16 +139,10 @@ ENV NPM_CONFIG_REGISTRY=https://registry.npmjs.org/ \
     PIP_INDEX_URL=https://pypi.org/simple/ \
     BROWSER=none
 
-# runtimed — the in-sandbox supervisor, compiled in stage 1. It becomes
-# the container's main process below.
-COPY --from=runtimed-builder /runtimed /usr/local/bin/runtimed
-
 USER sandbox
 WORKDIR /home/sandbox/workspace
 
-# tini reaps zombies (coding agents fork heavily); runtimed is the
-# container's main process — it supervises the dev server and runs
-# coding tasks. provision-home (host-side) remains the only path that
-# seeds /home/sandbox.
+# tini reaps zombies; the main process just keeps the container alive.
+# provision-home (host-side) remains the only path that seeds /home/sandbox.
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["/usr/local/bin/runtimed"]
+CMD ["sleep", "infinity"]

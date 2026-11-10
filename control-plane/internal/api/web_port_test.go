@@ -57,9 +57,9 @@ func TestEnsurePortAndWebPortOf(t *testing.T) {
 }
 
 // Read path: a sandbox with web_port 4321 produces a preview URL on 4321.
-func TestRuntimeViewUsesResolvedPort(t *testing.T) {
+func TestPreviewViewUsesResolvedPort(t *testing.T) {
 	s := &Server{PreviewDomain: "ex.localhost"}
-	prev, _ := s.v1RuntimeView("01ABC", "running", nil, 4321)
+	prev := s.v1PreviewView("01ABC", "running", 4321)
 	if !strings.Contains(prev.URL, "s-01ABC-4321.preview.ex.localhost") {
 		t.Errorf("preview URL = %q; want the 4321 host", prev.URL)
 	}

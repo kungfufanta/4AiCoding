@@ -43,8 +43,8 @@ func TestAPIKeysCRUD(t *testing.T) {
 		t.Fatalf("service actor minting key: want 403 got %d", w.Code)
 	}
 	// but the created key DOES authorize an ordinary protected route
-	if w := doAuth(t, h, "GET", "/v1/apps", "", "", created.Key); w.Code == 401 {
-		t.Fatalf("valid api key rejected on /v1/apps: %d", w.Code)
+	if w := doAuth(t, h, "GET", "/v1/settings", "", "", created.Key); w.Code == 401 {
+		t.Fatalf("valid api key rejected on /v1/settings: %d", w.Code)
 	}
 
 	// duplicate name → 409
@@ -60,7 +60,7 @@ func TestAPIKeysCRUD(t *testing.T) {
 		t.Fatalf("re-delete: want 404 got %d", w.Code)
 	}
 	// the revoked key no longer authenticates
-	if w := doAuth(t, h, "GET", "/v1/apps", "", "", created.Key); w.Code != 401 {
+	if w := doAuth(t, h, "GET", "/v1/settings", "", "", created.Key); w.Code != 401 {
 		t.Fatalf("revoked key still works: %d", w.Code)
 	}
 }
@@ -109,16 +109,13 @@ func TestAPIKeyScopes(t *testing.T) {
 		t.Fatalf("list: %d %s", w.Code, w.Body.String())
 	}
 
-	// the scoped key reaches the upgrade handlers …
-	if w := doAuth(t, h, "GET", "/v1/upgrade", "", "", upg.Key); w.Code != 200 {
-		t.Fatalf("scoped GET /v1/upgrade: want 200 got %d %s", w.Code, w.Body.String())
-	}
-	if w := doAuth(t, h, "POST", "/v1/upgrade", `{"target":"v0.0.0"}`, "", upg.Key); w.Code == 401 || w.Code == 403 {
-		t.Fatalf("scoped POST /v1/upgrade must reach the handler, got %d", w.Code)
+	// the scoped key reaches its allowed routes …
+	if w := doAuth(t, h, "GET", "/v1/auth/status", "", "", upg.Key); w.Code != 200 {
+		t.Fatalf("scoped GET /v1/auth/status: want 200 got %d %s", w.Code, w.Body.String())
 	}
 	// … and nothing else.
 	for _, rt := range [][2]string{
-		{"GET", "/v1/sandboxes"}, {"GET", "/v1/apps"}, {"GET", "/v1/api-keys"},
+		{"GET", "/v1/sandboxes"}, {"GET", "/v1/api-keys"},
 		{"POST", "/v1/api-keys"}, {"DELETE", "/v1/api-keys/" + full.ID},
 	} {
 		w := doAuth(t, h, rt[0], rt[1], "", "", upg.Key)
@@ -130,11 +127,8 @@ func TestAPIKeyScopes(t *testing.T) {
 		}
 	}
 	// the full key is unaffected
-	if w := doAuth(t, h, "GET", "/v1/apps", "", "", full.Key); w.Code != 200 {
-		t.Fatalf("full key /v1/apps: %d", w.Code)
-	}
-	if w := doAuth(t, h, "GET", "/v1/upgrade", "", "", full.Key); w.Code != 200 {
-		t.Fatalf("full key /v1/upgrade: %d", w.Code)
+	if w := doAuth(t, h, "GET", "/v1/settings", "", "", full.Key); w.Code != 200 {
+		t.Fatalf("full key /v1/settings: %d", w.Code)
 	}
 	// the full key was not deleted by the scoped DELETE attempt
 	if w := doAuth(t, h, "DELETE", "/v1/api-keys/"+full.ID, "", cookie, ""); w.Code != 204 {

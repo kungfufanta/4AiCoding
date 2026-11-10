@@ -4,7 +4,6 @@ go 1.26.0
 
 require (
 	github.com/creack/pty v1.1.24
-	github.com/gorilla/websocket v1.5.3
 	github.com/mattn/go-sqlite3 v1.14.52
 	github.com/oklog/ulid/v2 v2.1.2
 	github.com/prometheus/client_golang v1.25.0

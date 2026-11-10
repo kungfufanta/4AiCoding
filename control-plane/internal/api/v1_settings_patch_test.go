@@ -28,7 +28,7 @@ func newSettingsServer(t *testing.T) *Server {
 		Live: instancecfg.New(instancecfg.Snapshot{
 			IdleEnabled: true, IdleThresholdSeconds: 2100, KeepaliveMaxSeconds: 86400,
 		}),
-		Instance: InstanceInfo{Version: "test", AgentProviders: []string{"opencode"}},
+		Instance: InstanceInfo{Version: "test"},
 	}
 }
 
@@ -108,70 +108,6 @@ func TestPatchSettingsPersistsAndHotApplies(t *testing.T) {
 	}
 	if len(resp["editable"].([]any)) == 0 {
 		t.Error("editable list should be present")
-	}
-}
-
-// Per-agent default models: a valid PATCH merges, persists, hot-applies, and
-// echoes; an empty value clears one; other agents are preserved.
-func TestPatchAgentDefaultModels(t *testing.T) {
-	s := newSettingsServer(t)
-
-	// Set two defaults.
-	w := patchSettings(s, `{"agents":{"default_models":{"opencode":"glm-5","claude-code":"sonnet"}}}`)
-	if w.Code != http.StatusOK {
-		t.Fatalf("set: got %d: %s", w.Code, w.Body)
-	}
-	if got := s.Live.DefaultModel("opencode"); got != "glm-5" {
-		t.Errorf("live opencode = %q; want glm-5", got)
-	}
-	p, _ := s.Store.GetInstanceSettings(context.Background())
-	if p == nil || p.AgentDefaultModels["claude-code"] != "sonnet" {
-		t.Errorf("not persisted: %+v", p)
-	}
-
-	// Merge: change opencode, leave claude-code untouched.
-	w = patchSettings(s, `{"agents":{"default_models":{"opencode":"grok-4.5"}}}`)
-	if w.Code != http.StatusOK {
-		t.Fatalf("merge: got %d: %s", w.Code, w.Body)
-	}
-	if s.Live.DefaultModel("opencode") != "grok-4.5" || s.Live.DefaultModel("claude-code") != "sonnet" {
-		t.Errorf("merge did not preserve others: %+v", s.Live.Snapshot().DefaultModels)
-	}
-
-	// Empty value clears a default.
-	w = patchSettings(s, `{"agents":{"default_models":{"opencode":""}}}`)
-	if w.Code != http.StatusOK {
-		t.Fatalf("clear: got %d: %s", w.Code, w.Body)
-	}
-	if s.Live.DefaultModel("opencode") != "" {
-		t.Errorf("opencode default not cleared: %q", s.Live.DefaultModel("opencode"))
-	}
-	if s.Live.DefaultModel("claude-code") != "sonnet" {
-		t.Errorf("clear wiped an unrelated agent")
-	}
-
-	// Echo surfaces the map.
-	var resp map[string]any
-	json.Unmarshal(w.Body.Bytes(), &resp)
-	if _, ok := resp["agents"].(map[string]any)["default_models"]; !ok {
-		t.Error("echo missing agents.default_models")
-	}
-}
-
-// Unknown agents and over-long model ids are rejected; lifecycle preserved.
-func TestPatchAgentDefaultModelsValidation(t *testing.T) {
-	s := newSettingsServer(t)
-	long := `{"agents":{"default_models":{"opencode":"` + strings.Repeat("x", 201) + `"}}}`
-	for _, body := range []string{
-		`{"agents":{"default_models":{"bogus-agent":"x"}}}`, // not runnable
-		long,
-	} {
-		if w := patchSettings(s, body); w.Code != http.StatusBadRequest {
-			t.Errorf("body %s: got %d, want 400", body, w.Code)
-		}
-	}
-	if got := s.Live.DefaultModel("opencode"); got != "" {
-		t.Errorf("rejected patches must not persist: %q", got)
 	}
 }
 

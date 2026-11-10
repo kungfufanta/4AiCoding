@@ -27,7 +27,7 @@ fmt: ## Format Go code
 	cd $(CP) && gofmt -w .
 
 build: ## Build the control-plane binary + console bundle
-	cd $(CP) && CGO_ENABLED=0 go build -o /dev/null ./cmd/sandboxd ./cmd/runtimed
+	cd $(CP) && CGO_ENABLED=0 go build -o /dev/null ./cmd/sandboxd
 	cd $(CONSOLE) && pnpm install --frozen-lockfile && pnpm run build
 
 up: ## Bring up control plane + edge + console
@@ -40,5 +40,5 @@ logs: ## Tail the control plane
 	docker compose logs -f sandboxd
 
 clean: ## Remove local build artifacts
-	rm -f $(CP)/sandboxd $(CP)/runtimed
+	rm -f $(CP)/sandboxd
 	rm -rf $(CONSOLE)/dist

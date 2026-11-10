@@ -26,7 +26,6 @@ import (
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/manifest"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/metrics"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/preset"
-	"github.com/tastyeffectco/sandboxd/control-plane/internal/runtime"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/snapshot"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/store"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/traefik"
@@ -184,10 +183,6 @@ type sandboxResp struct {
 type getResp struct {
 	Row       sandboxResp `json:"row"`
 	LiveState any         `json:"live_state"`
-	// Runtime is the in-sandbox runtimed snapshot (preview state,
-	// active task), or null when runtimed is unreachable (sandbox
-	// stopped, or not yet booted).
-	Runtime *runtime.Status `json:"runtime,omitempty"`
 }
 
 type execReq struct {
@@ -681,7 +676,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Build the optional env injection (e.g. agent API keys). Validate
+	// Build the optional env injection. Validate
 	// keys so a bad entry can't smuggle extra docker flags or break the
 	// KEY=VALUE encoding.
 	var envFlags []string
@@ -706,20 +701,6 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		}
 		envFlags = append(envFlags, "RUNTIMED_RUNTIME_PRESET="+req.RuntimePreset)
 	}
-	// Credential-injecting auth proxy: tell runtimed where the Anthropic proxy is
-	// so claude-code tasks route through it (base URL + dummy key) instead of
-	// reading a mounted credential. runtimed only acts on this for claude-code.
-	if s.AgentProxyURL != "" {
-		envFlags = append(envFlags, "RUNTIMED_ANTHROPIC_PROXY="+s.AgentProxyURL)
-	}
-	// Optional OpenCode model (e.g. an OpenCode Zen model) for opencode tasks.
-	if s.OpencodeModel != "" {
-		envFlags = append(envFlags, "RUNTIMED_OPENCODE_MODEL="+s.OpencodeModel)
-	}
-	// Which OpenCode Zen endpoint opencode routes through the proxy (zen | zengo).
-	if s.OpencodeZenPath != "" {
-		envFlags = append(envFlags, "SANDBOXD_OPENCODE_ZEN_PATH="+s.OpencodeZenPath)
-	}
 
 	// 2. docker run with the locked flag set + traefik labels.
 	// A1.5a — ensure the resolved web port has a preview router. ADDITIVE: never
@@ -730,11 +711,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		previewPorts = ensurePort(previewPorts, webPort)
 	}
 	labels := traefik.LabelsFor(s.hosts(), req.ID, previewPorts, visibility, s.PreviewEntrypoint, s.PreviewTLS)
-	// Phase 10B — bind-mount EVERY connected provider's auth dir at
-	// /run/agent-auth/<provider> (outside the workspace). runtimed selects the
-	// right one per task by the requested agent, so an explicit agent:"claude-code"
-	// task works regardless of the default. No credential is ever in env.
-	volumes := append([]string{mntPath + ":/home/sandbox"}, s.agentAuthMounts()...)
+	volumes := []string{mntPath + ":/home/sandbox"}
 	if s.DNSResolvConf != "" {
 		// gVisor: override the unreachable embedded DNS (127.0.0.11).
 		volumes = append(volumes, s.DNSResolvConf+":/etc/resolv.conf:ro")
@@ -877,17 +854,6 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 		s.loggerFor(r, id).Warn("get: docker inspect failed", "err", inspectErr.Error())
 	}
 
-	// Surface in-sandbox runtime state (runtimed) over its Unix socket
-	// on the workspace loopback. Best-effort: a stopped sandbox or a
-	// not-yet-booted runtimed simply yields no runtime block.
-	_, mnt := s.Loopback.Paths(id)
-	rctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
-	defer cancel()
-	if rs, rerr := runtime.NewClient(filepath.Join(mnt, ".runtimed", "sock")).Status(rctx); rerr == nil {
-		resp.Runtime = rs
-	} else {
-		s.loggerFor(r, id).Info("get: runtimed status unavailable", "err", rerr.Error())
-	}
 	writeJSON(w, http.StatusOK, resp)
 }
 

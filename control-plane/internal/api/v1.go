@@ -1,26 +1,26 @@
 // v1.go — the narrow public /v1 API.
-// It is a thin translation layer over the proven internal machinery:
-// sandbox create/delete delegate to the existing internal handlers;
-// runtime/task state is read via runtime.Client over the workspace
-// Unix socket. The internal /sandbox API is left untouched.
+// It is a thin translation layer over the internal machinery:
+// sandbox create/delete delegate to the existing internal handlers.
+// The internal /sandbox API is left untouched.
 package api
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"time"
 
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/audit"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/events"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/preset"
-	"github.com/tastyeffectco/sandboxd/control-plane/internal/runtime"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/store"
 )
+
+// errPerAppImage is returned when a request names an image. Per-sandbox images
+// arrive in M3a; until then the image is instance-wide (SANDBOXD_IMAGE).
+const errPerAppImage = "per-sandbox image selection is not supported yet; set SANDBOXD_IMAGE instance-wide"
 
 // defaultTemplate is the one fixed snapshot variant in v1.
 const defaultTemplate = "react-standard"
@@ -37,24 +37,12 @@ type v1Preview struct {
 }
 
 type v1Sandbox struct {
-	ID           string      `json:"id"`
-	Status       string      `json:"status"`
-	Preview      v1Preview   `json:"preview"`
-	Processes    []v1Process `json:"processes"`
-	ActiveTaskID string      `json:"active_task_id,omitempty"`
-	Template     string      `json:"template"`
-	CreatedAt    string      `json:"created_at"`
-	UpdatedAt    string      `json:"updated_at,omitempty"`
-}
-
-// v1Process is one supervised process (the web dev server or a worker) from the
-// app's runtime manifest, surfaced for the console process panel.
-type v1Process struct {
-	Name     string `json:"name"`
-	Kind     string `json:"kind"` // "web" | "worker"
-	Running  bool   `json:"running"`
-	Pid      int    `json:"pid,omitempty"`
-	Restarts int    `json:"restarts"`
+	ID        string    `json:"id"`
+	Status    string    `json:"status"`
+	Preview   v1Preview `json:"preview"`
+	Template  string    `json:"template"`
+	CreatedAt string    `json:"created_at"`
+	UpdatedAt string    `json:"updated_at,omitempty"`
 }
 
 // --- helpers --------------------------------------------------------
@@ -157,9 +145,8 @@ func (s *Server) previewURL(id string, webPort int) string {
 	return scheme + "://" + host
 }
 
-// v1SandboxFromRow reshapes a stored sandbox to the v1 object, folding
-// in the live runtime/preview state from runtimed when reachable.
-func (s *Server) v1SandboxFromRow(r *http.Request, sb *store.Sandbox) v1Sandbox {
+// v1SandboxFromRow reshapes a stored sandbox to the v1 object.
+func (s *Server) v1SandboxFromRow(_ *http.Request, sb *store.Sandbox) v1Sandbox {
 	out := v1Sandbox{
 		ID:        sb.ID,
 		Status:    sb.Status,
@@ -167,50 +154,25 @@ func (s *Server) v1SandboxFromRow(r *http.Request, sb *store.Sandbox) v1Sandbox 
 		CreatedAt: sb.CreatedAt.UTC().Format(time.RFC3339),
 		UpdatedAt: sb.UpdatedAt.UTC().Format(time.RFC3339),
 	}
-	_, mnt := s.Loopback.Paths(sb.ID)
-	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
-	defer cancel()
-	var rs *runtime.Status
-	if got, err := runtime.NewClient(filepath.Join(mnt, ".runtimed", "sock")).Status(ctx); err == nil {
-		rs = got
-	}
-	out.Preview, out.Processes = s.v1RuntimeView(sb.ID, sb.Status, rs, webPortOf(sb))
-	if rs != nil && rs.ActiveTask != nil {
-		out.ActiveTaskID = rs.ActiveTask.ID
-	}
+	out.Preview = s.v1PreviewView(sb.ID, sb.Status, webPortOf(sb))
 	return out
 }
 
-// v1RuntimeView maps a runtimed Status into the public preview + process shape.
-// rs is nil when runtimed is unreachable; then preview reflects the row status.
-// A worker-only app (preview status "none") has no public endpoint, so its
-// preview URL is cleared. Pure given the Server config — unit-tested.
-func (s *Server) v1RuntimeView(id, rowStatus string, rs *runtime.Status, webPort int) (v1Preview, []v1Process) {
+// v1PreviewView derives the public preview shape from the row status alone:
+// the control plane does not look inside the sandbox. Pure given the Server
+// config — unit-tested.
+func (s *Server) v1PreviewView(id, rowStatus string, webPort int) v1Preview {
 	port := webPort
 	if port <= 0 {
 		port = 3000
 	}
 	prev := v1Preview{URL: s.previewURL(id, webPort), Port: port}
-	var procs []v1Process
-	if rs != nil {
-		prev.Status = string(rs.Preview.Status)
-		prev.LastHTTPStatus = rs.Preview.LastHTTPStatus
-		if rs.Preview.LastCheckedAt != nil {
-			prev.LastCheckedAt = rs.Preview.LastCheckedAt.UTC().Format(time.RFC3339)
-		}
-		prev.BuildErrorMessage = rs.Preview.BuildErrorMessage
-		for _, p := range rs.Processes {
-			procs = append(procs, v1Process{Name: p.Name, Kind: p.Kind, Running: p.Running, Pid: p.Pid, Restarts: p.Restarts})
-		}
-	} else if rowStatus == "running" {
-		prev.Status = "starting" // running but runtimed not yet answering
+	if rowStatus == "running" {
+		prev.Status = "running"
 	} else {
 		prev.Status = "down"
 	}
-	if prev.Status == string(runtime.PreviewNone) {
-		prev.URL = "" // worker-only: no public endpoint to advertise
-	}
-	return prev, procs
+	return prev
 }
 
 // --- POST /v1/sandboxes ---------------------------------------------
@@ -363,15 +325,6 @@ func (s *Server) v1StopSandbox(w http.ResponseWriter, r *http.Request) {
 	}
 	if sb.Status != "running" {
 		writeV1Err(w, http.StatusConflict, "conflict", "sandbox is not running")
-		return
-	}
-	// Reject a stop while a task is active — the upstream cancels first.
-	_, mnt := s.Loopback.Paths(id)
-	rctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
-	defer cancel()
-	if rs, rerr := runtime.NewClient(filepath.Join(mnt, ".runtimed", "sock")).Status(rctx); rerr == nil && rs.ActiveTask != nil {
-		writeV1Err(w, http.StatusConflict, "task_in_progress",
-			"a task is in progress; cancel it before stopping")
 		return
 	}
 	if err := s.Docker.Stop(r.Context(), "s-"+id, 10); err != nil {

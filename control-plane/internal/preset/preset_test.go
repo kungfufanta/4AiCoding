@@ -1,10 +1,6 @@
 package preset
 
 import (
-	"os"
-	"path/filepath"
-	"runtime"
-	"slices"
 	"strings"
 	"testing"
 )
@@ -101,32 +97,5 @@ func TestFastapiPreset(t *testing.T) {
 	}
 	if strings.Contains(p.Manifest, "port: 8000") || strings.Contains(p.Manifest, "--port 8000") {
 		t.Error("fastapi must not reference the old 8000 port")
-	}
-}
-
-// Templates that install dependencies ship a .gitignore so dependencies and
-// build output don't become checkpoint noise or get pushed (the workspace git
-// repo relies on the committed .gitignore).
-func TestTemplatesIgnoreDependencies(t *testing.T) {
-	_, thisFile, _, _ := runtime.Caller(0)
-	// .../control-plane/internal/preset/preset_test.go -> repo root is 3 up.
-	repo := filepath.Join(filepath.Dir(thisFile), "..", "..", "..")
-	for template, entries := range map[string][]string{
-		"nextjs-standard":       {"node_modules", ".next", "out", ".env", ".env.local"},
-		"react-standard":        {"node_modules", "dist", ".vite", ".env"},
-		"node-express-standard": {"node_modules", ".env"},
-		"fastapi-standard":      {".venv", "__pycache__", ".env"},
-	} {
-		data, err := os.ReadFile(filepath.Join(repo, "image", "templates", template, ".gitignore"))
-		if err != nil {
-			t.Errorf("%s .gitignore missing: %v", template, err)
-			continue
-		}
-		lines := strings.Fields(string(data))
-		for _, want := range entries {
-			if !slices.Contains(lines, want) {
-				t.Errorf("%s .gitignore missing %q", template, want)
-			}
-		}
 	}
 }

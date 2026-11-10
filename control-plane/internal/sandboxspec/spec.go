@@ -32,9 +32,6 @@ type Env struct {
 	PreviewHostTag    string // optional instance tag, flat style only
 	PreviewEntrypoint string
 	PreviewTLS        bool
-	AgentProxyURL     string
-	OpencodeModel     string
-	OpencodeZenPath   string
 	RuntimePreset     string   // from the owning app, when known
 	AgentAuthMounts   []string // only when the auth proxy is disabled
 }
@@ -48,15 +45,6 @@ func Build(sb *store.Sandbox, e Env) docker.RunSpec {
 	env := []string{}
 	if e.RuntimePreset != "" {
 		env = append(env, "RUNTIMED_RUNTIME_PRESET="+e.RuntimePreset)
-	}
-	if e.AgentProxyURL != "" {
-		env = append(env, "RUNTIMED_ANTHROPIC_PROXY="+e.AgentProxyURL)
-	}
-	if e.OpencodeModel != "" {
-		env = append(env, "RUNTIMED_OPENCODE_MODEL="+e.OpencodeModel)
-	}
-	if e.OpencodeZenPath != "" {
-		env = append(env, "SANDBOXD_OPENCODE_ZEN_PATH="+e.OpencodeZenPath)
 	}
 
 	volumes := append([]string{sb.WorkspaceMnt + ":/home/sandbox"}, e.AgentAuthMounts...)
