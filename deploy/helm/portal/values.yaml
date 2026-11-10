@@ -1,0 +1,77 @@
+# Portal — SaaS layer in front of sandboxd (docs/PORTAL_PLAN.md).
+# The binary applies its own migrations at boot, so no init job is
+# needed; give it a Postgres DSN and (from S3) the sandboxd address.
+
+replicaCount: 1
+
+image:
+  repository: portal
+  tag: ""            # defaults to the chart appVersion
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+serviceAccount:
+  # Created by the chart; set create=false + name to reuse one.
+  create: true
+  name: ""
+  annotations: {}
+
+database:
+  # Postgres DSN of the Portal's own database (required), e.g.
+  # postgres://portal:portal@portal-postgres:5432/portal
+  # Either give the value here (a Secret is created) or name an
+  # existing Secret holding it.
+  url: ""
+  existingSecret: ""
+  existingSecretKey: database-url
+
+# Public URL of the dashboard/API (S1 cookies + OIDC redirect), e.g.
+# https://app.example.com
+publicURL: ""
+
+# OIDC provider (S1 login; empty leaves login disabled).
+oidc:
+  issuer: ""
+  clientID: ""
+  clientSecret: ""
+
+service:
+  type: ClusterIP
+  port: 80
+
+podAnnotations: {}
+podLabels: {}
+
+resources:
+  requests:
+    cpu: 10m
+    memory: 64Mi
+  limits:
+    memory: 256Mi
+
+# The image runs as nonroot (distroless); keep the guardrails on.
+podSecurityContext: {}
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: app.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# Extra environment for the portal container (PORTAL_* not covered
+# above, e.g. PORTAL_DEBUG: "1" in dev).
+extraEnv: []
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

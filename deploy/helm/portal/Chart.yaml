@@ -1,0 +1,10 @@
+apiVersion: v2
+name: portal
+description: >-
+  Portal — the SaaS layer in front of sandboxd (docs/PORTAL_PLAN.md):
+  orgs/projects, API keys + agent tokens, the public /v1 API and the
+  dashboard. One Deployment talking to its own PostgreSQL and to the
+  sandboxd control plane over the internal network.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

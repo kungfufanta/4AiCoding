@@ -1,0 +1,18 @@
+Portal deployed.
+
+1. Get the portal URL{{ if .Values.ingress.enabled }} via the ingress{{ else }} by port-forwarding{{ end }}:
+
+{{- if .Values.ingress.enabled }}
+{{- range .Values.ingress.hosts }}
+   http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}/
+{{- end }}
+{{- else }}
+   kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "portal.fullname" . }} 8080:{{ .Values.service.port }}
+   # then open http://127.0.0.1:8080/healthz
+{{- end }}
+
+2. Probes: /healthz (process up), /readyz (Postgres reachable).
+
+3. The portal binary applies its own migrations at boot; check them:
+
+   kubectl --namespace {{ .Release.Namespace }} logs deploy/{{ include "portal.fullname" . }} | grep migration
