@@ -96,11 +96,13 @@ PLAN.md             Roadmap and security baseline
 make test   # go test -race ./...
 make lint   # gofmt + go vet
 make e2e    # build sandboxd + a tiny test image, then run scripts/e2e.sh
+make e2e-auth     # same, with auth on: login, roles, keys, keep-alive, approvals, audit
+make preview      # full docker compose stack + browser smoke of the console
 make console      # typecheck + build the console
 make console-dev  # console dev server against a local sandboxd on 127.0.0.1:9090
 ```
 
-CI (`.github/workflows/ci.yml`) runs the Go unit job, the console build and the Docker integration job on every push and pull request.
+CI (`.github/workflows/ci.yml`) runs the Go unit job, the console build and the Docker integration jobs (lifecycle and access-control e2e) on every push and pull request. The `preview` workflow builds the whole compose stack on each pull request, drives the console in a browser through Traefik, and attaches screenshots of every screen to the run.
 
 ## License
 

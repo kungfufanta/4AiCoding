@@ -1,0 +1,52 @@
+name: preview
+
+# PR preview: build the real docker-compose stack (Traefik + sandboxd +
+# console) on the runner, check the edge routes, drive the console in a
+# browser, and attach screenshots of every screen to the run.
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: preview-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.pw-browsers
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: install browser smoke deps
+        working-directory: scripts/preview
+        run: npm install --no-audit --no-fund && npx playwright install --with-deps chromium
+
+      - name: build e2e sandbox image
+        run: docker build -t sandboxd-e2e:ci scripts/e2e
+
+      - name: compose stack + console smoke
+        env:
+          SANDBOXD_IMAGE: sandboxd-e2e:ci
+          PREVIEW_SHOTS: ${{ github.workspace }}/preview-shots
+          SANDBOXD_VERSION: pr-${{ github.event.pull_request.number || 'manual' }}
+          SANDBOXD_GIT_COMMIT: ${{ github.sha }}
+        run: sudo --preserve-env=PATH,SANDBOXD_IMAGE,PREVIEW_SHOTS,PLAYWRIGHT_BROWSERS_PATH,SANDBOXD_VERSION,SANDBOXD_GIT_COMMIT bash scripts/preview.sh
+
+      - name: screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: console-preview-${{ github.event.pull_request.number || github.run_id }}
+          path: preview-shots/
+          if-no-files-found: ignore
+          retention-days: 14

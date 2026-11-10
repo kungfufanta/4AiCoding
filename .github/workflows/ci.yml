@@ -96,6 +96,12 @@ jobs:
         # fails with "remove workspace: permission denied".
         run: sudo --preserve-env=SANDBOXD_IMAGE,SANDBOXD_BIN bash scripts/e2e.sh
 
+      - name: auth e2e (login, roles, keys, keep-alive, approvals, audit)
+        env:
+          SANDBOXD_IMAGE: sandboxd-e2e:ci
+          SANDBOXD_BIN: ${{ runner.temp }}/sandboxd
+        run: sudo --preserve-env=SANDBOXD_IMAGE,SANDBOXD_BIN bash scripts/e2e-auth.sh
+
       - name: leftover containers
         if: always()
         run: docker ps -a --filter "label=sandboxd.managed=true"

@@ -1,6 +1,6 @@
 # 4AiCoding — control plane (control-plane/, Go).
 .DEFAULT_GOAL := help
-.PHONY: help test lint fmt build e2e console console-dev up down logs clean
+.PHONY: help test lint fmt build e2e e2e-auth preview console console-dev up down logs clean
 
 CP := control-plane
 
@@ -24,6 +24,15 @@ build: ## Build the sandboxd binary into ./bin
 e2e: build ## Lifecycle e2e against the local Docker daemon
 	docker build -t sandboxd-e2e:local scripts/e2e
 	sudo SANDBOXD_IMAGE=sandboxd-e2e:local SANDBOXD_BIN=$(CURDIR)/bin/sandboxd bash scripts/e2e.sh
+
+e2e-auth: build ## Access-control e2e (auth on) against the local Docker daemon
+	docker build -t sandboxd-e2e:local scripts/e2e
+	sudo SANDBOXD_IMAGE=sandboxd-e2e:local SANDBOXD_BIN=$(CURDIR)/bin/sandboxd bash scripts/e2e-auth.sh
+
+preview: ## Full compose stack + browser smoke of the console (screenshots in preview-shots/)
+	docker build -t sandboxd-e2e:local scripts/e2e
+	cd scripts/preview && npm install --no-audit --no-fund
+	sudo --preserve-env=PATH SANDBOXD_IMAGE=sandboxd-e2e:local bash scripts/preview.sh
 
 console: ## Typecheck + build the web console (console/dist)
 	cd console && pnpm install --frozen-lockfile && pnpm build

@@ -34,3 +34,4 @@ docs/internal/
 .env.bak*
 *.env.bak*
 .env.*.bak
+preview-shots/

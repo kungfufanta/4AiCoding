@@ -105,6 +105,7 @@ services:
       SANDBOXD_MAX_MEMORY_MB: ${SANDBOXD_MAX_MEMORY_MB:-10240}
       SANDBOXD_MAX_CPUS: ${SANDBOXD_MAX_CPUS:-0}
       SANDBOXD_MAX_PORTS_PER_SANDBOX: ${SANDBOXD_MAX_PORTS_PER_SANDBOX:-16}
+      SANDBOXD_SANDBOX_NOFILE: ${SANDBOXD_SANDBOX_NOFILE:-65536}
       # Sandbox container runtime: empty = docker default (runc); "runsc" = gVisor
       # (stronger per-sandbox kernel isolation). SANDBOXD_DNS overrides resolv.conf
       # for gVisor sandboxes (netstack can't reach Docker's embedded DNS).

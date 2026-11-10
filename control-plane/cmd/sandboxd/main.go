@@ -463,6 +463,7 @@ func main() {
 	}
 	specEnv := sandboxspec.Env{
 		EgressProxy:       egressProxyURL,
+		Nofile:            intFromEnv("SANDBOXD_SANDBOX_NOFILE", sandboxspec.DefaultNofile),
 		Image:             image,
 		Network:           network,
 		Userns:            userns,
