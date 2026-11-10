@@ -63,6 +63,10 @@ type Sandbox struct {
 	// Spec (0028) is the per-sandbox runtime spec: image, command, env,
 	// resources. Zero value = instance defaults.
 	Spec Spec
+
+	// NodeID (0032) is the fleet node the sandbox is placed on (M6).
+	// Loaded by fill(); empty on legacy rows / unplaced creates.
+	NodeID string
 }
 
 // WorkspaceOwner is the durable sandbox_id -> upstream-identity

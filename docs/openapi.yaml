@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: 4AiCoding sandboxd /v1 API
-  version: "0.4.0-minimal"
+  version: "0.5.0-fleet"
   description: >
     The public sandbox-lifecycle API of the 4AiCoding control plane. This is the only surface a
     console or external integration should use — the internal /sandbox and
@@ -22,6 +22,7 @@ tags:
   - name: snapshots
   - name: network
   - name: observability
+  - name: nodes
 
 paths:
   /version:
@@ -1035,6 +1036,105 @@ paths:
         "403": { description: Caller is not a console user }
         "409": { description: Not pending any more }
 
+  /v1/nodes:
+    get:
+      operationId: listNodes
+      tags: [nodes]
+      summary: Fleet membership (the local node + every registered worker)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [nodes, now]
+                properties:
+                  nodes:
+                    type: array
+                    items: { $ref: "#/components/schemas/Node" }
+                  now: { type: string, example: "2026-11-10T09:00:00Z" }
+
+  /v1/nodes/{id}/capacity:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    get:
+      operationId: getNodeCapacity
+      tags: [nodes]
+      summary: One node's advertised capacity and current usage
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NodeCapacity" }
+        "404": { description: No such node }
+
+  /v1/nodes/{id}/drain:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    post:
+      operationId: drainNode
+      tags: [nodes]
+      summary: Drain a node. Admin only. New sandboxes are refused on a draining node; running ones stay.
+      responses:
+        "200":
+          description: The node after the change
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  node: { $ref: "#/components/schemas/Node" }
+        "404": { description: No such node }
+        "403": { description: Caller is not an admin }
+
+  /v1/nodes/{id}/undrain:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    post:
+      operationId: undrainNode
+      tags: [nodes]
+      summary: Return a drained node to the placement pool. Admin only.
+      responses:
+        "200":
+          description: The node after the change
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  node: { $ref: "#/components/schemas/Node" }
+        "404": { description: No such node }
+        "403": { description: Caller is not an admin }
+
+  /v1/capacity:
+    get:
+      operationId: getFleetCapacity
+      tags: [nodes]
+      summary: Fleet-wide capacity and usage totals plus the per-node breakdown
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [capacity, used, nodes, online, offline, draining, per_node, now]
+                properties:
+                  capacity: { $ref: "#/components/schemas/ResourceAmount" }
+                  used:
+                    allOf:
+                      - $ref: "#/components/schemas/ResourceAmount"
+                      - type: object
+                        properties:
+                          sandboxes: { type: integer }
+                  nodes: { type: integer }
+                  online: { type: integer }
+                  offline: { type: integer }
+                  draining: { type: integer }
+                  per_node:
+                    type: array
+                    items: { $ref: "#/components/schemas/NodeCapacity" }
+                  now: { type: string }
+
 components:
   securitySchemes:
     bearerAuth:
@@ -1347,3 +1447,44 @@ components:
         visibility: { type: string }
         size_bytes: { type: integer }
         created_at: { type: string, format: date-time }
+    Node:
+      type: object
+      required: [node_id, role, status, drain_state, capacity, used, sandboxes, registered_at, heartbeat_at]
+      properties:
+        node_id: { type: string, example: worker-1 }
+        role: { type: string, enum: [local, worker] }
+        status: { type: string, enum: [online, offline], description: Derived from the heartbeat lease; the local node is always online }
+        drain_state: { type: string, enum: [active, drain] }
+        address: { type: string }
+        version: { type: string }
+        capacity: { $ref: "#/components/schemas/ResourceAmount" }
+        used:
+          allOf:
+            - $ref: "#/components/schemas/ResourceAmount"
+            - type: object
+              properties:
+                sandboxes: { type: integer }
+        sandboxes: { type: integer }
+        registered_at: { type: string, format: date-time }
+        heartbeat_at: { type: string, format: date-time }
+    NodeCapacity:
+      type: object
+      properties:
+        node_id: { type: string }
+        role: { type: string }
+        status: { type: string }
+        drain_state: { type: string }
+        capacity: { $ref: "#/components/schemas/ResourceAmount" }
+        used:
+          allOf:
+            - $ref: "#/components/schemas/ResourceAmount"
+            - type: object
+              properties:
+                sandboxes: { type: integer }
+        sandboxes: { type: integer }
+    ResourceAmount:
+      type: object
+      properties:
+        cpus: { type: number }
+        memory_mb: { type: integer }
+        disk_mb: { type: integer }

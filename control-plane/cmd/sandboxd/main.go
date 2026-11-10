@@ -41,6 +41,7 @@ import (
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/egress"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/egressproxy"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/events"
+	"github.com/tastyeffectco/sandboxd/control-plane/internal/fleet"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/idlock"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/instancecfg"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/logging"
@@ -106,6 +107,8 @@ func main() {
 		switch os.Args[1] {
 		case "backfill-legacy":
 			os.Exit(runBackfillLegacy(os.Args[2:]))
+		case "worker":
+			os.Exit(runWorker(os.Args[2:]))
 		case "version", "--version", "-v":
 			v, c := buildIdent()
 			fmt.Printf("sandboxd %s (%s)\n", v, c)
@@ -558,6 +561,14 @@ func main() {
 		log.Info("startup: bootstrap admin created", "username", name)
 	}
 
+	// M6 — fleet membership. The control plane is itself a node (role
+	// 'local'): it is the executor in the all-in-one topology, it shows
+	// up in GET /v1/nodes and it obeys drain like any worker. Workers
+	// join through POST /internal/nodes/register (worker token).
+	nodeLease := durationFromEnvSec("SANDBOXD_NODE_LEASE_SECONDS", int(fleet.DefaultLease.Seconds()))
+	server.NodeLease = nodeLease
+	localNodeID := ensureLocalNode(ctx, st, log)
+
 	// Phase 5 — after reconcile, if MemAvailable is
 	// already below the healthy floor, run one synchronous pressure
 	// tick before opening the listener. Keeps the host from
@@ -642,6 +653,10 @@ func main() {
 	// --- Phase 5 background goroutines ---------------------------------
 	gctx, gcancel := context.WithCancel(context.Background())
 	defer gcancel()
+
+	// M6 — keep the local node's heartbeat fresh so the fleet view
+	// reflects liveness even though role='local' is always online.
+	go bumpLocalNodeLoop(gctx, st, log, localNodeID)
 
 	// Idle reaper.
 	idle := &reaper.Idle{

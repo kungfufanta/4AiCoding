@@ -102,6 +102,12 @@ jobs:
           SANDBOXD_BIN: ${{ runner.temp }}/sandboxd
         run: sudo --preserve-env=SANDBOXD_IMAGE,SANDBOXD_BIN bash scripts/e2e-auth.sh
 
+      - name: fleet e2e (2 workers register, drain, offline)
+        env:
+          SANDBOXD_IMAGE: sandboxd-e2e:ci
+          SANDBOXD_BIN: ${{ runner.temp }}/sandboxd
+        run: sudo --preserve-env=SANDBOXD_IMAGE,SANDBOXD_BIN bash scripts/e2e-fleet.sh
+
       - name: leftover containers
         if: always()
         run: docker ps -a --filter "label=sandboxd.managed=true"

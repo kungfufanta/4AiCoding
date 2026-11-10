@@ -47,24 +47,27 @@ type v1External struct {
 }
 
 type v1Sandbox struct {
-	ID             string            `json:"id"`
-	Status         string            `json:"status"`
-	Image          string            `json:"image"`
-	Command        []string          `json:"command,omitempty"`
-	Env            map[string]string `json:"env,omitempty"`
-	Resources      v1Resources       `json:"resources"`
-	Lifecycle      v1Lifecycle       `json:"lifecycle"`
-	Egress         []string          `json:"egress"`
-	Ports          []int             `json:"ports"`
-	Preview        *v1Preview        `json:"preview,omitempty"` // only when the sandbox exposes ports
-	Visibility     string            `json:"visibility"`
-	IdlePolicy     string            `json:"idle_policy"`
-	External       *v1External       `json:"external,omitempty"`
-	ErrorMessage   string            `json:"error_message,omitempty"`
-	LastActiveAt   string            `json:"last_active_at,omitempty"`
-	KeepaliveUntil string            `json:"keepalive_until,omitempty"`
-	CreatedAt      string            `json:"created_at"`
-	UpdatedAt      string            `json:"updated_at,omitempty"`
+	ID         string            `json:"id"`
+	Status     string            `json:"status"`
+	Image      string            `json:"image"`
+	Command    []string          `json:"command,omitempty"`
+	Env        map[string]string `json:"env,omitempty"`
+	Resources  v1Resources       `json:"resources"`
+	Lifecycle  v1Lifecycle       `json:"lifecycle"`
+	Egress     []string          `json:"egress"`
+	Ports      []int             `json:"ports"`
+	Preview    *v1Preview        `json:"preview,omitempty"` // only when the sandbox exposes ports
+	Visibility string            `json:"visibility"`
+	IdlePolicy string            `json:"idle_policy"`
+	// Node (M6) is the fleet node the sandbox is placed on. Empty only on
+	// legacy rows created before the fleet existed.
+	Node           string      `json:"node,omitempty"`
+	External       *v1External `json:"external,omitempty"`
+	ErrorMessage   string      `json:"error_message,omitempty"`
+	LastActiveAt   string      `json:"last_active_at,omitempty"`
+	KeepaliveUntil string      `json:"keepalive_until,omitempty"`
+	CreatedAt      string      `json:"created_at"`
+	UpdatedAt      string      `json:"updated_at,omitempty"`
 }
 
 // v1Resources are the effective (post-clamp) resource limits. 0 = no hard
@@ -195,6 +198,7 @@ func (s *Server) v1SandboxFromRow(_ *http.Request, sb *store.Sandbox) v1Sandbox 
 		Ports:      sb.Ports,
 		Visibility: sb.Visibility,
 		IdlePolicy: sb.IdlePolicy,
+		Node:       sb.NodeID,
 		CreatedAt:  sb.CreatedAt.UTC().Format(time.RFC3339),
 		UpdatedAt:  sb.UpdatedAt.UTC().Format(time.RFC3339),
 	}

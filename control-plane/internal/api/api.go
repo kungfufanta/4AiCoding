@@ -155,6 +155,10 @@ type Server struct {
 	// shared with the reaper. nil-safe: PATCH /v1/settings returns 503 when
 	// unset, and the static KeepaliveMax is used as a fallback.
 	Live *instancecfg.Live
+
+	// M6 — fleet. NodeLease is how long after a worker's last heartbeat
+	// it is still reported online (fleet.DefaultLease when 0).
+	NodeLease time.Duration
 }
 
 // Handler returns the http.Handler ready for ListenAndServe.
@@ -223,6 +227,19 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/approvals/{id}", s.observe("GET /v1/approvals/{id}", s.v1GetApproval))
 	mux.HandleFunc("POST /v1/approvals/{id}/approve", s.observe("POST /v1/approvals/{id}/approve", s.v1ApproveApproval))
 	mux.HandleFunc("POST /v1/approvals/{id}/deny", s.observe("POST /v1/approvals/{id}/deny", s.v1DenyApproval))
+
+	// Node / cluster (M6). Drain/undrain are admin routes (roles.go);
+	// reads are open to every role for dashboards.
+	mux.HandleFunc("GET /v1/nodes", s.observe("GET /v1/nodes", s.v1ListNodes))
+	mux.HandleFunc("GET /v1/nodes/{id}/capacity", s.observe("GET /v1/nodes/{id}/capacity", s.v1NodeCapacity))
+	mux.HandleFunc("POST /v1/nodes/{id}/drain", s.observe("POST /v1/nodes/{id}/drain", s.v1DrainNode))
+	mux.HandleFunc("POST /v1/nodes/{id}/undrain", s.observe("POST /v1/nodes/{id}/undrain", s.v1UndrainNode))
+	mux.HandleFunc("GET /v1/capacity", s.observe("GET /v1/capacity", s.v1FleetCapacity))
+
+	// M6 — internal worker fleet protocol. Reachable ONLY with a worker
+	// token (auth middleware answers 404 for anything else).
+	mux.HandleFunc("POST /internal/nodes/register", s.observe("POST /internal/nodes/register", s.internalNodeRegister))
+	mux.HandleFunc("POST /internal/nodes/heartbeat", s.observe("POST /internal/nodes/heartbeat", s.internalNodeHeartbeat))
 
 	// Instance settings.
 	mux.HandleFunc("GET /v1/settings", s.observe("GET /v1/settings", s.v1GetSettings))

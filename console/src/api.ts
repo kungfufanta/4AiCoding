@@ -145,6 +145,31 @@ export interface ApiKey {
   last_used_at?: string;
 }
 
+/** Fleet membership (M6). role 'local' = the control plane itself. */
+export interface NodeAmount {
+  cpus: number;
+  memory_mb: number;
+  disk_mb: number;
+}
+
+export interface NodeUsage extends NodeAmount {
+  sandboxes: number;
+}
+
+export interface NodeInfo {
+  node_id: string;
+  role: "local" | "worker" | string;
+  status: "online" | "offline" | string;
+  drain_state: "active" | "drain" | string;
+  address?: string;
+  version?: string;
+  capacity: NodeAmount;
+  used: NodeUsage;
+  sandboxes: number;
+  registered_at: string;
+  heartbeat_at: string;
+}
+
 export interface AuditEntry {
   id: number;
   at: number;

@@ -66,7 +66,7 @@ func (s *Store) specFor(ctx context.Context, id string) (Spec, error) {
 	return sp, nil
 }
 
-// fill loads the child rows (ports + spec) of a scanned sandbox.
+// fill loads the child rows (ports + spec + placement) of a scanned sandbox.
 func (s *Store) fill(ctx context.Context, sb *Sandbox) error {
 	ports, err := s.portsFor(ctx, sb.ID)
 	if err != nil {
@@ -78,6 +78,11 @@ func (s *Store) fill(ctx context.Context, sb *Sandbox) error {
 		return err
 	}
 	sb.Spec = sp
+	if p, err := s.PlacementFor(ctx, sb.ID); err == nil {
+		sb.NodeID = p.NodeID
+	} else if !errors.Is(err, ErrNotFound) {
+		return err
+	}
 	return nil
 }
 

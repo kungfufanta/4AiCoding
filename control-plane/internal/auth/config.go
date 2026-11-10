@@ -10,6 +10,7 @@ import (
 // atomic.Pointer in Middleware so a SIGHUP can swap it without locks.
 type Config struct {
 	APITokens       []NamedToken      // SANDBOXD_API_TOKENS
+	WorkerTokens    []string          // SANDBOXD_WORKER_TOKEN — fleet /internal callers
 	PreviewSecrets  map[string]string // SANDBOXD_PREVIEW_TOKEN_SECRETS: kid -> secret
 	AuthRedirectURL string            // SANDBOXD_AUTH_REDIRECT_URL
 	Disabled        bool              // SANDBOXD_API_AUTH_DISABLED rollback path
@@ -22,6 +23,7 @@ type Config struct {
 func ParseConfig(get func(string) string) *Config {
 	c := &Config{
 		APITokens:       parseNamedPairs(get("SANDBOXD_API_TOKENS")),
+		WorkerTokens:    splitComma(get("SANDBOXD_WORKER_TOKEN")),
 		PreviewSecrets:  pairsToMap(get("SANDBOXD_PREVIEW_TOKEN_SECRETS")),
 		AuthRedirectURL: strings.TrimSpace(get("SANDBOXD_AUTH_REDIRECT_URL")),
 	}
@@ -92,6 +94,19 @@ func parseNamedPairs(s string) []NamedToken {
 			Name:  strings.TrimSpace(part[:eq]),
 			Token: strings.TrimSpace(part[eq+1:]),
 		})
+	}
+	return out
+}
+
+// splitComma splits a comma-separated list of raw secrets, trimming
+// whitespace and dropping empties. Used for SANDBOXD_WORKER_TOKEN, which —
+// unlike SANDBOXD_API_TOKENS — carries no audit names.
+func splitComma(s string) []string {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
 	}
 	return out
 }

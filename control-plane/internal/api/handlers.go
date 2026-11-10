@@ -21,6 +21,7 @@ import (
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/cgroup"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/docker"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/events"
+	"github.com/tastyeffectco/sandboxd/control-plane/internal/fleet"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/gitimport"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/logging"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/manifest"
@@ -447,6 +448,25 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// M6 — fleet placement. Pick the node that will run this sandbox and
+	// refuse the create when that node is draining (PLAN M6: "chặn tạo
+	// sandbox khi node đang drain"). An empty fleet (no node rows) keeps
+	// the legacy unplaced behaviour, so tests and boot windows are safe.
+	nodeID, perr := fleet.Executor(r.Context(), s.Store)
+	if perr != nil {
+		var drainErr *fleet.DrainError
+		if errors.As(perr, &drainErr) {
+			w.Header().Set("Retry-After", "30")
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+				"error":   perr.Error(),
+				"node_id": drainErr.NodeID,
+			})
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, "placement: "+perr.Error())
+		return
+	}
+
 	// Phase 8 §5 — id-reuse ownership guard. If a durable
 	// workspace_owner row exists for this id (the .img is being
 	// reattached), the caller's external.user_id MUST match it. This
@@ -482,6 +502,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		ExternalProjectID:   nullStr(req.External.ProjectID),
 		ExternalWorkspaceID: nullStr(req.External.WorkspaceID),
 		Spec:                spec,
+		NodeID:              nodeID,
 	}
 	sb.Image = sandboxspec.DesiredImage(sb, s.Image)
 	if err := s.Store.Create(r.Context(), sb); err != nil {
