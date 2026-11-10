@@ -58,10 +58,13 @@ const SHOTS = process.env.SHOTS || "shots";
 
   step("network: egress refused by policy");
   await page.getByRole("link", { name: "Network" }).click();
-  await page.getByRole("heading", { name: "Egress allowlist" }).waitFor();
-  await page.locator("textarea").fill("github.com");
-  await page.getByRole("button", { name: "Save allowlist" }).click();
+  await page.getByRole("heading", { name: "Network mode" }).waitFor();
+  await page.getByRole("heading", { name: "Live network activity" }).waitFor();
+  await page.locator("textarea").first().fill("github.com");
+  await page.getByRole("button", { name: "Save network rules" }).click();
   await page.getByText(/not allowed by policy/).waitFor();
+  await page.getByRole("radio", { name: /Open, monitored/ }).check();
+  await page.getByText(/Open mode needs the egress policy/).waitFor();
   await shot("network");
 
   step("admin: policy + tabs");
