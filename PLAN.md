@@ -209,7 +209,7 @@ Mọi thứ chạy trong sandbox, kể cả một agent "toàn quyền" sau này
 | **M6** | Worker mode: `--control-plane-url`, đăng ký fleet, `/v1/nodes/*` | 2 worker đăng ký từ 2 máy | ✅ (đăng ký + heartbeat + drain + placement; worker thực thi sandbox ở M7b) |
 | **M7a** | k3s B1: worker pod + Helm chart tối giản | Worker k3s join fleet | ✅ (chart `deploy/helm/sandboxd-worker`, e2e k3s trong CI) |
 | **M7b** | Worker chạy sandbox (mount runtime socket của node), control plane định tuyến API sandbox tới node chứa nó | Sandbox chạy trên worker, admin thấy placement | ✅ (executor mode, chart `executor.enabled`, e2e 2 sandboxd + e2e k3s) |
-| **M8** | k3s B2 (tuỳ chọn): runtime adapter Pod/Service/NetworkPolicy | Sandbox = Pod | |
+| **M8** | k3s B2 (tuỳ chọn): runtime adapter Pod/Service/NetworkPolicy | Sandbox = Pod | ✅ (`internal/kube` engine trên seam `docker.Engine`; Pod+Service+NetworkPolicy+Ingress; e2e k3s + unit fake-apiserver) |
 
 Sau mỗi milestone có một checkpoint: báo kết quả build/test, chờ duyệt rồi mới sang milestone kế.
 

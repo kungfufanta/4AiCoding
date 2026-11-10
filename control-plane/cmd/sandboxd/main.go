@@ -44,6 +44,7 @@ import (
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/fleet"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/idlock"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/instancecfg"
+	"github.com/tastyeffectco/sandboxd/control-plane/internal/kube"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/logging"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/loopback"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/metrics"
@@ -287,12 +288,68 @@ func main() {
 	}
 
 	dockerClient := docker.NewClient()
+
+	// M8 — the executor engine. "docker" (default) keeps the CLI
+	// executor from M7b; "kubernetes" runs every sandbox as a Pod
+	// (+Service/NetworkPolicy/Ingress) in the cluster this process
+	// sits in (PLAN §2 k3s B2). The concrete dockerClient stays for
+	// the two docker-only seams below (netguard subnets; loopback
+	// seeding happens through the CLI either way).
+	execEngine := docker.Engine(dockerClient)
+	engineLabel := "docker"
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("SANDBOXD_EXECUTOR_ENGINE")), "kubernetes") {
+		kcfg := kube.Config{
+			APIServer: strings.TrimSpace(os.Getenv("SANDBOXD_K8S_API")),
+			Token:     strings.TrimSpace(os.Getenv("SANDBOXD_K8S_TOKEN")),
+			Namespace: strings.TrimSpace(os.Getenv("SANDBOXD_K8S_NAMESPACE")),
+			Insecure:  boolFromEnv("SANDBOXD_K8S_INSECURE", false),
+		}
+		if ca := strings.TrimSpace(os.Getenv("SANDBOXD_K8S_CA")); ca != "" {
+			kcfg.CAData = []byte(ca)
+		} else if p := strings.TrimSpace(os.Getenv("SANDBOXD_K8S_CA_FILE")); p != "" {
+			if b, err := os.ReadFile(p); err == nil {
+				kcfg.CAData = b
+			}
+		}
+		keng, kerr := kube.New(kcfg, filepath.Join(stateDir, "kube-engine"), log.With("component", "kube-engine"))
+		if kerr != nil {
+			log.Error("startup: kubernetes engine init failed", "err", kerr.Error())
+			os.Exit(1)
+		}
+		// Preview hosts (Ingress rules) mirror the docker path: the
+		// same domain, style and tag feed previewhost.
+		keng.IngressDomain = envDefault("SANDBOXD_K8S_INGRESS_DOMAIN", domain)
+		keng.IngressClass = strings.TrimSpace(os.Getenv("SANDBOXD_K8S_INGRESS_CLASS"))
+		keng.PreviewHost = func(id string, port int) string { return hosts.Preview(id, port) }
+		if sel := strings.TrimSpace(os.Getenv("SANDBOXD_K8S_PROXY_SELECTOR")); sel != "" {
+			ps := map[string]string{}
+			for _, kv := range strings.Split(sel, ",") {
+				if k, v, ok := strings.Cut(strings.TrimSpace(kv), "="); ok && k != "" {
+					ps[k] = v
+				}
+			}
+			keng.ProxySelector = ps
+		}
+		execEngine = keng
+		engineLabel = "kubernetes"
+		log.Info("startup: kubernetes executor engine",
+			"namespace", keng.Namespace(), "backend", keng.Backend(),
+			"ingress_domain", keng.IngressDomain, "ingress_class", keng.IngressClass)
+	}
+
 	loopMgr := loopback.New()
 	loopMgr.Root = workspacesRoot
 	loopMgr.SeedImage = image
 	loopMgr.DockerBin = "docker"
 	loopMgr.Userns = userns
 	loopMgr.Log = log.With("component", "loopback")
+	if keng, ok := execEngine.(*kube.Engine); ok {
+		// M8: workspace seeding runs as a kubernetes Job — the
+		// kubernetes executor never touches a container runtime.
+		loopMgr.SeedFn = func(ctx context.Context, dir string) error {
+			return keng.SeedWorkspace(ctx, image, dir)
+		}
+	}
 
 	// Egress (nftables) is DISABLED in the portable OSS build: it
 	// requires host nftables + journald + systemd-timer refresh jobs
@@ -326,7 +383,7 @@ func main() {
 	// Reconciler once, before the listener.
 	rcDeps := reconcile.Deps{
 		Store:         st,
-		Docker:        dockerClient,
+		Docker:        execEngine,
 		Loopback:      loopMgr,
 		Egress:        egressMgr,
 		Snapshot:      snapshotMgr,
@@ -401,7 +458,7 @@ func main() {
 			EmergencyPct:   emergencyPct,
 		},
 		Store:    st,
-		Docker:   dockerClient,
+		Docker:   execEngine,
 		Inflight: inflight,
 		Egress:   egressMgr,
 		Refused:  refused,
@@ -416,7 +473,7 @@ func main() {
 	}
 
 	wakeHandler, err := wake.New(
-		st, dockerClient, hosts,
+		st, execEngine, hosts,
 		wake.Config{
 			TCPReadyTimeout: wakeTCPReady,
 			RefreshSeconds:  2,
@@ -522,10 +579,10 @@ func main() {
 		spec := sandboxspec.Build(sb, specEnv)
 		// Remove any existing container first so the name is free; ignore a
 		// not-found (the common case) and let Run surface a real failure.
-		if err := dockerClient.Remove(ctx, spec.Name); err != nil && err != docker.ErrNotFound {
+		if err := execEngine.Remove(ctx, spec.Name); err != nil && err != docker.ErrNotFound {
 			log.Warn("recreate: remove existing container failed (continuing)", "err", err.Error())
 		}
-		_, err := dockerClient.Run(ctx, spec)
+		_, err := execEngine.Run(ctx, spec)
 		return err
 	}
 
@@ -534,7 +591,7 @@ func main() {
 	server := &api.Server{
 		Store:               st,
 		Secrets:             secretsCipher,
-		Docker:              dockerClient,
+		Docker:              execEngine,
 		Loopback:            loopMgr,
 		Log:                 log.With("component", "api"),
 		PreviewDomain:       domain,
@@ -600,7 +657,7 @@ func main() {
 	// join through POST /internal/nodes/register (worker token).
 	nodeLease := durationFromEnvSec("SANDBOXD_NODE_LEASE_SECONDS", int(fleet.DefaultLease.Seconds()))
 	server.NodeLease = nodeLease
-	localNodeID := ensureLocalNode(ctx, st, log)
+	localNodeID := ensureLocalNode(ctx, st, log, engineLabel)
 
 	// Phase 5 — after reconcile, if MemAvailable is
 	// already below the healthy floor, run one synchronous pressure
@@ -695,6 +752,7 @@ func main() {
 	// reflects liveness even though role='local' is always online.
 	go bumpLocalNodeLoop(gctx, st, log, localNodeID)
 	if exec != nil {
+		exec.Engine = engineLabel
 		go runExecutorAgent(gctx, log.With("component", "fleet-executor"), st, server, *exec)
 	}
 
@@ -706,7 +764,7 @@ func main() {
 			WakeGrace: wakeGrace,
 		},
 		Store:    st,
-		Docker:   dockerClient,
+		Docker:   execEngine,
 		Inflight: inflight,
 		Egress:   egressMgr,
 		Log:      log.With("component", "idle-reaper"),

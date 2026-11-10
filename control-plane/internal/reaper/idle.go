@@ -43,7 +43,7 @@ type IdleConfig struct {
 type Idle struct {
 	Cfg      IdleConfig
 	Store    *store.Store
-	Docker   *docker.Client
+	Docker   docker.Engine
 	Inflight *activity.InflightExec
 	Egress   *egress.Manager // Phase 6 — nil-safe
 	Log      *slog.Logger

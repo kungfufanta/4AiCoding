@@ -101,6 +101,7 @@ type executorConfig struct {
 	NodeID          string
 	Address         string
 	APIToken        string // this node's credential for the control plane
+	Engine          string // sandbox executor engine: docker | kubernetes (M8)
 	Interval        time.Duration
 }
 
@@ -142,6 +143,7 @@ func runExecutorAgent(ctx context.Context, log *slog.Logger, st *store.Store, sr
 		Version:  buildIdentString(),
 		Capacity: capacity,
 		APIToken: cfg.APIToken,
+		Engine:   cfg.Engine,
 	}
 	client := &fleet.Client{BaseURL: strings.TrimRight(cfg.ControlPlaneURL, "/"), Token: cfg.WorkerToken}
 	used := func(ctx context.Context) *store.Capacity {

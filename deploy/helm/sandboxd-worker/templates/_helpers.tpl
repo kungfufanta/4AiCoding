@@ -45,6 +45,12 @@ helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version }}
 {{- if and .Values.executor.enabled (not .Values.executor.sandboxImage) -}}
 {{- fail "executor.enabled needs executor.sandboxImage" -}}
 {{- end -}}
+{{- if and .Values.executor.enabled (not (has .Values.executor.engine (list "docker" "kubernetes"))) -}}
+{{- fail "executor.engine must be docker or kubernetes" -}}
+{{- end -}}
+{{- if and (eq .Values.executor.engine "kubernetes") (not .Values.executor.enabled) -}}
+{{- fail "executor.engine=kubernetes needs executor.enabled=true (only executors run sandboxes)" -}}
+{{- end -}}
 {{- if and .Values.nodeId (not (regexMatch "^[a-z0-9][a-z0-9.-]{0,62}$" .Values.nodeId)) -}}
 {{- fail "nodeId must match [a-z0-9][a-z0-9.-]{0,62}" -}}
 {{- end -}}

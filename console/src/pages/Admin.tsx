@@ -212,6 +212,7 @@ function NodesTab({ isAdmin }: { isAdmin: boolean }) {
               <th>Node</th>
               <th>Role</th>
               <th>Status</th>
+              <th>Engine</th>
               <th>Drain</th>
               <th>Capacity</th>
               <th>Used</th>
@@ -231,6 +232,11 @@ function NodesTab({ isAdmin }: { isAdmin: boolean }) {
                 <td>{n.role}</td>
                 <td>
                   <StatusBadge status={n.status} />
+                </td>
+                <td>
+                  <span className="badge mono" title="sandbox executor engine">
+                    {n.engine === "kubernetes" ? "k8s pods" : "docker"}
+                  </span>
                 </td>
                 <td>
                   {n.drain_state === "drain" ? (

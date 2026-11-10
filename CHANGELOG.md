@@ -6,6 +6,33 @@ All notable changes to 4AiCoding. The project started from
 
 ## Unreleased
 
+### M8 — kubernetes runtime adapter: sandbox = Pod (k3s B2)
+- `SANDBOXD_EXECUTOR_ENGINE=kubernetes` on an executor worker runs every
+  sandbox in the cluster as a **Pod** (hardened: non-root uid 1000, read-only
+  rootfs, ALL capabilities dropped, no privilege escalation, RuntimeDefault
+  seccomp, no service-account token), wrapped in a **Service** (its preview
+  ports), a **NetworkPolicy** (egress deny-by-default: only cluster DNS plus
+  optional `SANDBOXD_K8S_PROXY_SELECTOR` peers) and — with a preview domain —
+  an **Ingress** (one rule per preview port, the same hosts Traefik serves on
+  docker). Workspaces stay on the node (hostPath); the one-shot workspace
+  seed runs as a Kubernetes Job instead of a docker container.
+- New `internal/kube` engine implements the `docker.Engine` seam (PLAN M8)
+  on the raw REST API — no client-go: pod lifecycle (Run/Inspect/Start/Stop/
+  Remove/Logs/ListByNamePrefix), exec over WebSocket (`v4.channel.k8s.io`,
+  hand-rolled client), in-cluster + kubeconfig auth, and RunSpec persistence
+  so `Start`/wake recreates a stopped sandbox's Pod. `Stats` returns
+  "unsupported" on this engine until a metrics backend is wired.
+- Fleet: nodes report their engine (`nodes.engine`, migration `0034`);
+  `GET /v1/nodes` + the console Nodes tab show `docker | kubernetes`.
+- Helm chart: `executor.engine=kubernetes` renders the least-privilege RBAC
+  (pods/log/exec, services, networkpolicies, ingresses, seed Jobs) and drops
+  the Docker socket mount.
+- CI: the k3s e2e adds an M8 section — a sandbox created on the control
+  plane becomes a running Pod with Service/NetworkPolicy/Ingress, exec goes
+  through the control plane, delete removes every object. Unit tests run the
+  engine against a fake apiserver (pod hardening, lifecycle mapping, exec
+  framing, logs).
+
 ### M7b — sandboxes run on workers
 - Executor mode: a sandboxd with `SANDBOXD_CONTROL_PLANE_URL` (+
   `SANDBOXD_WORKER_TOKEN`, `SANDBOXD_NODE_ID`, `SANDBOXD_NODE_ADDRESS`) runs

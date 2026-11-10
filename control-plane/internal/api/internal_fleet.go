@@ -25,6 +25,7 @@ type internalRegisterReq struct {
 	Version  string         `json:"version,omitempty"`
 	Capacity store.Capacity `json:"capacity"`
 	APIToken string         `json:"api_token,omitempty"` // M7b executor credential
+	Engine   string         `json:"engine,omitempty"`    // M8: docker | kubernetes
 }
 
 type internalRegisterResp struct {
@@ -59,6 +60,16 @@ func (s *Server) internalNodeRegister(w http.ResponseWriter, r *http.Request) {
 		writeV1Err(w, http.StatusBadRequest, "invalid_request", "api_token too long")
 		return
 	}
+	// M8: an executor declares its sandbox engine. Only the two real
+	// engines exist; the default keeps pre-M8 workers registering cleanly.
+	engine := strings.TrimSpace(req.Engine)
+	if engine == "" {
+		engine = "docker"
+	}
+	if engine != "docker" && engine != "kubernetes" {
+		writeV1Err(w, http.StatusBadRequest, "invalid_request", "engine must be docker or kubernetes")
+		return
+	}
 	// M7b: a node that registered an API token is bound to it. Another
 	// holder of the (shared) worker token cannot take over its id and
 	// redirect the control plane's traffic; an operator resets a lost
@@ -72,6 +83,7 @@ func (s *Server) internalNodeRegister(w http.ResponseWriter, r *http.Request) {
 		Address:  strings.TrimSpace(req.Address),
 		Version:  strings.TrimSpace(req.Version),
 		Capacity: req.Capacity,
+		Engine:   engine,
 	}
 	if err := s.Store.UpsertNode(r.Context(), n); err != nil {
 		writeV1Err(w, http.StatusInternalServerError, "internal", "register node: "+err.Error())

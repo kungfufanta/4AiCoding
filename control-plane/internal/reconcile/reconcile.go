@@ -43,7 +43,7 @@ type Result struct {
 // Deps is the small set of collaborators the reconciler needs.
 type Deps struct {
 	Store    *store.Store
-	Docker   *docker.Client
+	Docker   docker.Engine
 	Loopback *loopback.Manager
 	Egress   *egress.Manager   // Phase 6 — nil-safe
 	Snapshot *snapshot.Manager // Phase 7 — nil-safe

@@ -25,7 +25,7 @@ type PressureConfig struct {
 type Pressure struct {
 	Cfg      PressureConfig
 	Store    *store.Store
-	Docker   *docker.Client
+	Docker   docker.Engine
 	Inflight *activity.InflightExec
 	Egress   *egress.Manager // Phase 6 — nil-safe
 	Refused  *atomic.Bool    // shared with the wake admission code; set when in 5-10% or <5% band

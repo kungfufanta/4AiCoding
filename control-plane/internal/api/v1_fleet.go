@@ -34,6 +34,7 @@ type v1Node struct {
 	Role         string         `json:"role"`
 	Status       string         `json:"status"` // online | offline (derived from the heartbeat lease)
 	DrainState   string         `json:"drain_state"`
+	Engine       string         `json:"engine"` // docker | kubernetes (M8)
 	Address      string         `json:"address,omitempty"`
 	Version      string         `json:"version,omitempty"`
 	Capacity     v1NodeCapacity `json:"capacity"`
@@ -58,6 +59,7 @@ func (s *Server) v1NodeFromRow(n *store.Node, derived store.Usage) v1Node {
 		Role:         n.Role,
 		Status:       fleet.Status(n, now, lease),
 		DrainState:   n.DrainState,
+		Engine:       n.Engine,
 		Address:      n.Address,
 		Version:      n.Version,
 		Capacity:     v1NodeCapacity{CPUs: n.Capacity.CPUs, MemoryMB: n.Capacity.MemoryMB, DiskMB: n.Capacity.DiskMB},

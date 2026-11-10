@@ -13,6 +13,10 @@
 #   - executor mode (M7b): the chart with executor.enabled runs sandboxd on
 #     the node's Docker; a sandbox created on the control plane runs there,
 #     exec goes through the control plane, delete removes the container
+#   - kubernetes engine (M8, PLAN B2): executor.engine=kubernetes — the
+#     sandbox is a POD (+ Service + NetworkPolicy + Ingress), not a
+#     container; exec still goes through the control plane; delete removes
+#     every object
 #
 # Inputs (env):
 #   SANDBOXD_BIN     built sandboxd binary (the control plane runs on the host)
@@ -51,14 +55,20 @@ fail() {
   echo "❌ FAIL: $*"
   echo "---- control plane log (tail) ----"; tail -30 "$DD/cp.log" 2>/dev/null || true
   echo "---- pods ----"; kubectl -n "$NS" get pods -o wide 2>/dev/null || true
-  kubectl -n "$NS" describe pods 2>/dev/null | tail -30 || true
-  echo "---- worker logs ----"; kubectl -n "$NS" logs -l "app.kubernetes.io/instance=$REL" --tail=30 2>/dev/null || true
+  kubectl -n "$NS" describe pods 2>/dev/null | tail -40 || true
+  echo "---- all pod logs (current + previous crash) ----"
+  for p in $(kubectl -n "$NS" get pods -o name 2>/dev/null); do
+    echo "== $p (current)"; kubectl -n "$NS" logs "$p" --tail=40 2>/dev/null || true
+    echo "== $p (previous)"; kubectl -n "$NS" logs "$p" --previous --tail=40 2>/dev/null || true
+  done
+  echo "---- events ----"; kubectl -n "$NS" get events --sort-by=.lastTimestamp 2>/dev/null | tail -20 || true
   exit 1
 }
 EXEC_DIR=/var/lib/sandboxd-e2e-exec
 cleanup() {
   helm -n "$NS" uninstall "$REL" >/dev/null 2>&1 || true
   helm -n "$NS" uninstall "$REL-exec" >/dev/null 2>&1 || true
+  helm -n "$NS" uninstall "$REL-k8s" >/dev/null 2>&1 || true
   docker ps -aq --filter "label=sandboxd.managed=true" | xargs -r docker rm -f >/dev/null 2>&1 || true
   rm -rf "$EXEC_DIR" 2>/dev/null || true
   kubectl delete namespace "$NS" --wait=false >/dev/null 2>&1 || true
@@ -203,5 +213,49 @@ code="$(curl -s -m60 -o /dev/null -w '%{http_code}' -XDELETE -H "Authorization: 
 [ "$code" = "204" ] || fail "delete = $code"
 docker inspect "s-$SID" >/dev/null 2>&1 && fail "container still exists after delete"
 log "executor ✓ (sandbox $SID ran on $K8S_NODE, pod $POD)"
+helm -n "$NS" uninstall "$REL-exec" --wait --timeout 60s >/dev/null || fail "helm uninstall (executor)"
+
+# 9. M8 — the kubernetes engine: sandboxes become Pods.
+log "k8s engine (sandbox = pod)"
+docker save "$IMG" | sudo k3s ctr images import - >/dev/null 2>&1 || true
+helm -n "$NS" install "$REL-k8s" "$CHART" \
+  --set controlPlane.url="http://$HOST_IP:$PORT" \
+  --set workerToken.value="$WTOKEN" \
+  --set image.repository="${WIMG%:*}" --set image.tag="${WIMG##*:}" --set image.pullPolicy=Never \
+  --set executor.enabled=true --set executor.engine=kubernetes \
+  --set executor.sandboxImage="$IMG" --set executor.dataDir="$EXEC_DIR-k8s" \
+  --set nodeId=k8s-engine --set capacity.memoryMB=8192 --set heartbeatIntervalSeconds="$BEAT" \
+  --wait --timeout 120s >/dev/null || fail "helm install (k8s engine)"
+wait_for 60 is_status "k8s-engine" online || fail "k8s-engine node never came online: $(nodes_json)"
+[ "$(node_field "k8s-engine" engine)" = "kubernetes" ] || fail "node engine: $(nodes_json)"
+echo "k8s-engine pod: $(kubectl -n "$NS" get pods -l "app.kubernetes.io/instance=$REL-k8s" -o jsonpath='{.items[*].metadata.name}')"
+CREATED="$(api -XPOST "$API/v1/sandboxes" -d '{"ports":[3000]}')"
+SID="$(echo "$CREATED" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("id",""))')"
+[ -n "$SID" ] || fail "create returned no id: $CREATED"
+NODE_OF="$(echo "$CREATED" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("node",""))')"
+[ "$NODE_OF" = "k8s-engine" ] || fail "sandbox placed on '$NODE_OF', want k8s-engine: $CREATED"
+PODNAME="s-$(echo "$SID" | tr 'A-Z' 'a-z')"
+kubectl -n "$NS" wait --for=jsonpath='{.status.phase}'=Running "pod/$PODNAME" --timeout=90s \
+  || fail "sandbox pod never ran: $(kubectl -n "$NS" get pods 2>&1)"
+# Hardening + the object set around it (Service exposes the preview port,
+# NetworkPolicy denies egress by default, Ingress routes the preview host).
+kubectl -n "$NS" get pod "$PODNAME" -o jsonpath='{.spec.automountServiceAccountToken}' | grep -q false \
+  || fail "sandbox pod must not carry a service account token"
+kubectl -n "$NS" get service "$PODNAME" >/dev/null 2>&1 || fail "no Service for the sandbox"
+kubectl -n "$NS" get networkpolicy "$PODNAME" >/dev/null 2>&1 || fail "no NetworkPolicy for the sandbox"
+NP=$(kubectl -n "$NS" get networkpolicy "$PODNAME" -o jsonpath='{.spec.policyTypes[0]}')
+[ "$NP" = "Egress" ] || fail "NetworkPolicy policyTypes = $NP"
+[ "$(kubectl -n "$NS" get ingress "$PODNAME" -o jsonpath='{.spec.rules[0].host}')" != "" ] \
+  || fail "no Ingress rule for the sandbox (preview hosts)"
+OUT="$(api -XPOST "$API/v1/sandboxes/$SID/exec" -d '{"cmd":["sh","-c","echo from-a-pod"]}')"
+echo "$OUT" | grep -q from-a-pod || fail "exec through the control plane (pod): $OUT"
+LOGS="$(curl -s -m30 -H "Authorization: Bearer $TOKEN" "$API/v1/sandboxes/$SID/logs?tail=10")"
+[ -n "$LOGS" ] || true # the sandbox may not have logged yet; the call must succeed
+code="$(curl -s -m60 -o /dev/null -w '%{http_code}' -XDELETE -H "Authorization: Bearer $TOKEN" "$API/v1/sandboxes/$SID")"
+[ "$code" = "204" ] || fail "delete = $code"
+kubectl -n "$NS" get pod "$PODNAME" >/dev/null 2>&1 && fail "sandbox pod still exists after delete"
+kubectl -n "$NS" get service "$PODNAME" >/dev/null 2>&1 && fail "Service still exists after delete"
+kubectl -n "$NS" get networkpolicy "$PODNAME" >/dev/null 2>&1 && fail "NetworkPolicy still exists after delete"
+log "k8s engine ✓ (sandbox $SID was pod $PODNAME on $K8S_NODE)"
 
 echo "✅ K3S E2E PASSED"

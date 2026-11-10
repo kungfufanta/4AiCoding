@@ -1,0 +1,47 @@
+{{- if and .Values.executor.enabled (eq .Values.executor.engine "kubernetes") }}
+# M8 kubernetes engine RBAC: pods (create/get/list/delete + log/exec
+# subresources), services, networkpolicies, ingresses and the one-shot
+# workspace-seed Jobs — namespaced, nothing more. The sandbox pods
+# themselves run with automountServiceAccountToken=false (hardened by
+# the engine).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "sandboxd-worker.fullname" . }}
+  labels:
+    {{- include "sandboxd-worker.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create", "get", "list", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["create", "get", "delete"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies", "ingresses"]
+    verbs: ["create", "get", "delete"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "sandboxd-worker.fullname" . }}
+  labels:
+    {{- include "sandboxd-worker.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "sandboxd-worker.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "sandboxd-worker.fullname" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

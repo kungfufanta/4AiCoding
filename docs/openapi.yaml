@@ -1553,12 +1553,16 @@ components:
         created_at: { type: string, format: date-time }
     Node:
       type: object
-      required: [node_id, role, status, drain_state, capacity, used, sandboxes, registered_at, heartbeat_at]
+      required: [node_id, role, status, drain_state, engine, capacity, used, sandboxes, registered_at, heartbeat_at]
       properties:
         node_id: { type: string, example: worker-1 }
         role: { type: string, enum: [local, worker] }
         status: { type: string, enum: [online, offline], description: Derived from the heartbeat lease; the local node is always online }
         drain_state: { type: string, enum: [active, drain] }
+        engine:
+          type: string
+          enum: [docker, kubernetes]
+          description: Sandbox executor engine (M8). kubernetes = sandboxes run as Pods (Service/NetworkPolicy/Ingress).
         address: { type: string }
         version: { type: string }
         capacity: { $ref: "#/components/schemas/ResourceAmount" }
@@ -1578,6 +1582,7 @@ components:
         role: { type: string }
         status: { type: string }
         drain_state: { type: string }
+        engine: { type: string, enum: [docker, kubernetes] }
         capacity: { $ref: "#/components/schemas/ResourceAmount" }
         used:
           allOf:
