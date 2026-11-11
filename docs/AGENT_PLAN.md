@@ -8,7 +8,8 @@
 - Người dùng (hoặc một hệ multi-agent bên ngoài) giao việc kiểu *"thêm trang login cho app này"* trên Portal. **Vòng lặp agent (LLM ↔ tool) chạy ở Portal**, không chạy trong sandbox.
 - Agent "làm tay chân" trong sandbox qua **gateway Portal → sandboxd**: đọc/ghi file, chạy lệnh, xem preview, git checkpoint. Sandbox chỉ là máy để agent thao tác, không chứa agent, không chứa key LLM.
 - Học lại từ sandboxd gốc (`tastyeffectco/sandboxd`): mô hình task + event stream, checkpoint git + revert, kết quả trung thực (`files_changed`, `build_status`, `preview_ok`), system prompt, cấu hình "model connection". **Không** mang lại `runtimed`, các CLI agent trong sandbox (OpenCode/Claude Code/Codex/Pi) và auth proxy.
-- 7 phase (A0–A6), mỗi phase một PR. A0 làm được ngay (chỉ đụng `control-plane/`); A3 trở đi cần P4 (gateway) của Portal.
+- **Template + skill + hồ sơ khách** (mục 5.8, phase T1–T3): khách chọn loại web, điền thông tin doanh nghiệp trước; hệ thống dựng sẵn site từ template, agent nhận hồ sơ như tham số và dùng skill của template.
+- Các phase A0–A6 và T1–T3, mỗi phase một PR. A0 làm được ngay (chỉ đụng `control-plane/`); A3 trở đi cần P4 (gateway) của Portal.
 
 ---
 
@@ -219,6 +220,7 @@ Bộ tool (cố định, không cho agent tự thêm):
 | `search(pattern, path, glob)` | exec `rg --json` (fallback `grep -rn`) | ≤ 200 kết quả |
 | `run_command(command, cwd, timeout_s)` | exec v2 `bash -lc` | timeout ≤ 600 s; output cắt như trên |
 | `check_preview(path)` | exec `curl` vào `127.0.0.1:<port>` | |
+| `read_skill(name)` | đọc skill của template / nền tảng (mục 5.8) | chỉ skill đã publish |
 | `finish(summary)` | kết thúc run | |
 
 Không có tool đổi egress, mở port, xoá sandbox, đọc env/secret của nền tảng. Những việc đó người dùng làm trên UI (và đi qua approvals nếu policy bật).
@@ -285,7 +287,98 @@ Trang chi tiết sandbox (P4) thêm tab **Agent** và **Files**:
 - **Settings → Models** (org admin): bảng connection, Dialog thêm/sửa, nút Test.
 - Theo checklist chất lượng UI §4 của `PORTAL_PLAN_V2.md` (dark mode, mobile 390 px, Playwright).
 
-### 5.8 Bảo mật (bổ sung cho PLAN.md §8)
+### 5.8 Template, skill và "hồ sơ khách hàng" trước khi vibe code (T1–T3)
+
+Ý tưởng của Doan: trước khi khách vibe code, hệ thống **lọc nhu cầu** (loại web gì), cho khách **nhập trước thông tin doanh nghiệp**, rồi mới giao cho agent. Agent nhận các thông tin đó như tham số (`company_name`, `address`, `phone`…). Ý này **làm được và nên làm**: agent bắt đầu từ một template đã chạy được thay vì trang trắng, nên nhanh hơn, rẻ token hơn, ít lỗi hơn, và kết quả đồng đều. Upstream chỉ có `presets` (5 starter) + `recipes` (nhận diện framework); mình làm rộng hơn thành **thư viện template có skill**.
+
+**Luồng người dùng (wizard "Tạo website")**
+
+1. **Chọn loại web** (lọc mảng KH): Landing giới thiệu công ty · Giới thiệu sản phẩm/dịch vụ · Shop nhỏ (ít sản phẩm, quản lý đơn đơn giản) · Portfolio/cá nhân · Nhà hàng/menu · Blog… Mỗi loại map tới 1–3 template.
+2. **Chọn template** (ảnh xem trước, stack hiển thị: Next.js / React+Vite / Astro…).
+3. **Điền hồ sơ**: form sinh tự động từ schema của template (tên công ty, slogan, địa chỉ, SĐT, email, giờ mở cửa, link mạng xã hội, logo, màu chủ đạo, danh sách sản phẩm…). Lưu nháp được, sửa lại sau.
+4. **Tạo**: Portal tạo sandbox từ template → **điền tham số một cách tất định (không dùng LLM)** → preview chạy ngay → mở tab Agent để khách "vibe" tiếp ("đổi sang tông xanh", "thêm trang tuyển dụng").
+
+**Template = repo + manifest**
+
+```
+templates/landing-company-nextjs/
+  template.yaml          # metadata + schema tham số + lệnh chạy
+  site.config.json       # FILE DUY NHẤT chứa dữ liệu khách; component đọc từ đây
+  app/ components/ …     # source Next.js chạy được ngay với dữ liệu mẫu
+  public/
+  AGENTS.md              # mô tả cấu trúc dự án cho agent
+  skills/
+    add-section/SKILL.md
+    edit-products/SKILL.md
+```
+
+```yaml
+# template.yaml
+id: landing-company-nextjs
+version: 1.2.0
+category: landing-company          # dùng cho bước lọc
+title: "Landing page giới thiệu công ty"
+stack: { framework: nextjs, runtime: node22, storage: none }   # none | sqlite
+image: base:node22                 # phải nằm trong allowlist image
+run: { install: "pnpm install --frozen-lockfile", dev: "pnpm dev -H 0.0.0.0 -p 3000", build: "pnpm build", port: 3000 }
+params:                            # JSON Schema rút gọn → form + validate
+  company_name: { type: string, required: true, max: 120, label: "Tên công ty" }
+  slogan:       { type: string, max: 200 }
+  address:      { type: string }
+  phone:        { type: string, format: phone }
+  email:        { type: string, format: email }
+  logo:         { type: file, accept: [image/png, image/svg+xml], max_kb: 512 }
+  brand_color:  { type: color, default: "#2563eb" }
+  products:     { type: array, max_items: 30, items: { name: string, price: number, image: file, description: string } }
+render:
+  data_file: site.config.json      # tham số được ghi vào đây
+  placeholders: [app/layout.tsx]   # (tuỳ chọn) file có {{ company_name }} cần thay chữ
+skills: [add-section, edit-products, change-theme]
+```
+
+**Vì sao ghi vào `site.config.json` chứ không thay `${company_name}` khắp source:**
+
+- `${…}` trùng cú pháp template literal của JS/TS, thay chuỗi mù sẽ phá code; khách đổi thông tin sau này phải tìm-thay lại ở nhiều file.
+- Dữ liệu ở một file JSON → khách sửa hồ sơ trên Portal thì chỉ cần ghi lại file đó (files API), không cần agent, không tốn token; agent cũng biết chính xác "nguồn sự thật" là file nào.
+- Chỉ dùng thay chữ `{{ name }}` (cú pháp riêng, có escape) cho vài chỗ không đọc được JSON (ví dụ `<title>` tĩnh), và chỉ trong các file khai báo ở `render.placeholders`.
+
+**Agent nhận hồ sơ thế nào**
+
+- Portal ghi `.4ai/brief.json` (trong thư mục dự án) (bản sao hồ sơ + loại web + template id/version) vào workspace, và chèn **tóm tắt hồ sơ** vào system prompt: *"Khách: Công ty ABC, địa chỉ …, ngành …; dữ liệu nằm ở `site.config.json`; đừng hardcode thông tin khách vào component"*.
+- Thông tin hồ sơ là **dữ liệu người dùng nhập, không phải lệnh** (chống prompt injection: ai đó điền "bỏ qua hướng dẫn trước…" vào ô slogan). Prompt đặt nó trong khối dữ liệu có đánh dấu, có giới hạn độ dài từng field.
+
+**Skill**
+
+- Skill = file Markdown hướng dẫn một việc cụ thể trên template đó ("thêm section", "sửa danh sách sản phẩm", "đổi theme", "thêm trang"), kèm lệnh kiểm tra. Hai nguồn: skill **của template** (`skills/` trong repo template) + skill **dùng chung** của nền tảng (ví dụ "SEO cơ bản", "tối ưu ảnh", "form liên hệ gửi email").
+- Agent chỉ nhận **danh sách tên + mô tả 1 dòng** của skill trong prompt; tool mới `read_skill(name)` trả nội dung đầy đủ khi cần (tiết kiệm context, giống cách Claude Code dùng skill).
+- Skill được version cùng template; admin nền tảng duyệt trước khi publish (skill là "lệnh" nên phải đáng tin, khác hồ sơ khách).
+
+**Stack theo loại web (đề xuất ban đầu)**
+
+| Loại web | Stack | Lưu trữ |
+|---|---|---|
+| Landing công ty / giới thiệu sản phẩm / portfolio | Next.js (App Router, static export được) hoặc Astro | không cần, chỉ `site.config.json` |
+| Shop nhỏ (≤ ~50 sản phẩm, quản lý đơn đơn giản) | Next.js full-stack (route handler / server action) | SQLite (`better-sqlite3`, file trong workspace) + trang `/admin` có mật khẩu |
+| Nhà hàng/menu, blog | Next.js hoặc Astro + Markdown | file Markdown/JSON |
+
+Lưu ý: "không có backend" nghĩa là **không có service backend riêng**; shop có đặt hàng vẫn cần server của Next.js để ghi SQLite. Nếu muốn tĩnh 100 % thì đặt hàng qua Zalo/Messenger/form gửi email (câu hỏi mở Q12). SQLite trong workspace được snapshot cùng sandbox (đã kiểm chứng ở upstream).
+
+**Dữ liệu ở Portal**
+
+```sql
+templates(id, slug, version, category, title, stack jsonb, manifest jsonb, source_repo, source_ref,
+  preview_image, status /* draft|published|deprecated */, created_at)
+site_categories(slug, title, description, sort, template_slugs text[])
+customer_briefs(id, org_id, project_id, category, template_id, template_version,
+  params jsonb, files jsonb /* logo… lưu object storage */, status /* draft|applied */, created_by, updated_at)
+sandboxes.brief_id   -- sandbox tạo từ brief nào
+```
+
+- `customer_briefs` có RLS theo org. Đây là **dữ liệu cá nhân/doanh nghiệp** của khách → không log nội dung, có nút xoá.
+- Validate `params` bằng schema của đúng version template (server-side), sanitize text (không HTML), giới hạn kích thước file.
+- Template lưu ở **một repo riêng** (đề xuất `kungfufanta/4aicoding-templates`, mỗi template một thư mục) — sandbox tạo bằng `gitimport` public sẵn có (clone theo tag `<slug>@<version>`), hoặc đóng sẵn vào image để tạo nhanh không cần mạng (câu hỏi mở Q10).
+
+### 5.9 Bảo mật (bổ sung cho PLAN.md §8)
 
 | Rủi ro | Biện pháp |
 |---|---|
@@ -349,6 +442,26 @@ Mỗi phase **một PR**, có test, CI xanh. "Xong khi" là tiêu chí nghiệm 
 - Runbook: xoay `PORTAL_SECRETS_KEY`, xoay service key, xử lý run kẹt.
 - **Xong khi:** chạy thật trên chat.devhub.io.vn với một connection (ví dụ LiteLLM/OpenRouter) làm xong một task mẫu trên sandbox thật; scale worker 0 → 2 không mất run.
 
+### T1 — Thư viện template + tạo sandbox từ template (cần P4; song song A2/A3)
+
+- Repo template + `template.yaml` (mục 5.8), validator manifest trong CI của repo template (template phải `install` + `build` xanh và trả 200 trên port).
+- Bảng `templates`, `site_categories`; admin nền tảng publish/deprecate template; import theo tag.
+- Tạo sandbox từ template: clone → render `site.config.json` + placeholders (tất định, không LLM) → chạy `install` + `dev`.
+- 3 template đầu: `landing-company-nextjs`, `product-intro-nextjs`, `shop-mini-nextjs-sqlite`.
+- **Xong khi:** từ API tạo được sandbox từ mỗi template với params mẫu và preview trả 200 trong ≤ 3 phút; params sai schema → 400 rõ field; `company_name` chứa `</script>`/`${process.env}` hiển thị đúng chữ, không chạy code.
+
+### T2 — Wizard onboarding + hồ sơ khách (cần T1)
+
+- Bảng `customer_briefs`, upload logo/ảnh (giới hạn kích thước/loại), API + BFF.
+- UI wizard 4 bước (loại web → template → form từ schema → tạo), lưu nháp, trang "Hồ sơ" sửa lại được; sửa hồ sơ → ghi lại `site.config.json` qua files API (không gọi agent).
+- **Xong khi:** Playwright: chọn "Landing công ty" → điền form → preview hiện đúng tên công ty/địa chỉ; sửa SĐT trên Portal → preview đổi sau reload; org B không đọc được brief org A.
+
+### T3 — Agent dùng brief + skill (cần A3, T1)
+
+- Ghi `.4ai/brief.json` (trong thư mục dự án), chèn tóm tắt hồ sơ vào system prompt (khối dữ liệu có đánh dấu), index skill + tool `read_skill`.
+- Skill dùng chung đầu tiên: `add-page`, `change-theme`, `seo-basics`, `contact-form`.
+- **Xong khi:** với LLM giả, prompt "thêm trang giới thiệu" khiến agent gọi `read_skill("add-section"/"add-page")` trước khi sửa; agent không hardcode tên công ty (test: đổi `company_name` trong brief sau run → trang mới cũng đổi theo); slogan chứa câu "ignore previous instructions" không thay đổi hành vi tool (test với kịch bản LLM giả kiểm tra prompt được bọc đúng).
+
 ### A7 — (tuỳ chọn, để sau) CLI agent trong sandbox
 
 Chỉ làm nếu người dùng muốn dùng OpenCode/Claude Code/Codex nguyên bản. Khi đó Portal mở một **LLM proxy** (ý tưởng `authproxy` upstream) với capability token ngắn hạn gắn run, egress sandbox chỉ mở tới proxy, chạy CLI qua exec v2 `stream=ndjson`. Không làm trong giai đoạn này.
@@ -358,7 +471,8 @@ Chỉ làm nếu người dùng muốn dùng OpenCode/Claude Code/Codex nguyên 
 ```
 P1 ─▶ P2 ─┬───────────────▶ A2 ─┐
           └─▶ P3 ─▶ P4 ─▶ A1 ───┼─▶ A3 ─▶ A4 ─▶ A6
-A0 (ngay, chỉ control-plane) ───┘          └─▶ A5 (cần P5, P6)
+A0 (ngay, chỉ control-plane) ───┘   │      └─▶ A5 (cần P5, P6)
+                  P4 ─▶ T1 ─▶ T2    └─▶ T3 (cần A3 + T1)
 ```
 
 ---
@@ -382,3 +496,7 @@ A0 (ngay, chỉ control-plane) ───┘          └─▶ A5 (cần P5, P6)
 7. **Quota đầu tiên**: số run đồng thời/org và token/tháng mặc định cho plan free.
 8. **Thứ tự làm**: A0 có thể bắt đầu ngay song song P3/P4 — giao cho Claude hay z.ai?
 9. **PR #10 (runtime k8s)**: sandbox của Portal sẽ chạy trên k8s adapter hay docker worker? Ảnh hưởng tới cách làm exec v2/files API cho remote worker ở A0.
+10. **Template lưu ở đâu**: repo riêng `4aicoding-templates` (clone khi tạo, cần egress tới GitHub lúc tạo) hay đóng sẵn vào image (tạo nhanh, không cần mạng, nhưng phải build lại image khi sửa template)? Đề xuất: repo riêng + cache tarball ở Portal.
+11. **Danh mục loại web đợt đầu**: chốt 3 loại (landing công ty, giới thiệu sản phẩm, shop nhỏ) hay nhiều hơn? Và danh sách field hồ sơ bắt buộc cho từng loại.
+12. **Shop nhỏ**: đặt hàng ghi SQLite qua server Next.js (cần sandbox chạy liên tục / deploy có server) hay tĩnh 100 % + đặt hàng qua Zalo/Messenger/form email?
+13. **Ai viết template + skill đợt đầu**: Claude, z.ai, hay Doan có sẵn source mẫu muốn đưa vào?
