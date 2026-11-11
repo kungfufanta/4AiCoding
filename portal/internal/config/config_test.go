@@ -99,14 +99,22 @@ func TestParsePasswordLogin(t *testing.T) {
 		}
 	}
 
-	// Defaults: admin/admin123, enabled.
+	// Default: no built-in password, so the password login is off.
 	cfg, err := Parse(base(nil))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	if !cfg.PasswordLogin || cfg.AdminUsername != "admin" || cfg.AdminPassword != "admin123" {
-		t.Errorf("defaults = user %q pass %q enabled %v; want admin/admin123 enabled",
+	if cfg.PasswordLogin || cfg.AdminPassword != "" || cfg.AdminUsername != "admin" {
+		t.Errorf("defaults = user %q pass %q enabled %v; want admin, no password, disabled",
 			cfg.AdminUsername, cfg.AdminPassword, cfg.PasswordLogin)
+	}
+
+	// Too-short passwords (the old admin123 default among them) fail
+	// loudly instead of booting with a guessable login.
+	for _, pw := range []string{"admin123", "s3cret", "elevenchars"} {
+		if _, err := Parse(base(map[string]string{"PORTAL_ADMIN_PASSWORD": pw})); err == nil {
+			t.Errorf("Parse accepted short PORTAL_ADMIN_PASSWORD %q", pw)
+		}
 	}
 	if cfg.AdminEmail != "admin@portal.local" {
 		t.Errorf("AdminEmail = %q, want admin@portal.local", cfg.AdminEmail)
@@ -124,13 +132,13 @@ func TestParsePasswordLogin(t *testing.T) {
 	// Custom bootstrap identity.
 	cfg, err = Parse(base(map[string]string{
 		"PORTAL_ADMIN_USERNAME": "root",
-		"PORTAL_ADMIN_PASSWORD": "s3cret",
+		"PORTAL_ADMIN_PASSWORD": "s3cret-long-enough",
 		"PORTAL_ADMIN_EMAIL":    "root@corp.example",
 	}))
 	if err != nil {
 		t.Fatalf("Parse custom: %v", err)
 	}
-	if !cfg.PasswordLogin || cfg.AdminUsername != "root" || cfg.AdminPassword != "s3cret" || cfg.AdminEmail != "root@corp.example" {
+	if !cfg.PasswordLogin || cfg.AdminUsername != "root" || cfg.AdminPassword != "s3cret-long-enough" || cfg.AdminEmail != "root@corp.example" {
 		t.Errorf("custom = %+v", cfg)
 	}
 }

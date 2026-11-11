@@ -40,7 +40,7 @@ Các mục đánh dấu *(giả định)* là mặc định khi chưa có quyế
 | Identity provider | Zitadel tự host *(giả định)*; mọi code chỉ phụ thuộc OIDC chuẩn để đổi sang Keycloak/Auth0/Clerk được |
 | Session web | Mô hình BFF: cookie `HttpOnly; Secure; SameSite=Lax`, token OIDC chỉ nằm ở server |
 | Domain | Dashboard + API cùng origin tại `chat.devhub.io.vn` (đã quyết định, 2026-11-11). Edge: Traefik trên k3s-1 + cert-manager (Let's Encrypt), CI/CD `.github/workflows/deploy-k3s-portal.yml` + `deploy/k3s-1-portal-values.yaml`. Tách `api.<domain>` riêng chỉ khi cần |
-| Đăng nhập mật khẩu | Bootstrap admin cho staging/selfhost trước khi có IdP: `PORTAL_ADMIN_USERNAME` / `PORTAL_ADMIN_PASSWORD` (mặc định admin/admin123, bcrypt trong `password_logins`, migration 0003), `PORTAL_ADMIN_EMAIL` (mặc định admin@portal.local). Đổi mật khẩu = đổi env rồi redeploy (hash hội tụ về giá trị env mỗi lần boot); `PORTAL_ADMIN_PASSWORD="-"` tắt hẳn endpoint. Chỉ có tài khoản bootstrap, không tự đăng ký |
+| Đăng nhập mật khẩu | Bootstrap admin cho staging/selfhost trước khi có IdP: `PORTAL_ADMIN_USERNAME` / `PORTAL_ADMIN_PASSWORD` (không có mật khẩu mặc định: không đặt `PORTAL_ADMIN_PASSWORD` thì tắt đăng nhập mật khẩu; tối thiểu 12 ký tự; bcrypt trong `password_logins`, migration 0003), `PORTAL_ADMIN_EMAIL` (mặc định admin@portal.local). Đổi mật khẩu = đổi env rồi redeploy (hash hội tụ về giá trị env mỗi lần boot); Không đặt (hoặc `"-"`) thì endpoint tắt, login đã lưu và session của nó bị xoá khi boot; đổi mật khẩu thì các session cũ của tài khoản bị đăng xuất. Chỉ có tài khoản bootstrap, không tự đăng ký |
 | Phạm vi ban đầu | Multi-tenant ngay từ đầu, nhưng billing (S6) chỉ làm khi mở cho khách ngoài |
 | Deploy | Helm chart `deploy/helm/portal`, cùng cluster với sandboxd |
 

@@ -64,6 +64,9 @@ func run() error {
 			adminPool.Close()
 			return fmt.Errorf("bootstrap password login: %w", err)
 		}
+	} else if err := passwordauth.DisableAll(ctx, adminPool, log); err != nil {
+		adminPool.Close()
+		return fmt.Errorf("disable password login: %w", err)
 	}
 	adminPool.Close()
 

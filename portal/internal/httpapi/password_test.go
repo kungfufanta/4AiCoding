@@ -22,7 +22,7 @@ import (
 
 const (
 	adminUsername = "admin"
-	adminPassword = "admin123"
+	adminPassword = "test-admin-password"
 	adminEmail    = "admin@portal.test"
 )
 
@@ -231,9 +231,23 @@ func TestPasswordLoginRotation(t *testing.T) {
 		t.Fatalf("open admin pool: %v", err)
 	}
 	defer admin.Close()
+	// A session opened with the old password must not survive the
+	// rotation.
+	before := doReq(t, h, http.MethodPost, "/auth/login",
+		map[string]string{"username": adminUsername, "password": adminPassword})
+	if before.Code != 200 {
+		t.Fatalf("login before rotation status = %d, body %s", before.Code, bodyOf(t, before))
+	}
+	oldSess := cookieNamed(t, before, session.SessionCookie)
+	if me := doReq(t, h, http.MethodGet, "/api/me", nil, oldSess); me.Code != 200 {
+		t.Fatalf("/api/me before rotation status = %d", me.Code)
+	}
 	if err := passwordauth.EnsureBootstrap(context.Background(), admin,
 		discardLogger(), adminUsername, "rotated-pass", adminEmail); err != nil {
 		t.Fatalf("rotate: %v", err)
+	}
+	if me := doReq(t, h, http.MethodGet, "/api/me", nil, oldSess); me.Code != 401 {
+		t.Errorf("/api/me with a pre-rotation session status = %d, want 401", me.Code)
 	}
 
 	old := doReq(t, h, http.MethodPost, "/auth/login",
@@ -255,7 +269,7 @@ func TestPasswordLoginRotation(t *testing.T) {
 	again := doReq(t, h, http.MethodPost, "/auth/login",
 		map[string]string{"username": adminUsername, "password": adminPassword})
 	if again.Code != 200 {
-		t.Errorf("admin123 after rotate-back status = %d, body %s", again.Code, bodyOf(t, again))
+		t.Errorf("original password after rotate-back status = %d, body %s", again.Code, bodyOf(t, again))
 	}
 }
 
@@ -274,5 +288,37 @@ func TestPasswordLoginDisabled(t *testing.T) {
 	methods := doReq(t, h, http.MethodGet, "/auth/methods", nil)
 	if !strings.Contains(bodyOf(t, methods), `"password":false`) {
 		t.Errorf("methods body = %q, want password:false", bodyOf(t, methods))
+	}
+}
+
+// TestPasswordLoginDisableAll covers the boot path with
+// PORTAL_ADMIN_PASSWORD unset: stored logins are removed and sessions
+// opened with them end immediately.
+func TestPasswordLoginDisableAll(t *testing.T) {
+	srv := setupPasswordBFF(t)
+	h := srv.Handler()
+	rec := doReq(t, h, http.MethodPost, "/auth/login",
+		map[string]string{"username": adminUsername, "password": adminPassword})
+	if rec.Code != 200 {
+		t.Fatalf("login status = %d, body %s", rec.Code, bodyOf(t, rec))
+	}
+	sess := cookieNamed(t, rec, session.SessionCookie)
+
+	admin, err := db.Open(context.Background(), discardLogger(), os.Getenv("PORTAL_TEST_DATABASE_URL"), "")
+	if err != nil {
+		t.Fatalf("open admin pool: %v", err)
+	}
+	defer admin.Close()
+	if err := passwordauth.DisableAll(context.Background(), admin, discardLogger()); err != nil {
+		t.Fatalf("DisableAll: %v", err)
+	}
+	if me := doReq(t, h, http.MethodGet, "/api/me", nil, sess); me.Code != 401 {
+		t.Errorf("/api/me after DisableAll status = %d, want 401", me.Code)
+	}
+	// Even with the endpoint still on, the old credentials are gone.
+	again := doReq(t, h, http.MethodPost, "/auth/login",
+		map[string]string{"username": adminUsername, "password": adminPassword})
+	if again.Code != 401 {
+		t.Errorf("login after DisableAll status = %d, want 401", again.Code)
 	}
 }

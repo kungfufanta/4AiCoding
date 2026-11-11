@@ -43,8 +43,10 @@ docker compose -f docker-compose.portal.yml up --build
 # portal  → http://localhost:8080  (/healthz, /readyz, SPA)
 # postgres → localhost:5433 (portal/portal)
 
-# The local admin login is on by default: sign in at
-# http://localhost:8080 with admin / admin123 (see PORTAL_ADMIN_* below).
+# The local admin login is off unless you give it a password
+# (min 12 chars), e.g.:
+#   PORTAL_ADMIN_PASSWORD=local-dev-password docker compose -f docker-compose.portal.yml up --build
+# then sign in at http://localhost:8080 as admin (see PORTAL_ADMIN_* below).
 
 # with the identity provider (S1 login):
 docker compose -f docker-compose.portal.yml --profile idp up
@@ -65,7 +67,7 @@ Or without Docker: point `PORTAL_DATABASE_URL` at any Postgres 16+ and
 | `PORTAL_SESSION_TTL` | `12h` | Web-session lifetime |
 | `PORTAL_OIDC_ISSUER` / `_CLIENT_ID` / `_CLIENT_SECRET` | — | OIDC login (empty = login disabled, `/auth/login` answers 503) |
 | `PORTAL_ADMIN_USERNAME` | `admin` | Local password-login username (bootstrap admin) |
-| `PORTAL_ADMIN_PASSWORD` | `admin123` | Local password-login password; the stored bcrypt hash converges to this value on every boot (that is the rotation path). `-` disables the password login entirely |
+| `PORTAL_ADMIN_PASSWORD` | — (login off) | Local password-login password, min 12 characters. Unset or `-`: the password login is off, and stored password logins plus their sessions are removed at boot. When set, the stored bcrypt hash converges to this value on every boot (that is the rotation path), and a change signs out the account's existing sessions |
 | `PORTAL_ADMIN_EMAIL` | `admin@portal.local` | Directory email of the bootstrap admin (gets a personal org like any user) |
 | `PORTAL_DB_ROLE` | `portal_app` | Non-owner role for RLS; `-` disables the `SET ROLE` |
 
