@@ -11,7 +11,7 @@ File theo dõi cho kế hoạch [`docs/PORTAL_PLAN_V2.md`](PORTAL_PLAN_V2.md). C
 | P1 | Design system + app shell + migrate Login/Projects/Members/Audit + trang accept-invite + CSP + preview workflow | ✅ Xong | #36 | Merged 07:27 |
 | **P2** | API key + agent token (S2 + UI) | ✅ Xong | #37 + #38 | Merged; #38 là fix bảo mật của Claude |
 | P3 | Tag tenant + webhook ở sandboxd (S3a) | ✅ Xong | #40 | Merged; CI 7/7 xanh |
-| P4 | Gateway sandboxd + trang Sandboxes (S3 + UI) | 🟨 Đang review | #45 | Branch `portal-p4-gateway-sandboxes` (z.ai) — gateway /v1 + webhook + UI list/detail + preview có sandboxd thật |
+| P4 | Gateway sandboxd + trang Sandboxes (S3 + UI) | 🟨 Đang review | #46 | Branch `portal-p4-gateway-sandboxes` (z.ai) — gateway /v1 + webhook + UI list/detail + preview có sandboxd thật |
 | P5 | Quota + rate limit + trang Usage (S4 + UI) | ⬜ | | Cần P4 |
 | P6 | SDK + MCP + trang Quickstart (S5 + UI) | ⬜ | | Cần P4 |
 | Chat MVP | Trang Chat (stream SSE qua WebHub glm-4.6, chưa tool/sandbox) | 🟨 Đang review | | Claude làm; branch `claude/project-thread-rhrt1v`; A2/A3 sẽ gắn model connection + agent vào chính trang này |
@@ -52,7 +52,7 @@ Việc còn mở (không chặn merge):
 - [x] (P4 làm) Portal tiêu thụ webhook: verify HMAC constant-time + chống replay (occurred_at ±5m + event id dedupe bảng `webhook_events`) — xem Chi tiết P4
 - Ghi chú: webhook bắn trên node thực thi transition — fleet create bắn từ worker; cấu hình SANDBOXD_WEBHOOK_URL trên mọi node Portal cần nghe
 
-## Chi tiết P4 (S3 + UI — đang PR #45)
+## Chi tiết P4 (S3 + UI — đang PR #46)
 
 - [x] Migration `0005_sandboxes.sql`: bảng `sandboxes` (pkey = sandbox id của sandboxd, RLS theo org, index org_recent + project), `idempotency_keys` (24h, prune lười khi insert), `webhook_events` (dedupe, prune 25h)
 - [x] `internal/sandboxd`: client gateway — timeout mỗi call (`PORTAL_SANDBOXD_TIMEOUT` 30s), retry 1 lần CHỈ cho GET (502/503/504 + transport error; mutation không bao giờ retry — Idempotency-Key phía Portal mới là lớp retry an toàn), error envelope sandboxd giữ nguyên status/code, 5xx → 502 không lộ nội bộ; exec gửi đúng `{cmd}` tới khi A0 merge (sandboxd hiện DisallowUnknownFields)
@@ -75,7 +75,7 @@ Việc còn mở (không chặn merge):
 | 2026-11-11 | Claude review #37, fix cache verify (PR #38) | Đã merge; lỗi: cache key theo key_id công khai → giả mạo secret pass 60s; giờ bind key id + sha256(secret), không cache lỗi DB, map bounded |
 | 2026-11-11 | P3/S3a trên branch `portal-p3-sandboxd-tag-webhook` | workspace_id + filter + require_external + webhook HMAC; go test ./... xanh, -race sạch; PR chờ CI |
 | 2026-11-11 | P3 (PR #40) merge vào main | CI 7/7 xanh |
-| 2026-11-11 | P4 trên branch `portal-p4-gateway-sandboxes` (z.ai) → PR #45 | Gateway S3 + UI Sandboxes; chi tiết ở mục "Chi tiết P4"; go test -race + pnpm build xanh |
+| 2026-11-11 | P4 trên branch `portal-p4-gateway-sandboxes` (z.ai) → PR #46 | Gateway S3 + UI Sandboxes; chi tiết ở mục "Chi tiết P4"; go test -race + pnpm build xanh |
 
 | 2026-11-11 | Chat MVP (Claude) | Migration `0005_chat.sql` (hội thoại riêng theo user, RLS org+user), `internal/llm` (client OpenAI-compatible stream, header WebHub), BFF `/api/orgs/{id}/chats…` + SSE, trang `/orgs/:slug/chat`; env `PORTAL_DEFAULT_LLM_{BASE_URL,MODEL,FLAVOR,API_KEY}`, secret k3s `llm-api-key` từ GitHub secret `PORTAL_DEFAULT_LLM_API_KEY` |
 
