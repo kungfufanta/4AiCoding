@@ -170,6 +170,25 @@ jobs:
           echo "portal /healthz did not answer through the Service" >&2
           kubectl -n "$NAMESPACE" logs deploy/"$RELEASE" --tail=50 >&2 || true
           exit 1
+      - name: Diagnose a failed rollout
+        # Without this a failed `helm --wait` only says "context deadline
+        # exceeded": show why the pod never became Ready (image pull,
+        # crash loop, failed migration, probe failures).
+        if: failure()
+        run: |
+          set +e
+          sel="app.kubernetes.io/name=portal,app.kubernetes.io/instance=$RELEASE"
+          kubectl -n "$NAMESPACE" get deploy,rs,pods -l "$sel" -o wide
+          for pod in $(kubectl -n "$NAMESPACE" get pods -l "$sel" -o jsonpath='{.items[*].metadata.name}'); do
+            echo "::group::describe $pod"
+            kubectl -n "$NAMESPACE" describe pod "$pod" | sed -n '/^Containers:/,$p'
+            echo "::endgroup::"
+            echo "::group::logs $pod"
+            kubectl -n "$NAMESPACE" logs "$pod" --tail=100 --all-containers
+            kubectl -n "$NAMESPACE" logs "$pod" --tail=100 --all-containers --previous 2>/dev/null
+            echo "::endgroup::"
+          done
+          kubectl -n "$NAMESPACE" get events --sort-by=.lastTimestamp | tail -30
       - name: Report certificate status
         # Informational: certificate issuance needs chat.devhub.io.vn DNS
         # to point at the edge first; a pending cert must not fail an
