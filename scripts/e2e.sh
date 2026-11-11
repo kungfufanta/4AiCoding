@@ -217,7 +217,7 @@ T1="$(date +%s%3N)"
 [ $((T1 - T0)) -le 6000 ] || fail "exec v2 timeout answered after $((T1 - T0))ms (want <= ~3s)"
 docker top "s-$ID" 2>/dev/null | grep -q "sleep 999" && fail "sleep 999 survived the timeout in the container"
 OUT="$(curl -s -m30 -XPOST "$API/v1/sandboxes/$ID/exec" -H 'content-type: application/json' \
-  -d '{"cmd":["sh","-c","head -c 50000000 /dev/zero | tr '\''\0'\'' 'A'"],"timeout_s":60,"max_output_bytes":4096}')"
+  -d '{"cmd":["sh","-c","yes A | head -c 50000000"],"timeout_s":60,"max_output_bytes":4096}')"
 [ "$(echo "$OUT" | jget truncated)" = "True" ] || fail "50 MB output not truncated: $(echo "$OUT" | head -c 200)"
 [ "$(echo "$OUT" | jget exit_code)" = "0" ] || fail "truncated run exit: $OUT"
 [ "$(echo "$OUT" | wc -c)" -lt 30000 ] || fail "truncated response still huge: $(echo "$OUT" | wc -c) bytes"
