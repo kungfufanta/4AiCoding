@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
 """Configure Zitadel (auth.devhub.io.vn) as the Portal's OIDC provider.
 
-Runs inside GitHub Actions, so it may use ZITADEL_ADMIN_PASSWORD and
-GITHUB_TOKEN as regular CI secrets. Nothing sensitive is ever printed:
-the client secret is written straight into repo Actions secrets
-(PORTAL_OIDC_CLIENT_ID / PORTAL_OIDC_CLIENT_SECRET), and the admin
-password is only sent to Zitadel's Sessions API.
+Authentication for the Management API comes from the iam-admin machine
+user's PAT: the Zitadel chart mints it during the first-instance setup
+(FirstInstance.Org.Machine with Pat) and stores it in the Kubernetes
+Secret `iam-admin-pat`, which the deployer Role may read. The workflow
+passes it to this script via ZITADEL_SETUP_PAT_FILE. Nothing sensitive
+is ever printed: the client secret is written straight into repo
+Actions secrets (PORTAL_OIDC_CLIENT_ID / PORTAL_OIDC_CLIENT_SECRET).
+
+Fallback: with no PAT, tries the Sessions API login using
+ZITADEL_ADMIN_PASSWORD (works on providers where anonymous session
+creation is allowed).
 
 Steps, all idempotent (safe to re-run):
-  1. Log in as the instance admin (POST /v2/sessions) — tries the
-     known login-name variants until one passes the password check.
+  1. Bearer: iam-admin PAT (or session login fallback).
   2. Find or create the "Devhub Solutions" project.
   3. Find the "portal-bff" OIDC app; if it already exists, regenerate
      its client secret, otherwise create the app (Authorization Code,
@@ -98,7 +103,7 @@ def gh_api(method, path, body=None):
 
 
 def login_admin():
-    """Return (bearer_token, admin_user_id) using the Sessions API."""
+    """Fallback: return (bearer_token, admin_user_id) via the Sessions API."""
     for name in LOGIN_NAME_CANDIDATES:
         try:
             s = api("POST", "/v2/sessions", body={
@@ -272,9 +277,19 @@ def store_repo_secret(name, value):
 
 
 def main():
-    print("1/5 logging in to Zitadel")
-    token, user_id = login_admin()
-    mgmt = MgmtAuth(token, user_id)
+    pat = os.environ.get("ZITADEL_SETUP_PAT", "").strip()
+    if not pat:
+        pat_file = os.environ.get("ZITADEL_SETUP_PAT_FILE", "").strip()
+        if pat_file:
+            with open(pat_file) as f:
+                pat = f.read().strip()
+    if pat:
+        print("1/5 bearer: iam-admin PAT from the cluster secret")
+        mgmt = MgmtAuth(pat, "")
+    else:
+        print("1/5 no PAT available — logging in via the Sessions API")
+        token, user_id = login_admin()
+        mgmt = MgmtAuth(token, user_id)
 
     print("2/5 ensuring project")
     pid = find_or_create_project(mgmt)

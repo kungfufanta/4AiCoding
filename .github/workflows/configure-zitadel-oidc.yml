@@ -34,6 +34,7 @@ env:
   GH_REPO: kungfufanta/4AiCoding
   ISSUER: https://auth.devhub.io.vn
   PORTAL_PUBLIC_URL: https://chat.devhub.io.vn
+  NAMESPACE: 4aicoding
 
 jobs:
   configure:
@@ -44,9 +45,31 @@ jobs:
       - name: Install PyNaCl
         run: pip install --quiet pynacl
 
+      - name: Configure scoped kubeconfig
+        env:
+          KUBECONFIG_B64: ${{ secrets.K3S_4AICODING_KUBECONFIG_B64 }}
+        run: |
+          set -eu
+          test -n "$KUBECONFIG_B64"
+          echo "$KUBECONFIG_B64" | base64 --decode > "$RUNNER_TEMP/kubeconfig"
+          chmod 600 "$RUNNER_TEMP/kubeconfig"
+          echo "KUBECONFIG=$RUNNER_TEMP/kubeconfig" >> "$GITHUB_ENV"
+
+      - name: Read the iam-admin PAT from the cluster
+        # The chart's first-instance setup mints a PAT for the iam-admin
+        # machine user (an IAM_OWNER) and stores it in iam-admin-pat
+        # (helm.sh/resource-policy=keep). The deployer Role may read it.
+        run: |
+          set -eu
+          kubectl -n "$NAMESPACE" get secret iam-admin-pat -o jsonpath='{.data.pat}' | base64 --decode > "$RUNNER_TEMP/zitadel-pat"
+          chmod 600 "$RUNNER_TEMP/zitadel-pat"
+          test "$(wc -c < "$RUNNER_TEMP/zitadel-pat")" -gt 10
+          echo "PAT read (${RUNNER_TEMP}/zitadel-pat, $(wc -c < "$RUNNER_TEMP/zitadel-pat") bytes)"
+
       - name: Configure Zitadel (project, OIDC app, users, repo secrets)
         env:
           ZITADEL_ADMIN_PASSWORD: ${{ secrets.ZITADEL_ADMIN_PASSWORD }}
+          ZITADEL_SETUP_PAT_FILE: ${{ runner.temp }}/zitadel-pat
           GH_SETUP_TOKEN: ${{ secrets.PORTAL_OIDC_SETUP_GH_TOKEN }}
         run: |
           set -eu
