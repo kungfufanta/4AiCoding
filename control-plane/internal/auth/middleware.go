@@ -26,6 +26,9 @@ type Actor struct {
 	Role string
 	// SandboxID binds an API key to one sandbox ("" = any).
 	SandboxID string
+	// RequireExternal (API keys, Portal S3a): sandbox creates must carry
+	// external.workspace_id, else 400.
+	RequireExternal bool
 }
 
 type actorCtxKey struct{}
@@ -223,7 +226,8 @@ func (m *Middleware) resolve(r *http.Request, cfg *Config, ip string) (Actor, bo
 		if m.resolver != nil {
 			if p, ok := m.resolver.ResolveAPIKey(r.Context(), tok); ok {
 				return Actor{Kind: "service", Name: p.Owner, IP: ip, Scopes: p.Scopes,
-					User: p.User, Role: p.Role, SandboxID: p.SandboxID}, true
+					User: p.User, Role: p.Role, SandboxID: p.SandboxID,
+					RequireExternal: p.RequireExternal}, true
 			}
 		}
 		// Env-configured tokens are the operator's root credential: admin.

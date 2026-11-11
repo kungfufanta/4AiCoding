@@ -58,6 +58,7 @@ import (
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/snapshot"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/store"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/wake"
+	"github.com/tastyeffectco/sandboxd/control-plane/internal/webhook"
 )
 
 const (
@@ -445,6 +446,21 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Portal S3a — signed lifecycle webhooks (created/started/stopped/
+	// deleted/failed) POSTed to the Portal. Disabled unless
+	// SANDBOXD_WEBHOOK_URL is set; SANDBOXD_WEBHOOK_SECRET signs the body
+	// (X-Sandboxd-Signature: sha256=<hmac>). Configure on every node that
+	// executes transitions the Portal should hear about (a fleet create
+	// fires on the executor worker that runs it).
+	webhookDispatcher := &webhook.Dispatcher{
+		URL:    strings.TrimSpace(os.Getenv("SANDBOXD_WEBHOOK_URL")),
+		Secret: os.Getenv("SANDBOXD_WEBHOOK_SECRET"),
+		Log:    log.With("component", "webhook"),
+	}
+	if webhookDispatcher.Enabled() {
+		log.Info("startup: lifecycle webhooks", "target", webhookDispatcher.String())
+	}
+
 	// gVisor (opt-in): SANDBOXD_RUNTIME=runsc runs sandboxes under runsc.
 	// gVisor's netstack can't reach Docker's embedded DNS (127.0.0.11) on a
 	// user-defined network, so we write a resolv.conf with real nameservers
@@ -560,6 +576,7 @@ func main() {
 		Auth:                authMw,
 		Audit:               auditLog,
 		Events:              eventRec,
+		Webhook:             webhookDispatcher,
 		SnapshotsRoot:       snapshotsRoot,
 		ForwardAuthDenyMode: denyMode,
 		TemplatesDir:        envDefault("SANDBOXD_TEMPLATES_DIR", templatesRoot),

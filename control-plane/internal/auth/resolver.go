@@ -17,6 +17,9 @@ type Principal struct {
 	Role      string   // admin | operator | viewer
 	Scopes    []string // API keys only; nil = no scope restriction
 	SandboxID string   // API keys only; "" = not bound to a sandbox
+	// RequireExternal (API keys only; Portal S3a): sandbox creates must
+	// carry external.workspace_id, else 400.
+	RequireExternal bool
 }
 
 // CredentialResolver resolves the two DB-backed credential types. It is

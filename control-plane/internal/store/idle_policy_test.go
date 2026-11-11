@@ -131,7 +131,7 @@ func TestIdlePolicyInListAndListFiltered(t *testing.T) {
 		}
 	}
 
-	filtered, err := st.ListFiltered(ctx, "u1", "")
+	filtered, err := st.ListFiltered(ctx, "u1", "", "")
 	if err != nil {
 		t.Fatalf("ListFiltered: %v", err)
 	}

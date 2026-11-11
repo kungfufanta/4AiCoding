@@ -20,26 +20,28 @@ import (
 )
 
 type v1APIKey struct {
-	ID         string   `json:"id"`
-	Name       string   `json:"name"`
-	Prefix     string   `json:"prefix"`
-	CreatedAt  string   `json:"created_at"`
-	LastUsedAt string   `json:"last_used_at,omitempty"`
-	Scopes     []string `json:"scopes"`
-	Role       string   `json:"role"`
-	ExpiresAt  string   `json:"expires_at,omitempty"`
-	SandboxID  string   `json:"sandbox_id,omitempty"`
+	ID              string   `json:"id"`
+	Name            string   `json:"name"`
+	Prefix          string   `json:"prefix"`
+	CreatedAt       string   `json:"created_at"`
+	LastUsedAt      string   `json:"last_used_at,omitempty"`
+	Scopes          []string `json:"scopes"`
+	Role            string   `json:"role"`
+	ExpiresAt       string   `json:"expires_at,omitempty"`
+	SandboxID       string   `json:"sandbox_id,omitempty"`
+	RequireExternal bool     `json:"require_external,omitempty"`
 }
 
 func toV1APIKey(k *store.APIKey) v1APIKey {
 	out := v1APIKey{
-		ID:        k.ID,
-		Name:      k.Name,
-		Prefix:    k.Prefix,
-		CreatedAt: k.CreatedAt.Format(time.RFC3339),
-		Scopes:    k.Scopes,
-		Role:      k.Role,
-		SandboxID: k.SandboxID,
+		ID:              k.ID,
+		Name:            k.Name,
+		Prefix:          k.Prefix,
+		CreatedAt:       k.CreatedAt.Format(time.RFC3339),
+		Scopes:          k.Scopes,
+		Role:            k.Role,
+		SandboxID:       k.SandboxID,
+		RequireExternal: k.RequireExternal,
 	}
 	if k.ExpiresAt != nil {
 		out.ExpiresAt = k.ExpiresAt.Format(time.RFC3339)
@@ -64,12 +66,15 @@ func requireUser(w http.ResponseWriter, r *http.Request) bool {
 	return false
 }
 
-// POST /v1/api-keys {name, scopes?, role?, ttl_seconds?, sandbox_id?} — mint a
-// key; returns the plaintext ONCE. Least privilege (PLAN §8 #9):
+// POST /v1/api-keys {name, scopes?, role?, ttl_seconds?, sandbox_id?,
+// require_external?} — mint a key; returns the plaintext ONCE. Least
+// privilege (PLAN §8 #9):
 //   - role defaults to, and may not exceed, the creator's role;
 //   - scopes narrow the key to the routes in auth/scopes.go (omitted = role);
 //   - ttl_seconds makes it expire (SANDBOXD_API_KEY_MAX_TTL caps it);
-//   - sandbox_id binds it to one sandbox's routes.
+//   - sandbox_id binds it to one sandbox's routes;
+//   - require_external (Portal S3a) forces external.workspace_id on every
+//     sandbox the key creates.
 func (s *Server) v1CreateAPIKey(w http.ResponseWriter, r *http.Request) {
 	if s.Store == nil {
 		writeV1Err(w, http.StatusServiceUnavailable, "unavailable", "auth store not configured")
@@ -79,11 +84,12 @@ func (s *Server) v1CreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Name       string   `json:"name"`
-		Scopes     []string `json:"scopes"`
-		Role       string   `json:"role"`
-		TTLSeconds int64    `json:"ttl_seconds"`
-		SandboxID  string   `json:"sandbox_id"`
+		Name            string   `json:"name"`
+		Scopes          []string `json:"scopes"`
+		Role            string   `json:"role"`
+		TTLSeconds      int64    `json:"ttl_seconds"`
+		SandboxID       string   `json:"sandbox_id"`
+		RequireExternal bool     `json:"require_external"`
 	}
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8*1024))
 	dec.DisallowUnknownFields()
@@ -139,7 +145,8 @@ func (s *Server) v1CreateAPIKey(w http.ResponseWriter, r *http.Request) {
 	}
 	id := newULID()
 	if err := s.Store.CreateAPIKey(r.Context(), store.NewAPIKey{ID: id, Name: name, KeyHash: hash, Prefix: prefix,
-		Scopes: scopes, Role: role, ExpiresAt: expiresAt, SandboxID: body.SandboxID, CreatedAt: time.Now().Unix()}); err != nil {
+		Scopes: scopes, Role: role, ExpiresAt: expiresAt, SandboxID: body.SandboxID,
+		RequireExternal: body.RequireExternal, CreatedAt: time.Now().Unix()}); err != nil {
 		if err == store.ErrConflict {
 			writeV1Err(w, http.StatusConflict, "conflict", "a key with that name already exists")
 			return
@@ -157,6 +164,9 @@ func (s *Server) v1CreateAPIKey(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.SandboxID != "" {
 		resp["sandbox_id"] = body.SandboxID
+	}
+	if body.RequireExternal {
+		resp["require_external"] = true
 	}
 	writeJSON(w, http.StatusCreated, resp)
 }

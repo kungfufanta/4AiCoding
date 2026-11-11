@@ -6,6 +6,31 @@ All notable changes to 4AiCoding. The project started from
 
 ## Unreleased
 
+### Portal P3 — sandboxd tenant tag + lifecycle webhooks (docs/PORTAL_PLAN_V2.md, S3a)
+- `external.workspace_id` is part of the v1 surface: accepted on
+  `POST /v1/sandboxes`, returned on read/list (`external.workspace_id`),
+  and filterable via `GET /v1/sandboxes?external_workspace_id=` (also
+  accepted on the legacy `GET /sandboxes`). Fleet listings pass the
+  query through, so worker sandboxes filter the same way.
+- API keys gained a `require_external` flag (migration `0035`,
+  `POST /v1/api-keys`): a key carrying it must tag
+  `external.workspace_id` on every sandbox create, on v1 and on the
+  legacy surface alike — an untagged create is `400 workspace_required`
+  before placement (local or worker). Console sessions and env tokens
+  are unaffected.
+- Signed lifecycle webhooks (new `internal/webhook`): configure
+  `SANDBOXD_WEBHOOK_URL` (+ `SANDBOXD_WEBHOOK_SECRET`) and sandboxd
+  POSTs `created` / `started` / `stopped` / `deleted` / `failed` with
+  body `{id, event, sandbox_id, external, resources, occurred_at}`,
+  `X-Sandboxd-Signature: sha256=<hmac(body)>` and
+  `X-Sandboxd-Event-Id`. Delivery is async with exponential backoff
+  (1 s → 1 h attempts) for up to 24 h, then dropped with a log line.
+  Configure it on every node that executes transitions (a fleet
+  create fires on the executor worker that runs it).
+- docs/openapi.yaml: workspace_id on Sandbox/CreateSandboxRequest,
+  the `external_workspace_id` list filter, `require_external` on the
+  key endpoints; fixed a `health` scope typo in the enum list.
+
 ### Portal P2 fix: API key verify cache
 - The 60 s verify cache was keyed by the public key id only. For a
   minute after a key was used, any secret with that key id

@@ -148,14 +148,14 @@ var ErrConflict = errors.New("conflict")
 
 func (s *Store) Get(ctx context.Context, id string) (*Sandbox, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, status, image, workspace_img, workspace_mnt,
-		       container_id, cgroup_path, memory_high, error_message,
-		       created_at, updated_at,
-		       last_active_at, stopped_at, keepalive_until,
-		       container_ip,
-		       external_user_id, external_project_id, external_workspace_id, visibility,
-		       idle_policy, web_port
-		  FROM sandbox WHERE id = ?`, id)
+                SELECT id, status, image, workspace_img, workspace_mnt,
+                       container_id, cgroup_path, memory_high, error_message,
+                       created_at, updated_at,
+                       last_active_at, stopped_at, keepalive_until,
+                       container_ip,
+                       external_user_id, external_project_id, external_workspace_id, visibility,
+                       idle_policy, web_port
+                  FROM sandbox WHERE id = ?`, id)
 	sb, err := scanSandbox(row)
 	if err != nil {
 		return nil, err
@@ -168,14 +168,14 @@ func (s *Store) Get(ctx context.Context, id string) (*Sandbox, error) {
 
 func (s *Store) List(ctx context.Context) ([]*Sandbox, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, status, image, workspace_img, workspace_mnt,
-		       container_id, cgroup_path, memory_high, error_message,
-		       created_at, updated_at,
-		       last_active_at, stopped_at, keepalive_until,
-		       container_ip,
-		       external_user_id, external_project_id, external_workspace_id, visibility,
-		       idle_policy, web_port
-		  FROM sandbox ORDER BY created_at DESC`)
+                SELECT id, status, image, workspace_img, workspace_mnt,
+                       container_id, cgroup_path, memory_high, error_message,
+                       created_at, updated_at,
+                       last_active_at, stopped_at, keepalive_until,
+                       container_ip,
+                       external_user_id, external_project_id, external_workspace_id, visibility,
+                       idle_policy, web_port
+                  FROM sandbox ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -203,13 +203,13 @@ func (s *Store) ListByStatuses(ctx context.Context, statuses ...string) ([]*Sand
 		return nil, nil
 	}
 	q := `SELECT id, status, image, workspace_img, workspace_mnt,
-	             container_id, cgroup_path, memory_high, error_message,
-	             created_at, updated_at,
-	             last_active_at, stopped_at, keepalive_until,
-	             container_ip,
-	             external_user_id, external_project_id, external_workspace_id, visibility,
-	             idle_policy, web_port
-	        FROM sandbox WHERE status IN (?`
+                     container_id, cgroup_path, memory_high, error_message,
+                     created_at, updated_at,
+                     last_active_at, stopped_at, keepalive_until,
+                     container_ip,
+                     external_user_id, external_project_id, external_workspace_id, visibility,
+                     idle_policy, web_port
+                FROM sandbox WHERE status IN (?`
 	args := make([]any, 0, len(statuses))
 	args = append(args, statuses[0])
 	for _, st := range statuses[1:] {
@@ -243,10 +243,10 @@ func (s *Store) ListByStatuses(ctx context.Context, statuses ...string) ([]*Sand
 // per-sandbox idle timeouts do not protect a sandbox from pressure).
 func (s *Store) ListPressureCandidates(ctx context.Context, cutoff time.Time) ([]*Sandbox, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT `+sandboxSelectCols+`
-		  FROM sandbox
-		 WHERE status='running' AND last_active_at < ? AND idle_policy != 'always_on'
-		 ORDER BY last_active_at ASC`, cutoff.Unix())
+                SELECT `+sandboxSelectCols+`
+                  FROM sandbox
+                 WHERE status='running' AND last_active_at < ? AND idle_policy != 'always_on'
+                 ORDER BY last_active_at ASC`, cutoff.Unix())
 	if err != nil {
 		return nil, err
 	}
@@ -269,17 +269,17 @@ func (s *Store) ListPressureCandidates(ctx context.Context, cutoff time.Time) ([
 // sandbox_spec.idle_timeout_secs when set, else defaultThreshold.
 func (s *Store) ListIdleCandidates(ctx context.Context, now time.Time, defaultThreshold time.Duration) ([]*Sandbox, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT s.id, s.status, s.image, s.workspace_img, s.workspace_mnt,
-		       s.container_id, s.cgroup_path, s.memory_high, s.error_message,
-		       s.created_at, s.updated_at,
-		       s.last_active_at, s.stopped_at, s.keepalive_until,
-		       s.container_ip,
-		       s.external_user_id, s.external_project_id, s.external_workspace_id, s.visibility,
-		       s.idle_policy, s.web_port, COALESCE(sp.idle_timeout_secs, 0)
-		  FROM sandbox s LEFT JOIN sandbox_spec sp ON sp.sandbox_id = s.id
-		 WHERE s.status='running' AND s.idle_policy != 'always_on'
-		   AND s.last_active_at < ? - COALESCE(sp.idle_timeout_secs, ?)
-		 ORDER BY s.last_active_at ASC`, now.Unix(), int64(defaultThreshold.Seconds()))
+                SELECT s.id, s.status, s.image, s.workspace_img, s.workspace_mnt,
+                       s.container_id, s.cgroup_path, s.memory_high, s.error_message,
+                       s.created_at, s.updated_at,
+                       s.last_active_at, s.stopped_at, s.keepalive_until,
+                       s.container_ip,
+                       s.external_user_id, s.external_project_id, s.external_workspace_id, s.visibility,
+                       s.idle_policy, s.web_port, COALESCE(sp.idle_timeout_secs, 0)
+                  FROM sandbox s LEFT JOIN sandbox_spec sp ON sp.sandbox_id = s.id
+                 WHERE s.status='running' AND s.idle_policy != 'always_on'
+                   AND s.last_active_at < ? - COALESCE(sp.idle_timeout_secs, ?)
+                 ORDER BY s.last_active_at ASC`, now.Unix(), int64(defaultThreshold.Seconds()))
 	if err != nil {
 		return nil, err
 	}
@@ -358,17 +358,18 @@ func scanSandboxExtra(s scanner, extra ...any) (*Sandbox, error) {
 // --- Phase 8 reads: external-identity filtering + workspace_owner ----
 
 const sandboxSelectCols = `id, status, image, workspace_img, workspace_mnt,
-	       container_id, cgroup_path, memory_high, error_message,
-	       created_at, updated_at,
-	       last_active_at, stopped_at, keepalive_until,
-	       container_ip,
-	       external_user_id, external_project_id, external_workspace_id, visibility,
-	       idle_policy, web_port`
+               container_id, cgroup_path, memory_high, error_message,
+               created_at, updated_at,
+               last_active_at, stopped_at, keepalive_until,
+               container_ip,
+               external_user_id, external_project_id, external_workspace_id, visibility,
+               idle_policy, web_port`
 
-// ListFiltered returns sandbox rows filtered by external_user_id and/
-// or external_project_id. An empty string for either filter means "do
-// not constrain on this column". Used by GET /sandboxes?external_*.
-func (s *Store) ListFiltered(ctx context.Context, externalUserID, externalProjectID string) ([]*Sandbox, error) {
+// ListFiltered returns sandbox rows filtered by external_user_id,
+// external_project_id and/or external_workspace_id (Portal S3a). An
+// empty string for a filter means "do not constrain on this column".
+// Used by GET /sandboxes?external_*.
+func (s *Store) ListFiltered(ctx context.Context, externalUserID, externalProjectID, externalWorkspaceID string) ([]*Sandbox, error) {
 	q := `SELECT ` + sandboxSelectCols + ` FROM sandbox WHERE 1=1`
 	args := []any{}
 	if externalUserID != "" {
@@ -378,6 +379,10 @@ func (s *Store) ListFiltered(ctx context.Context, externalUserID, externalProjec
 	if externalProjectID != "" {
 		q += ` AND external_project_id = ?`
 		args = append(args, externalProjectID)
+	}
+	if externalWorkspaceID != "" {
+		q += ` AND external_workspace_id = ?`
+		args = append(args, externalWorkspaceID)
 	}
 	q += ` ORDER BY created_at DESC`
 	rows, err := s.db.QueryContext(ctx, q, args...)
@@ -420,9 +425,9 @@ func scanWorkspaceOwner(sc scanner) (*WorkspaceOwner, error) {
 // sandbox id, or ErrNotFound. Survives DELETE /sandbox/{id}.
 func (s *Store) GetWorkspaceOwner(ctx context.Context, sandboxID string) (*WorkspaceOwner, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT sandbox_id, external_user_id, external_project_id,
-		       external_workspace_id, created_at
-		  FROM workspace_owner WHERE sandbox_id = ?`, sandboxID)
+                SELECT sandbox_id, external_user_id, external_project_id,
+                       external_workspace_id, created_at
+                  FROM workspace_owner WHERE sandbox_id = ?`, sandboxID)
 	return scanWorkspaceOwner(row)
 }
 
@@ -430,9 +435,9 @@ func (s *Store) GetWorkspaceOwner(ctx context.Context, sandboxID string) (*Works
 // the reconciler's periodic orphan check (Phase 8 step 13).
 func (s *Store) ListAllWorkspaceOwners(ctx context.Context) ([]*WorkspaceOwner, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT sandbox_id, external_user_id, external_project_id,
-		       external_workspace_id, created_at
-		  FROM workspace_owner`)
+                SELECT sandbox_id, external_user_id, external_project_id,
+                       external_workspace_id, created_at
+                  FROM workspace_owner`)
 	if err != nil {
 		return nil, err
 	}
