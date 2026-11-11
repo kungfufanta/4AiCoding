@@ -35,6 +35,19 @@ oidc:
   clientID: ""
   clientSecret: ""
 
+# Sandboxd gateway (PORTAL_PLAN_V2 P4 / PORTAL_PLAN 6/S3). An empty url
+# disables the whole sandbox surface (/v1/sandboxes* answers 503 and the
+# dashboard shows "backend not connected"). The api key is a sandboxd
+# API key carrying the require_external flag (P3a) plus the
+# sandbox:create/read/exec scopes; the webhook secret must match that
+# deployment's SANDBOXD_WEBHOOK_SECRET. For production prefer injecting
+# apiKey/webhookSecret via existingSecret + extraEnv instead of values.
+sandboxd:
+  url: ""
+  apiKey: ""
+  webhookSecret: ""
+  timeout: 30s
+
 # Bootstrap password login (user "admin"). Off unless the database
 # Secret above carries this key (min 12 chars); there is no default
 # password.

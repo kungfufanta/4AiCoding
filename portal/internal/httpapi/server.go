@@ -17,6 +17,7 @@ import (
 	"github.com/tastyeffectco/sandboxd/portal/internal/apikeys"
 	"github.com/tastyeffectco/sandboxd/portal/internal/llm"
 	"github.com/tastyeffectco/sandboxd/portal/internal/oidcauth"
+	"github.com/tastyeffectco/sandboxd/portal/internal/sandboxd"
 	"github.com/tastyeffectco/sandboxd/portal/internal/session"
 )
 
@@ -52,6 +53,12 @@ type Server struct {
 	// LLM answers the Chat page; nil (no PORTAL_DEFAULT_LLM_API_KEY)
 	// makes sending a message answer 503 chat_not_configured.
 	LLM *llm.Client
+	// Sandboxd is the gateway client for the S3 surface; nil disables
+	// /v1/sandboxes* (503) and the BFF Sandboxes page reports
+	// "not configured". WebhookSecret enables the lifecycle webhook
+	// receiver; without it the route is not registered at all.
+	Sandboxd      *sandboxd.Client
+	WebhookSecret string
 
 	PublicURL     string // e.g. https://app.example.com (no trailing slash)
 	SecureCookies bool   // derived in main from PublicURL's scheme
@@ -106,8 +113,33 @@ func (s *Server) Handler() *http.ServeMux {
 	mux.Handle("DELETE /api/orgs/{orgID}/chats/{chatID}", s.withSession(http.HandlerFunc(s.handleDeleteChat)))
 	mux.Handle("GET /api/orgs/{orgID}/chats/{chatID}/messages", s.withSession(http.HandlerFunc(s.handleListChatMessages)))
 	mux.Handle("POST /api/orgs/{orgID}/chats/{chatID}/messages", s.withSession(http.HandlerFunc(s.handleSendChatMessage)))
+	// Sandboxes BFF (PORTAL_PLAN_V2 P4 UI): session + CSRF, member role.
+	mux.Handle("GET /api/orgs/{orgID}/sandboxes", s.withSession(http.HandlerFunc(s.handleBFFListSandboxes)))
+	mux.Handle("POST /api/orgs/{orgID}/sandboxes", s.withSession(http.HandlerFunc(s.handleBFFCreateSandbox)))
+	mux.Handle("GET /api/orgs/{orgID}/sandboxes/{id}", s.withSession(http.HandlerFunc(s.handleBFFGetSandbox)))
+	mux.Handle("POST /api/orgs/{orgID}/sandboxes/{id}/exec", s.withSession(http.HandlerFunc(s.handleBFFExecSandbox)))
+	mux.Handle("GET /api/orgs/{orgID}/sandboxes/{id}/logs", s.withSession(http.HandlerFunc(s.handleBFFSandboxLogs)))
+	mux.Handle("GET /api/orgs/{orgID}/sandboxes/{id}/metrics/stream", s.withSession(http.HandlerFunc(s.handleBFFSandboxMetricsStream)))
+	mux.Handle("POST /api/orgs/{orgID}/sandboxes/{id}/start", s.withSession(http.HandlerFunc(s.handleBFFSandboxAction)))
+	mux.Handle("POST /api/orgs/{orgID}/sandboxes/{id}/stop", s.withSession(http.HandlerFunc(s.handleBFFSandboxAction)))
+	mux.Handle("DELETE /api/orgs/{orgID}/sandboxes/{id}", s.withSession(http.HandlerFunc(s.handleBFFSandboxAction)))
 	// Public API surface (S2: token exchange; S3 grows here).
 	mux.Handle("POST /v1/tokens", http.HandlerFunc(s.handleAgentToken))
+	// S3 sandbox gateway (PORTAL_PLAN 5): Bearer API keys, one org per
+	// key, ownership 404s. Exec/logs/metrics proxy live streams.
+	mux.Handle("POST /v1/sandboxes", http.HandlerFunc(s.handleV1CreateSandbox))
+	mux.Handle("GET /v1/sandboxes", http.HandlerFunc(s.handleV1ListSandboxes))
+	mux.Handle("GET /v1/sandboxes/{id}", http.HandlerFunc(s.handleV1GetSandbox))
+	mux.Handle("POST /v1/sandboxes/{id}/exec", http.HandlerFunc(s.handleV1ExecSandbox))
+	mux.Handle("GET /v1/sandboxes/{id}/logs", http.HandlerFunc(s.handleV1SandboxLogs))
+	mux.Handle("POST /v1/sandboxes/{id}/start", http.HandlerFunc(s.handleV1SandboxAction))
+	mux.Handle("POST /v1/sandboxes/{id}/stop", http.HandlerFunc(s.handleV1SandboxAction))
+	mux.Handle("DELETE /v1/sandboxes/{id}", http.HandlerFunc(s.handleV1SandboxAction))
+	// Lifecycle webhook (PORTAL_PLAN 4.4): signature-authed, so it does
+	// NOT sit behind withSession. Registered only with a secret.
+	if s.WebhookSecret != "" {
+		mux.Handle("POST /api/webhooks/sandboxd", http.HandlerFunc(s.handleSandboxdWebhook))
+	}
 	mux.HandleFunc("/api/", NotFound)
 	mux.HandleFunc("/auth/", NotFound)
 	mux.HandleFunc("/v1/", NotFound)

@@ -26,6 +26,7 @@ import (
 	"github.com/tastyeffectco/sandboxd/portal/internal/logging"
 	"github.com/tastyeffectco/sandboxd/portal/internal/oidcauth"
 	"github.com/tastyeffectco/sandboxd/portal/internal/passwordauth"
+	"github.com/tastyeffectco/sandboxd/portal/internal/sandboxd"
 	"github.com/tastyeffectco/sandboxd/portal/internal/session"
 	"github.com/tastyeffectco/sandboxd/portal/internal/webfs"
 )
@@ -114,6 +115,18 @@ func run() error {
 		log.Info("chat disabled: PORTAL_DEFAULT_LLM_API_KEY not set")
 	}
 
+	// Sandboxd gateway (PORTAL_PLAN 6/S3): nil client disables the
+	// whole sandbox surface (dev stacks without a backend).
+	var sandboxdClient *sandboxd.Client
+	if cfg.SandboxdURL != "" {
+		sandboxdClient = sandboxd.New(cfg.SandboxdURL, cfg.SandboxdAPIKey, cfg.SandboxdTimeout)
+		log.Info("sandboxd gateway enabled", "url", cfg.SandboxdURL,
+			"api_key", cfg.SandboxdAPIKey != "",
+			"webhook", cfg.SandboxdWebhookSecret != "")
+	} else {
+		log.Info("sandboxd gateway disabled (PORTAL_SANDBOXD_URL unset)")
+	}
+
 	srv := &httpapi.Server{
 		Log:           log,
 		Pool:          pool,
@@ -123,6 +136,8 @@ func run() error {
 		Keys:          keys,
 		Tokens:        signer,
 		LLM:           chat,
+		Sandboxd:      sandboxdClient,
+		WebhookSecret: cfg.SandboxdWebhookSecret,
 		PublicURL:     cfg.PublicURL,
 		SecureCookies: strings.HasPrefix(cfg.PublicURL, "https://"),
 		SessionTTL:    cfg.SessionTTL,

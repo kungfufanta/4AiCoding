@@ -95,6 +95,22 @@ spec:
             - name: PORTAL_OIDC_CLIENT_SECRET
               value: {{ .Values.oidc.clientSecret | quote }}
             {{- end }}
+            {{- if .Values.sandboxd.url }}
+            - name: PORTAL_SANDBOXD_URL
+              value: {{ .Values.sandboxd.url | quote }}
+            {{- end }}
+            {{- if .Values.sandboxd.apiKey }}
+            - name: PORTAL_SANDBOXD_API_KEY
+              value: {{ .Values.sandboxd.apiKey | quote }}
+            {{- end }}
+            {{- if .Values.sandboxd.webhookSecret }}
+            - name: PORTAL_SANDBOXD_WEBHOOK_SECRET
+              value: {{ .Values.sandboxd.webhookSecret | quote }}
+            {{- end }}
+            {{- if .Values.sandboxd.timeout }}
+            - name: PORTAL_SANDBOXD_TIMEOUT
+              value: {{ .Values.sandboxd.timeout | quote }}
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
