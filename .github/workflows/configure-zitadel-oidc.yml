@@ -1,0 +1,138 @@
+# One-shot automation: wire Zitadel (auth.devhub.io.vn) to the Portal.
+#
+# ZITADEL_ADMIN_PASSWORD is only known to CI, so the Zitadel Management
+# API is driven from inside the runner (scripts/zitadel_configure.py):
+# it logs in via the Sessions API, ensures the Devhub Solutions project
+# and the portal-bff OIDC app (redirect https://chat.devhub.io.vn/auth/
+# callback), stores PORTAL_OIDC_ISSUER/_CLIENT_ID/_CLIENT_SECRET as repo
+# Actions secrets, then dispatches deploy-k3s-portal so the Portal comes
+# back up with the SSO route enabled. No secret value is ever printed.
+#
+# GITHUB_TOKEN cannot write repo Actions secrets (no administration
+# scope), so the secrets step uses PORTAL_OIDC_SETUP_GH_TOKEN — an
+# admin PAT stored as a repo secret for exactly this purpose. Delete it
+# once the run is green if it is no longer wanted.
+#
+# Safe to re-run: project/app/users are find-or-create; an existing
+# portal-bff app gets its client secret regenerated; the portal deploy
+# is idempotent (helm upgrade).
+
+name: configure-zitadel-oidc
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write # dispatch deploy-k3s-portal and read its runs
+
+concurrency:
+  group: configure-zitadel-oidc
+  cancel-in-progress: false
+
+env:
+  GH_REPO: kungfufanta/4AiCoding
+  ISSUER: https://auth.devhub.io.vn
+  PORTAL_PUBLIC_URL: https://chat.devhub.io.vn
+
+jobs:
+  configure:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install PyNaCl
+        run: pip install --quiet pynacl
+
+      - name: Configure Zitadel (project, OIDC app, users, repo secrets)
+        env:
+          ZITADEL_ADMIN_PASSWORD: ${{ secrets.ZITADEL_ADMIN_PASSWORD }}
+          GH_SETUP_TOKEN: ${{ secrets.PORTAL_OIDC_SETUP_GH_TOKEN }}
+        run: |
+          set -eu
+          python3 scripts/zitadel_configure.py
+
+      - name: Deploy the Portal with OIDC enabled
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$GH_REPO/actions/workflows/deploy-k3s-portal.yml/dispatches" \
+            -d '{"ref":"main"}')
+          echo "dispatch status: $code"
+          test "$code" = 204
+
+      - name: Wait for the portal deploy to finish
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          python3 - <<'PY'
+          import json, os, time, urllib.request
+
+          REPO = os.environ["GH_REPO"]
+          TOK = os.environ["GITHUB_TOKEN"]
+          start = time.time()
+
+          def api(path):
+              req = urllib.request.Request(
+                  f"https://api.github.com{path}",
+                  headers={"Authorization": f"Bearer {TOK}",
+                           "Accept": "application/vnd.github+json",
+                           "User-Agent": "portal-oidc-config"})
+              with urllib.request.urlopen(req, timeout=30) as r:
+                  return json.load(r)
+
+          def age_seconds(iso):
+              # runners run in UTC, so a naive UTC strptime -> mktime is correct
+              return time.time() - time.mktime(time.strptime(iso, "%Y-%m-%dT%H:%M:%SZ"))
+
+          # find the run dispatched in the last 4 minutes
+          run_id = None
+          for _ in range(30):
+              runs = api(f"/repos/{REPO}/actions/workflows/deploy-k3s-portal.yml/runs?per_page=5")
+              for r in runs.get("workflow_runs", []):
+                  if r["event"] == "workflow_dispatch" and age_seconds(r["created_at"]) < 300:
+                      run_id = r["id"]
+                      break
+              if run_id:
+                  break
+              time.sleep(10)
+          if not run_id:
+              raise SystemExit("deploy run never appeared")
+
+          print(f"watching deploy run {run_id}")
+          while True:
+              r = api(f"/repos/{REPO}/actions/runs/{run_id}")
+              if r["status"] == "completed":
+                  print(f"deploy finished: {r['conclusion']}")
+                  if r["conclusion"] != "success":
+                      raise SystemExit(f"deploy-k3s-portal concluded {r['conclusion']}")
+                  break
+              if time.time() - start > 1500:
+                  raise SystemExit("timed out waiting for the deploy run")
+              print(f"  status {r['status']} ({int(time.time() - start)}s)")
+              time.sleep(20)
+          PY
+
+      - name: Verify SSO is live on the Portal
+        run: |
+          set -eu
+          echo "--- GET $PORTAL_PUBLIC_URL/auth/methods"
+          methods="$(curl -fsS --max-time 10 "$PORTAL_PUBLIC_URL/auth/methods")"
+          echo "$methods"
+          echo "$methods" | grep -q '"sso":true'
+          echo "--- GET $PORTAL_PUBLIC_URL/auth/login (expect 302 to Zitadel)"
+          curl -s -o /dev/null -w 'HTTP %{http_code}\n' \
+            "$(curl -s -o /dev/null -w '%{redirect_url}' --max-time 10 \
+              "$PORTAL_PUBLIC_URL/auth/login")"
+          redirect="$(curl -s -o /dev/null -w '%{redirect_url}' --max-time 10 \
+            "$PORTAL_PUBLIC_URL/auth/login")"
+          echo "$redirect"
+          case "$redirect" in
+            "$ISSUER/oauth/v2/authorize?"*) echo "SSO redirect looks correct";;
+            *) echo "unexpected redirect" >&2; exit 1;;
+          esac
