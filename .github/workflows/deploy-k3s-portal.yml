@@ -92,12 +92,14 @@ jobs:
             echo "user needs CREATE ROLE privilege on first boot." >&2
             exit 1
           fi
-      - name: Ensure namespace and database secret
+      - name: Apply database secret
         env:
           DATABASE_URL: ${{ secrets.PORTAL_DATABASE_URL }}
         run: |
           set -eu
-          kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
+          # The namespace already exists (the deployer ServiceAccount lives
+          # in it) and that account has no cluster-scoped rights, so the
+          # workflow must not try to create or read Namespace objects.
           # Rotated on every deploy so a DSN change takes effect here,
           # not by hand-editing a Secret in the cluster.
           kubectl -n "$NAMESPACE" create secret generic portal-database \
