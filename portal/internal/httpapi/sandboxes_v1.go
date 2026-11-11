@@ -12,10 +12,12 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"time"
 
 	"github.com/tastyeffectco/sandboxd/portal/internal/apikeys"
 	"github.com/tastyeffectco/sandboxd/portal/internal/db"
+	"github.com/tastyeffectco/sandboxd/portal/internal/quota"
 	"github.com/tastyeffectco/sandboxd/portal/internal/sandboxd"
 	"github.com/tastyeffectco/sandboxd/portal/internal/tenants"
 )
@@ -62,6 +64,51 @@ func (s *Server) handleV1CreateSandbox(w http.ResponseWriter, r *http.Request) {
 	s.withAPIKey(w, r, "sandbox:create", func(w http.ResponseWriter, r *http.Request, key apikeys.Key) {
 		if !s.requireSandboxd(w) {
 			return
+		}
+		// P5 rate limit: token bucket per key, refill rate from the
+		// org's plan. Refusal is 429 rate_limited with Retry-After.
+		if s.Limiter != nil {
+			plan, _ := quota.LoadPlan(r.Context(), s.Pool, key.OrgID)
+			rps := plan.RateLimitRPS
+			if rps <= 0 {
+				rps = 2 // free plan default; LoadPlan never returns 0 for known plans
+			}
+			if ok, retry := s.Limiter.Take(key.KeyID, rps, 1); !ok {
+				secs := int(retry.Round(time.Second).Seconds())
+				if secs < 1 {
+					secs = 1
+				}
+				w.Header().Set("Retry-After", strconv.Itoa(secs))
+				writeErr(w, http.StatusTooManyRequests, "rate_limited",
+					"too many sandbox:create requests; retry after the backoff")
+				return
+			}
+		}
+		// P5 quota: refuse when the org's running-sandbox count is at
+		// the plan ceiling. ErrExceeded → 429 quota_exceeded.
+		if s.QuotaEnabled {
+			plan, err := quota.LoadPlan(r.Context(), s.Pool, key.OrgID)
+			if err != nil && !errors.Is(err, quota.ErrUnknownPlan) {
+				s.Log.Error("quota plan load failed", "org_id", key.OrgID, "error", err.Error())
+				writeErr(w, http.StatusInternalServerError, "internal", "could not load plan")
+				return
+			}
+			if err == nil {
+				if err := quota.CheckConcurrentSandboxes(r.Context(), s.Pool, key.OrgID, plan); err != nil {
+					if errors.Is(err, quota.ErrExceeded) {
+						writeErr(w, http.StatusTooManyRequests, "quota_exceeded",
+							"org has reached its concurrent sandbox quota; stop a sandbox or upgrade the plan")
+						return
+					}
+					s.Log.Error("quota check failed", "org_id", key.OrgID, "error", err.Error())
+					writeErr(w, http.StatusInternalServerError, "internal", "could not check quota")
+					return
+				}
+			}
+			// ErrUnknownPlan: fall through with no quota check
+			// (the org predates the plans seed, or a custom plan
+			// id is missing from the catalogue). Usage recording
+			// still works; only the ceiling is skipped.
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, 65536)
 		var body createSandboxBody

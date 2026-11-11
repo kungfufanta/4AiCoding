@@ -26,6 +26,7 @@ import (
 	"github.com/tastyeffectco/sandboxd/portal/internal/logging"
 	"github.com/tastyeffectco/sandboxd/portal/internal/oidcauth"
 	"github.com/tastyeffectco/sandboxd/portal/internal/passwordauth"
+	"github.com/tastyeffectco/sandboxd/portal/internal/ratelimit"
 	"github.com/tastyeffectco/sandboxd/portal/internal/sandboxd"
 	"github.com/tastyeffectco/sandboxd/portal/internal/session"
 	"github.com/tastyeffectco/sandboxd/portal/internal/webfs"
@@ -141,6 +142,11 @@ func run() error {
 		PublicURL:     cfg.PublicURL,
 		SecureCookies: strings.HasPrefix(cfg.PublicURL, "https://"),
 		SessionTTL:    cfg.SessionTTL,
+		// P5: quota + rate limit. QuotaEnabled stays true in
+		// production; tests toggle it off to isolate behaviour from
+		// the plan catalogue.
+		QuotaEnabled: true,
+		Limiter:      ratelimit.New(),
 	}
 	mux := srv.Handler()
 	// The SPA (embedded via internal/webfs) rides on the same origin:

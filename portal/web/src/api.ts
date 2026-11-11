@@ -97,6 +97,24 @@ export type ExecResult = {
   duration_ms?: number;
 };
 
+// P5: Usage rollup + daily series for the dashboard page.
+export type UsagePlan = {
+  plan_id: string;
+  plan_name: string;
+  monthly_vcpu_seconds: number;
+  used_vcpu_seconds: number;
+  max_concurrent_sandboxes: number;
+  running_sandboxes: number;
+};
+export type UsageSeriesPoint = { day: string; kind: string; quantity: number };
+export type UsageResponse = {
+  from: string;
+  to: string;
+  kind: string;
+  series: UsageSeriesPoint[];
+  plan: UsagePlan;
+};
+
 export class ApiError extends Error {
   status: number;
   code: string;
@@ -180,6 +198,16 @@ export const api = {
     `/api/orgs/${orgID}/sandboxes/${encodeURIComponent(id)}/logs?tail=${opts?.tail ?? 500}${opts?.follow ? "&follow=true" : ""}`,
   sandboxMetricsStreamUrl: (orgID: string, id: string) =>
     `/api/orgs/${orgID}/sandboxes/${encodeURIComponent(id)}/metrics/stream?interval=2`,
+  // P5: Usage rollup for the dashboard page. Window defaults to the
+  // last 30 days; kind="" returns both series.
+  getUsage: (orgID: string, opts?: { from?: string; to?: string; kind?: string }) => {
+    const q = new URLSearchParams();
+    if (opts?.from) q.set("from", opts.from);
+    if (opts?.to) q.set("to", opts.to);
+    if (opts?.kind) q.set("kind", opts.kind);
+    const s = q.toString();
+    return call<UsageResponse>("GET", `/api/orgs/${orgID}/usage${s ? `?${s}` : ""}`);
+  },
   logout: () => call<void>("POST", "/auth/logout"),
   chatStatus: () => call<ChatStatus>("GET", "/api/chat/status"),
   listChats: (orgID: string) => call<ChatConversation[]>("GET", `/api/orgs/${orgID}/chats`),
