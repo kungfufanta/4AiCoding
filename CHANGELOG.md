@@ -6,6 +6,27 @@ All notable changes to 4AiCoding. The project started from
 
 ## Unreleased
 
+### Portal P1 — modern dashboard UI (docs/PORTAL_PLAN_V2.md)
+- The dashboard is rebuilt on Tailwind CSS 4 + Radix primitives with an
+  app shell: sidebar navigation, org switcher, user menu and dark/light
+  theme following `prefers-color-scheme` (toggle persisted). Routes are
+  real URLs (`/orgs/:orgSlug/projects|members|audit`) with SPA fallback;
+  the state-tab single file is gone.
+- Native `prompt()`/`alert()` replaced by dialogs and toasts; destructive
+  actions (role changes) confirm first; loading skeletons and empty
+  states everywhere.
+- New accept-invite page (`/invites/{orgID}?token=…`) — the invite API
+  existed in S1 but had no UI, so invite links were dead ends.
+- SSO deep links: `GET /auth/login?next=/invites/…` returns the user to
+  where they started after the provider round-trip (same-origin paths
+  only, `sanitizeNext`).
+- CSP relaxed to `style-src 'self' 'unsafe-inline'` because Radix
+  positions dialogs/menus with inline style attributes; `script-src`
+  stays strict `'self'`.
+- New `preview-portal` workflow: compose stack + Playwright drives
+  login, project creation, the invite flow, audit, dark mode and a
+  390 px mobile viewport, attaching a screenshot per screen to the run.
+
 ### Portal P0: no default admin password
 - The bootstrap password login no longer defaults to `admin/admin123`.
   It is off unless `PORTAL_ADMIN_PASSWORD` is set (min 12 characters);

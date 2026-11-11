@@ -3,7 +3,10 @@
 // index.html so `go build ./...` works without a web build; the
 // Dockerfile overwrites the directory with the real Vite output
 // before compiling. S1 mounts the BFF API next to it with the
-// same-origin cookie sessions (PORTAL_PLAN 3.1).
+// same-origin cookie sessions (PORTAL_PLAN 3.1). P1 relaxes CSP
+// style-src to 'unsafe-inline' because Radix positions dialogs and
+// menus with inline style attributes; script-src stays strict 'self'
+// (PORTAL_PLAN_V2 §8).
 package webfs
 
 import (
@@ -31,7 +34,7 @@ func Handler() http.Handler {
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("Referrer-Policy", "same-origin")
 		h.Set("Content-Security-Policy",
-			"default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'")
+			"default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'")
 		if strings.HasPrefix(r.URL.Path, "/api") || strings.HasPrefix(r.URL.Path, "/healthz") || strings.HasPrefix(r.URL.Path, "/readyz") {
 			http.NotFound(w, r)
 			return
