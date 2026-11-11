@@ -80,7 +80,7 @@ func (f *fakeGateway) handler() http.HandlerFunc {
 // verifier and the webhook secret.
 func setupGateway(t *testing.T) (*Server, *fakeGateway) {
 	t.Helper()
-	srv := setupBFF(t)                                      // skips itself without PORTAL_TEST_DATABASE_URL
+	srv := setupBFF(t) // skips itself without PORTAL_TEST_DATABASE_URL
 	fake := &fakeGateway{}
 	sbx := httptest.NewServer(fake.handler())
 	t.Cleanup(sbx.Close)
