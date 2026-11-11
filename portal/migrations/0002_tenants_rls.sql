@@ -141,4 +141,23 @@ GRANT USAGE ON SCHEMA public TO portal_app;
 GRANT SELECT, INSERT, UPDATE, DELETE
     ON users, orgs, memberships, invites, projects, audit_events, web_sessions
     TO portal_app;
-GRANT portal_app TO CURRENT_USER;
+-- Skip the grant when the login can already SET ROLE portal_app:
+-- roles are cluster-wide, so portal_app may have been created by
+-- another login (another portal database on the same server, or a
+-- DBA), and re-granting it then fails with 42501 although nothing is
+-- missing. PostgreSQL 16+ tracks the SET option separately (a
+-- CREATEROLE creator holds ADMIN but not SET), older versions do not.
+DO $$
+BEGIN
+    IF NOT pg_has_role(current_user, 'portal_app',
+            CASE WHEN current_setting('server_version_num')::int >= 160000
+                 THEN 'SET' ELSE 'MEMBER' END) THEN
+        BEGIN
+            EXECUTE format('GRANT portal_app TO %I', current_user);
+        EXCEPTION WHEN insufficient_privilege THEN
+            RAISE EXCEPTION 'login % cannot grant itself role portal_app', current_user
+                USING HINT = format('As a superuser run: GRANT portal_app TO %I;', current_user);
+        END;
+    END IF;
+END
+$$;
