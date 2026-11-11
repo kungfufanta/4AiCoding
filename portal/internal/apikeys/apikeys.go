@@ -167,6 +167,7 @@ type Verifier struct {
 }
 
 type cacheEntry struct {
+	keyID    string
 	key      Key
 	ok       bool
 	cachedAt time.Time
@@ -179,64 +180,88 @@ func (v *Verifier) ttl() time.Duration {
 	return 60 * time.Second
 }
 
-// Verify resolves a presented full key string. Invalid keys get a
-// negative cache entry, so a flood of bad keys does not hammer
-// Postgres; entries live for TTL either way.
+// Verify resolves a presented full key string. Results are cached by
+// key id AND secret digest: a cached success never authenticates a
+// different secret, and a wrong secret (negative entry) never locks
+// out the real one. Database errors are not cached.
 func (v *Verifier) Verify(ctx context.Context, presented string) (Key, error) {
 	keyID, secret, err := Parse(presented)
 	if err != nil {
 		return Key{}, err
 	}
+	ck := cacheKey(keyID, secret)
 
-	if v.cache != nil {
-		v.mu.RLock()
-		entry, hit := v.cache[keyID]
-		v.mu.RUnlock()
-		if hit && time.Since(entry.cachedAt) < v.ttl() {
-			if !entry.ok {
-				return Key{}, ErrInvalid
-			}
-			// Expiry checked at cache time can lapse inside the
-			// TTL window — re-check before honouring the entry.
-			if !entry.key.ExpiresAt.IsZero() && !time.Now().Before(entry.key.ExpiresAt) {
-				v.Invalidate(keyID)
-				return Key{}, ErrInvalid
-			}
-			return entry.key, nil
+	v.mu.RLock()
+	entry, hit := v.cache[ck]
+	v.mu.RUnlock()
+	if hit && time.Since(entry.cachedAt) < v.ttl() {
+		if !entry.ok {
+			return Key{}, ErrInvalid
 		}
+		// Expiry checked at cache time can lapse inside the
+		// TTL window — re-check before honouring the entry.
+		if !entry.key.ExpiresAt.IsZero() && !time.Now().Before(entry.key.ExpiresAt) {
+			v.Invalidate(keyID)
+			return Key{}, ErrInvalid
+		}
+		return entry.key, nil
 	}
 
 	key, err := v.lookup(ctx, keyID, secret)
-	if err != nil {
-		v.remember(keyID, cacheEntry{ok: false, cachedAt: time.Now()})
+	switch {
+	case errors.Is(err, ErrInvalid):
+		v.remember(ck, cacheEntry{keyID: keyID, ok: false, cachedAt: time.Now()})
+		return Key{}, err
+	case err != nil:
 		return Key{}, err
 	}
-	v.remember(keyID, cacheEntry{key: key, ok: true, cachedAt: time.Now()})
+	v.remember(ck, cacheEntry{keyID: keyID, key: key, ok: true, cachedAt: time.Now()})
 	return key, nil
 }
 
-// Invalidate drops a cache entry (called on revoke, so revocation is
-// effective immediately in the process that saw it).
-func (v *Verifier) Invalidate(keyID string) {
-	if v == nil || v.cache == nil {
-		return
-	}
-	v.mu.Lock()
-	delete(v.cache, keyID)
-	v.mu.Unlock()
+// cacheKey binds a cache entry to the exact presented secret.
+func cacheKey(keyID, secret string) string {
+	return keyID + ":" + HashSecret(secret)
 }
 
-func (v *Verifier) remember(keyID string, entry cacheEntry) {
+// Invalidate drops every cache entry of a key id (called on revoke,
+// so revocation is effective immediately in the process that saw it).
+func (v *Verifier) Invalidate(keyID string) {
 	if v == nil {
 		return
 	}
+	v.mu.Lock()
+	for k, e := range v.cache {
+		if e.keyID == keyID {
+			delete(v.cache, k)
+		}
+	}
+	v.mu.Unlock()
+}
+
+func (v *Verifier) remember(ck string, entry cacheEntry) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
 	if v.cache == nil {
 		v.cache = make(map[string]cacheEntry)
 	}
-	v.mu.Lock()
-	v.cache[keyID] = entry
-	v.mu.Unlock()
+	// Bound memory against a flood of random secrets: drop expired
+	// entries once the map grows large.
+	if len(v.cache) >= maxCacheEntries {
+		for k, e := range v.cache {
+			if time.Since(e.cachedAt) >= v.ttl() {
+				delete(v.cache, k)
+			}
+		}
+		if len(v.cache) >= maxCacheEntries {
+			v.cache = make(map[string]cacheEntry)
+		}
+	}
+	v.cache[ck] = entry
 }
+
+// maxCacheEntries caps the verify cache.
+const maxCacheEntries = 10000
 
 // lookup calls the SECURITY DEFINER verifier and maps the row. The
 // function returns only identity columns — key_id comes from the

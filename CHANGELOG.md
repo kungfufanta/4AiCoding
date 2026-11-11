@@ -6,6 +6,14 @@ All notable changes to 4AiCoding. The project started from
 
 ## Unreleased
 
+### Portal P2 fix: API key verify cache
+- The 60 s verify cache was keyed by the public key id only. For a
+  minute after a key was used, any secret with that key id
+  authenticated at `POST /v1/tokens`, and a wrong secret cached a
+  negative entry that locked the real key out. Entries are now keyed
+  by key id + sha256(secret); database errors are not cached; the
+  cache is bounded and its map access is race-free.
+
 ### Portal P2 — API keys and agent tokens (docs/PORTAL_PLAN_V2.md)
 - API keys (`sbx_live_<keyid>_<secret>`, migration `0004`): the
   dashboard can create, list and revoke scoped keys
