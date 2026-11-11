@@ -56,7 +56,7 @@ const SHOTS = process.env.SHOTS || "shots";
   await page.getByLabel("Variable value").fill("world");
   await shot("create");
   await page.getByRole("button", { name: "Create sandbox" }).click();
-  const open = page.getByRole("button", { name: /^Open sbx-/ });
+  const open = page.getByRole("button", { name: /^Open [0-9A-HJKMNP-TV-Z]{26}$/ });
   await open.waitFor({ timeout: 120000 });
   const id = (await open.innerText()).trim().replace(/^Open\s+/, "");
   await open.click();
