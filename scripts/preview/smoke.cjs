@@ -1,9 +1,9 @@
 // Browser smoke test of the console against a running stack.
 //   BASE=http://console.localhost:18080 ADMIN_USER=admin ADMIN_PASS=... SHOTS=./shots node smoke.cjs
-// Signs in (or runs first-run setup), creates a sandbox, runs a command,
+// Signs in (or runs first-run setup), lands on the overview, creates a sandbox, runs a command,
 // checks metrics, tries an egress change the policy refuses, edits the
 // policy, opens every admin tab, verifies the audit chain, mints an API key,
-// deletes the sandbox and signs out. Screenshots of each step go to SHOTS.
+// opens the overview, monitoring and users pages, deletes the sandbox and signs out. Screenshots of each step go to SHOTS.
 const { chromium } = require("playwright");
 const fs = require("fs");
 
@@ -38,6 +38,10 @@ const SHOTS = process.env.SHOTS || "shots";
   if (await setup.isVisible()) await page.getByLabel("Confirm password").fill(PASS);
   await shot("login");
   await page.locator("form button[type=submit]").click();
+  await page.getByRole("heading", { name: "Overview" }).waitFor();
+  await page.getByText("sandboxes running").waitFor();
+  await shot("overview");
+  await page.locator("nav.top").getByRole("link", { name: "Sandboxes" }).click();
   await page.getByRole("heading", { name: "Sandboxes" }).waitFor();
 
   step("create sandbox");
@@ -89,8 +93,19 @@ const SHOTS = process.env.SHOTS || "shots";
   await page.getByRole("button", { name: "Create key" }).click();
   await page.getByText("Copy this key now").waitFor();
 
+  step("overview, monitoring, users");
+  await page.locator("nav.top").getByRole("link", { name: "Overview" }).click();
+  await page.getByRole("heading", { name: "Recent sandboxes" }).waitFor();
+  await page.locator("nav.top").getByRole("link", { name: "Monitoring" }).click();
+  await page.getByRole("heading", { name: "Per-sandbox stats" }).waitFor();
+  await page.getByText("running of").waitFor();
+  await shot("monitoring");
+  await page.locator("nav.top").getByRole("link", { name: "Users" }).click();
+  await page.getByRole("heading", { name: /^Accounts/ }).waitFor();
+  await shot("users");
+
   step("delete sandbox + sign out");
-  await page.getByRole("link", { name: "Sandboxes" }).click();
+  await page.locator("nav.top").getByRole("link", { name: "Sandboxes" }).click();
   await page.getByRole("button", { name: "Delete" }).first().click();
   await page.getByText("No sandboxes yet.").waitFor({ timeout: 60000 });
   await page.getByRole("button", { name: "Sign out" }).click();
