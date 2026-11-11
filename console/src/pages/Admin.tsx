@@ -199,7 +199,8 @@ function NodesTab({ isAdmin }: { isAdmin: boolean }) {
     <Section title="Nodes">
       <p className="muted">
         The control plane itself is the <code>local</code> node; workers register with the worker token and stay online
-        by heartbeating. A draining node refuses new sandboxes; its running sandboxes are untouched.
+        by heartbeating. A draining node refuses new sandboxes; its running sandboxes are untouched. Host CPU, memory, disk
+        and network per node, and capacity change requests, are on <Link to="/nodes">Nodes</Link>.
       </p>
       {!data ? (
         <Loading error={error} />

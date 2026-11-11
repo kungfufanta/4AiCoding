@@ -17,8 +17,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
+	"github.com/tastyeffectco/sandboxd/control-plane/internal/hosttelemetry"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/store"
 )
 
@@ -208,6 +210,20 @@ type HeartbeatRequest struct {
 	NodeID   string          `json:"node_id"`
 	Capacity *store.Capacity `json:"capacity,omitempty"`
 	Used     *store.Capacity `json:"used,omitempty"`
+	// Telemetry is the host sample of the machine the worker runs on
+	// (package hosttelemetry). A control plane older than this field
+	// answers 400 "unknown field"; the agent then stops sending it.
+	Telemetry *hosttelemetry.Snapshot `json:"telemetry,omitempty"`
+}
+
+// IsUnknownTelemetryField reports a 400 from a control plane that does
+// not know the heartbeat's telemetry field yet.
+func IsUnknownTelemetryField(err error) bool {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusBadRequest {
+		return false
+	}
+	return strings.Contains(apiErr.Body, "unknown field") && strings.Contains(apiErr.Body, "telemetry")
 }
 
 type HeartbeatResponse struct {

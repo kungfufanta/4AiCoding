@@ -42,6 +42,17 @@ capacity:
 
 heartbeatIntervalSeconds: 10
 
+# Host telemetry: the worker samples the node it runs on (CPU, memory,
+# disk, network from procfs/statfs) and sends it with every heartbeat; the
+# console shows it under Nodes. CPU and memory are the node's numbers even
+# inside the pod; disk is the filesystem of diskPath ("" = the container
+# root, i.e. the node's container storage; the executor's data dir in
+# executor mode); network is the pod's own namespace unless the pod uses
+# the host network (executor mode does).
+telemetry:
+  enabled: true
+  diskPath: ""
+
 executor:
   enabled: false
   # Sandbox image the node runs (must be available to the node's Docker).

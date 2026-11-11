@@ -675,3 +675,30 @@ ul.activity li:last-child {
   border-radius: 6px;
   margin-bottom: 6px;
 }
+
+/* --- node resources -------------------------------------------------------- */
+
+.meter-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+.meter {
+  height: 8px;
+  border-radius: 4px;
+  background: var(--line);
+  overflow: hidden;
+}
+.meter > span {
+  display: block;
+  height: 100%;
+  background: var(--ok);
+  transition: width 0.4s ease;
+}
+.meter.warn > span {
+  background: #c98a00;
+}
+.meter.crit > span {
+  background: var(--danger);
+}

@@ -17,6 +17,7 @@ import (
 
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/api"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/fleet"
+	"github.com/tastyeffectco/sandboxd/control-plane/internal/hosttelemetry"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/store"
 )
 
@@ -25,8 +26,12 @@ import (
 // the control plane forgot the node: register again. used (optional)
 // reports current usage on each beat; onBeat (optional) receives every
 // successful heartbeat reply.
+//
+// telemetry (optional) samples the host on every beat; when the control
+// plane is too old to accept it, the agent logs once and stops sending it.
 func runFleetAgent(ctx context.Context, log *slog.Logger, client *fleet.Client, req fleet.RegisterRequest,
-	interval time.Duration, used func(context.Context) *store.Capacity, onBeat func(*fleet.HeartbeatResponse)) {
+	interval time.Duration, used func(context.Context) *store.Capacity, onBeat func(*fleet.HeartbeatResponse),
+	telemetry *hosttelemetry.Collector) {
 	delay := registerBackoffStart
 	for {
 		resp, err := client.Register(ctx, req)
@@ -55,7 +60,14 @@ func runFleetAgent(ctx context.Context, log *slog.Logger, client *fleet.Client, 
 		if used != nil {
 			beat.Used = used(ctx)
 		}
+		beat.Telemetry = telemetry.Collect()
 		resp, err := client.Heartbeat(ctx, beat)
+		if err != nil && beat.Telemetry != nil && fleet.IsUnknownTelemetryField(err) {
+			log.Warn("control plane does not accept host telemetry yet; heartbeating without it (upgrade the control plane)")
+			telemetry = nil
+			beat.Telemetry = nil
+			resp, err = client.Heartbeat(ctx, beat)
+		}
 		if ctx.Err() != nil {
 			return
 		}
@@ -131,7 +143,7 @@ func loadNodeAPIToken(stateDir string) (string, error) {
 // runExecutorAgent joins the fleet as an executor: it registers this node
 // (with its API token), reports usage, applies the drain state to its own
 // local node and the control plane's policy to its own store.
-func runExecutorAgent(ctx context.Context, log *slog.Logger, st *store.Store, srv *api.Server, cfg executorConfig) {
+func runExecutorAgent(ctx context.Context, log *slog.Logger, st *store.Store, srv *api.Server, cfg executorConfig, telemetry *hosttelemetry.Collector) {
 	var capacity store.Capacity
 	if n, err := st.GetNode(ctx, cfg.NodeID); err == nil {
 		capacity = n.Capacity
@@ -167,5 +179,5 @@ func runExecutorAgent(ctx context.Context, log *slog.Logger, st *store.Store, sr
 		}
 	}
 	log.Info("executor: joining the fleet", "node_id", cfg.NodeID, "control_plane", cfg.ControlPlaneURL, "address", cfg.Address)
-	runFleetAgent(ctx, log, client, req, cfg.Interval, used, onBeat)
+	runFleetAgent(ctx, log, client, req, cfg.Interval, used, onBeat, telemetry)
 }

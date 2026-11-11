@@ -169,6 +169,13 @@ type Server struct {
 	// M6 — fleet. NodeLease is how long after a worker's last heartbeat
 	// it is still reported online (fleet.DefaultLease when 0).
 	NodeLease time.Duration
+	// nodeHist is the in-memory host telemetry history per node
+	// (v1_node_metrics.go).
+	nodeHist nodeHistory
+	// GitOps opens capacity change requests as pull requests against the
+	// deploy repo (v1_node_change.go). nil = not configured: the console
+	// still previews the change for a manual commit.
+	GitOps *GitOpsConfig
 }
 
 // Handler returns the http.Handler ready for ListenAndServe.
@@ -246,6 +253,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/nodes/{id}/drain", s.observe("POST /v1/nodes/{id}/drain", s.v1DrainNode))
 	mux.HandleFunc("DELETE /v1/nodes/{id}", s.observe("DELETE /v1/nodes/{id}", s.v1DeleteNode))
 	mux.HandleFunc("POST /v1/nodes/{id}/undrain", s.observe("POST /v1/nodes/{id}/undrain", s.v1UndrainNode))
+	mux.HandleFunc("GET /v1/nodes/{id}/metrics", s.observe("GET /v1/nodes/{id}/metrics", s.v1NodeMetrics))
+	mux.HandleFunc("GET /v1/nodes/{id}/change-requests", s.observe("GET /v1/nodes/{id}/change-requests", s.v1ListNodeChanges))
+	mux.HandleFunc("POST /v1/nodes/{id}/change-requests", s.observe("POST /v1/nodes/{id}/change-requests", s.v1CreateNodeChange))
 	mux.HandleFunc("GET /v1/capacity", s.observe("GET /v1/capacity", s.v1FleetCapacity))
 
 	// Console dashboard aggregations (read-only; every role).

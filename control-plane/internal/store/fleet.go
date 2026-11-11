@@ -58,6 +58,9 @@ type Node struct {
 	DrainState   string
 	RegisteredAt time.Time
 	HeartbeatAt  time.Time
+	// Telemetry is the latest host telemetry snapshot (JSON, see package
+	// hosttelemetry); nil when the node never reported one.
+	Telemetry json.RawMessage
 }
 
 // Placement is the in-memory mirror of a `sandbox_placements` row.
@@ -87,10 +90,10 @@ func ValidNodeID(id string) bool {
 
 func scanNode(sc scanner) (*Node, error) {
 	n := &Node{}
-	var capacityJSON, usedJSON string
+	var capacityJSON, usedJSON, telemetryJSON string
 	var registered, heartbeat int64
 	err := sc.Scan(&n.NodeID, &n.Role, &n.Address, &n.Version,
-		&capacityJSON, &usedJSON, &n.DrainState, &registered, &heartbeat)
+		&capacityJSON, &usedJSON, &n.DrainState, &registered, &heartbeat, &telemetryJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -99,6 +102,9 @@ func scanNode(sc scanner) (*Node, error) {
 	}
 	_ = json.Unmarshal([]byte(capacityJSON), &n.Capacity)
 	_ = json.Unmarshal([]byte(usedJSON), &n.Used)
+	if telemetryJSON != "" && telemetryJSON != "{}" {
+		n.Telemetry = json.RawMessage(telemetryJSON)
+	}
 	if n.DrainState == "" {
 		n.DrainState = DrainActive
 	}
@@ -107,7 +113,7 @@ func scanNode(sc scanner) (*Node, error) {
 	return n, nil
 }
 
-const nodeSelectCols = `node_id, role, address, version, capacity_json, used_json, drain_state, registered_at, heartbeat_at`
+const nodeSelectCols = `node_id, role, address, version, capacity_json, used_json, drain_state, registered_at, heartbeat_at, telemetry_json`
 
 // GetNode returns one fleet member or ErrNotFound.
 func (s *Store) GetNode(ctx context.Context, nodeID string) (*Node, error) {
@@ -213,6 +219,25 @@ func (s *Store) NodeHeartbeat(ctx context.Context, nodeID string, capacity *Capa
 		return nil, err
 	}
 	return out, nil
+}
+
+// SetNodeTelemetry stores a node's latest host telemetry snapshot (raw
+// JSON, validated by the caller). ErrNotFound for an unknown id.
+func (s *Store) SetNodeTelemetry(ctx context.Context, nodeID string, telemetry json.RawMessage) error {
+	if len(telemetry) == 0 {
+		return nil
+	}
+	return s.submit(ctx, func(db *sql.DB) error {
+		res, err := db.ExecContext(ctx,
+			`UPDATE nodes SET telemetry_json = ? WHERE node_id = ?`, string(telemetry), nodeID)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return ErrNotFound
+		}
+		return nil
+	})
 }
 
 // SetNodeDrain flips a node's drain state. ErrNotFound for an unknown id.

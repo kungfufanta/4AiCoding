@@ -7,7 +7,7 @@ import { fmtBytes, Loading, Section, useLoad } from "../ui";
 // /v1/monitoring and the per-sandbox SSE log endpoint. The original console
 // ships no chart component, so the two area charts are tiny inline SVGs.
 
-function Area({ points, max, unit }: { points: number[]; max: number; unit: string }) {
+export function Area({ points, max, unit }: { points: number[]; max: number; unit: string }) {
   const w = 560;
   const h = 120;
   const step = points.length > 1 ? w / (points.length - 1) : w;

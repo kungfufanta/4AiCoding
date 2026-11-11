@@ -11,6 +11,7 @@ import { AdminPage } from "./pages/Admin";
 import { OverviewPage } from "./pages/Overview";
 import { MonitoringPage } from "./pages/Monitoring";
 import { UsersPage } from "./pages/Users";
+import { NodeDetailPage, NodesPage } from "./pages/Nodes";
 import "./styles.css";
 
 function App() {
@@ -44,6 +45,8 @@ function App() {
   else if (path === "/sandboxes/new") page = <SandboxConfigPage />;
   else if (path === "/monitoring") page = <MonitoringPage />;
   else if (path === "/users") page = <UsersPage />;
+  else if (path === "/nodes" || path === "/nodes/") page = <NodesPage />;
+  else if ((m = path.match(/^\/nodes\/([^/]+)$/))) page = <NodeDetailPage id={m[1]} />;
   // pages/Permissions.tsx (R/W/X matrix) is not routed yet: the control plane
   // has no per-sandbox grants to store or enforce, so the page would only
   // render a 404. Wire it back once /v1/permissions exists.
@@ -82,6 +85,11 @@ function App() {
           {can(me, "operator") && (
             <Link to="/monitoring" className={path.startsWith("/monitoring") ? "active" : ""}>
               Monitoring
+            </Link>
+          )}
+          {can(me, "operator") && (
+            <Link to="/nodes" className={path.startsWith("/nodes") ? "active" : ""}>
+              Nodes
             </Link>
           )}
           {can(me, "admin") && (
