@@ -123,22 +123,24 @@ export function SandboxListPage() {
                   )}
                 </td>
                 <td className="small">{fmtTime(sb.last_active_at)}</td>
-                <td className="row right">
-                  {write && sb.status === "stopped" && (
-                    <button className="ghost" disabled={busy} onClick={() => act(sb, "start")}>
-                      Start
-                    </button>
-                  )}
-                  {write && sb.status === "running" && (
-                    <button className="ghost" disabled={busy} onClick={() => act(sb, "stop")}>
-                      Stop
-                    </button>
-                  )}
-                  {write && (
-                    <button className="danger ghost" disabled={busy} onClick={() => act(sb, "delete")}>
-                      Delete
-                    </button>
-                  )}
+                <td className="actions">
+                  <div className="row right">
+                    {write && sb.status === "stopped" && (
+                      <button className="ghost" disabled={busy} onClick={() => act(sb, "start")}>
+                        Start
+                      </button>
+                    )}
+                    {write && sb.status === "running" && (
+                      <button className="ghost" disabled={busy} onClick={() => act(sb, "stop")}>
+                        Stop
+                      </button>
+                    )}
+                    {write && (
+                      <button className="danger ghost" disabled={busy} onClick={() => act(sb, "delete")}>
+                        Delete
+                      </button>
+                    )}
+                  </div>
                 </td>
               </tr>
             ))}

@@ -253,3 +253,44 @@ export function sse(path: string, onData: (line: string) => void, onEnd?: () => 
   };
   return () => es.close();
 }
+
+// --- template views (merged from the SBX Console template) -----------------
+
+export interface Overview {
+  sandboxes: { total: number; running: number; stopped: number; creating: number; error: number };
+  /** null unless the caller is an admin */
+  users: { total: number; admins: number; operators: number; viewers: number; disabled: number } | null;
+  ports_exposed: number;
+  approvals_open: number;
+  net_events_24h: { total: number; blocked: number };
+  recent: Sandbox[];
+  /** newest first; empty unless the caller is an admin */
+  audit: { at: string; actor: string; action: string; target?: string; detail?: string }[];
+}
+
+/** One user × sandbox cell of the R/W/X matrix. W/X imply R (API enforces). */
+export interface PermGrant {
+  user_id: string;
+  sandbox_id: string;
+  r: boolean;
+  w: boolean;
+  x: boolean;
+}
+
+export interface PermMatrix {
+  users: { id: string; username: string; role: Role; disabled: boolean }[];
+  sandboxes: { id: string; status: string; image: string }[];
+  grants: PermGrant[];
+}
+
+export interface Monitoring {
+  fleet: { total: number; running: number; avg_cpu: number; mem_used_mb: number; mem_limit_mb: number };
+  sandboxes: { id: string; cpu_percent: number; mem_usage_bytes: number; mem_limit_bytes: number; pids: number }[];
+  history: { t: string; cpu: number; mem_mb: number }[];
+}
+
+export const getOverview = () => get<Overview>("/v1/overview");
+export const getPermissions = () => get<PermMatrix>("/v1/permissions");
+export const putPermissions = (grants: PermGrant[]) =>
+  put<{ ok: boolean; grants: number }>("/v1/permissions", { grants });
+export const getMonitoring = () => get<Monitoring>("/v1/monitoring");

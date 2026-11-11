@@ -458,16 +458,18 @@ function ActivityCard({
                   </span>
                 </td>
                 {write && (
-                  <td className="row right">
-                    {v.ok ? (
-                      <button className="ghost danger" disabled={busy} onClick={() => block([h.host])}>
-                        Block
-                      </button>
-                    ) : (
-                      <button className="ghost" disabled={busy} onClick={() => allow([h.host])}>
-                        Allow
-                      </button>
-                    )}
+                  <td className="actions">
+                    <div className="row right">
+                      {v.ok ? (
+                        <button className="ghost danger" disabled={busy} onClick={() => block([h.host])}>
+                          Block
+                        </button>
+                      ) : (
+                        <button className="ghost" disabled={busy} onClick={() => allow([h.host])}>
+                          Allow
+                        </button>
+                      )}
+                    </div>
                   </td>
                 )}
               </tr>
