@@ -13,7 +13,6 @@ package sandboxd
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -135,7 +134,28 @@ type Client struct {
 	APIKey string
 	// HTTP bounds one call; nil = 30 s.
 	HTTP *http.Client
-	Log  *slog.Logger
+	// Stream carries calls whose length the caller bounds by context:
+	// SSE log/metrics follows and exec (the gateway caps it at
+	// maxExecSeconds). http.Client.Timeout covers reading the body, so
+	// running these on HTTP would cut every stream at the 30 s default.
+	Stream *http.Client
+	Log    *slog.Logger
+}
+
+// streamClient returns the client for context-bounded long calls.
+func (c *Client) streamClient() *http.Client {
+	if c.Stream != nil {
+		return c.Stream
+	}
+	return &http.Client{}
+}
+
+// httpClient returns the per-call-timeout client.
+func (c *Client) httpClient() *http.Client {
+	if c.HTTP != nil {
+		return c.HTTP
+	}
+	return &http.Client{Timeout: 30 * time.Second}
 }
 
 // New builds a client with the process-wide timeout.
@@ -147,6 +167,7 @@ func New(baseURL, apiKey string, timeout time.Duration) *Client {
 		BaseURL: strings.TrimRight(baseURL, "/"),
 		APIKey:  apiKey,
 		HTTP:    &http.Client{Timeout: timeout},
+		Stream:  &http.Client{},
 	}
 }
 
@@ -154,6 +175,11 @@ func New(baseURL, apiKey string, timeout time.Duration) *Client {
 // = discard). Retries once for idempotent GETs on transport errors and
 // 502/503/504.
 func (c *Client) do(ctx context.Context, method, path string, body any, out any) error {
+	return c.doWith(ctx, c.httpClient(), method, path, body, out)
+}
+
+// doWith is do on an explicit client (exec uses the stream client).
+func (c *Client) doWith(ctx context.Context, hc *http.Client, method, path string, body any, out any) error {
 	var payload []byte
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -170,7 +196,7 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 		if attempt == 1 {
 			time.Sleep(250 * time.Millisecond)
 		}
-		err := c.once(ctx, method, path, payload, out)
+		err := c.once(ctx, hc, method, path, payload, out)
 		if err == nil {
 			return nil
 		}
@@ -189,7 +215,7 @@ func retryable(err error) bool {
 	return true // transport error (timeout, connection refused…)
 }
 
-func (c *Client) once(ctx context.Context, method, path string, payload []byte, out any) error {
+func (c *Client) once(ctx context.Context, hc *http.Client, method, path string, payload []byte, out any) error {
 	var rdr io.Reader
 	if payload != nil {
 		rdr = bytes.NewReader(payload)
@@ -204,7 +230,7 @@ func (c *Client) once(ctx context.Context, method, path string, payload []byte, 
 	if c.APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+c.APIKey)
 	}
-	res, err := c.HTTP.Do(req)
+	res, err := hc.Do(req)
 	if err != nil {
 		return err
 	}
@@ -344,7 +370,8 @@ func (c *Client) Exec(ctx context.Context, id string, in ExecInput) (ExecResult,
 		body["env"] = in.Env
 	}
 	if in.Stdin != nil {
-		body["stdin_b64"] = base64.StdEncoding.EncodeToString(in.Stdin)
+		// sandboxd exec v2 takes stdin as a plain JSON string (A0).
+		body["stdin"] = string(in.Stdin)
 	}
 	if in.TimeoutS > 0 {
 		body["timeout_s"] = in.TimeoutS
@@ -353,7 +380,7 @@ func (c *Client) Exec(ctx context.Context, id string, in ExecInput) (ExecResult,
 		body["max_output_bytes"] = in.MaxOutputBytes
 	}
 	var out ExecResult
-	if err := c.do(ctx, http.MethodPost, "/v1/sandboxes/"+url.PathEscape(id)+"/exec", body, &out); err != nil {
+	if err := c.doWith(ctx, c.streamClient(), http.MethodPost, "/v1/sandboxes/"+url.PathEscape(id)+"/exec", body, &out); err != nil {
 		return ExecResult{}, err
 	}
 	return out, nil
@@ -376,7 +403,11 @@ func (c *Client) Logs(ctx context.Context, id string, tail int, follow bool) (*h
 		req.Header.Set("Authorization", "Bearer "+c.APIKey)
 	}
 	req.Header.Set("Accept", "text/plain, text/event-stream")
-	res, err := c.HTTP.Do(req)
+	hc := c.httpClient()
+	if follow {
+		hc = c.streamClient()
+	}
+	res, err := hc.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -408,7 +439,7 @@ func (c *Client) MetricsStream(ctx context.Context, id string, interval int) (*h
 	if c.APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+c.APIKey)
 	}
-	res, err := c.HTTP.Do(req)
+	res, err := c.streamClient().Do(req)
 	if err != nil {
 		return nil, err
 	}

@@ -3,6 +3,7 @@ package sandboxd
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -168,4 +169,37 @@ func errorsAs(err error, target *(*APIError)) bool {
 		err = u.Unwrap()
 	}
 	return false
+}
+
+// TestStreamsOutliveCallTimeout: the per-call timeout must not cut a
+// followed log stream or a long exec — those are bounded by the
+// caller's context (http.Client.Timeout also covers body reads).
+func TestStreamsOutliveCallTimeout(t *testing.T) {
+	srv := fakeSandboxd(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/sandboxes/sb1/exec" {
+			time.Sleep(300 * time.Millisecond)
+			_, _ = w.Write([]byte(`{"stdout":"done","exit_code":0}`))
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		for i := 0; i < 3; i++ {
+			_, _ = w.Write([]byte("data: tick\n\n"))
+			w.(http.Flusher).Flush()
+			time.Sleep(150 * time.Millisecond)
+		}
+	})
+	c := New(srv.URL, "", 100*time.Millisecond)
+	res, err := c.Logs(context.Background(), "sb1", 10, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(res.Body)
+	res.Body.Close()
+	if err != nil {
+		t.Fatalf("follow stream cut by the call timeout: %v (got %q)", err, body)
+	}
+	out, err := c.Exec(context.Background(), "sb1", ExecInput{Cmd: []string{"sleep", "1"}})
+	if err != nil || out.Stdout != "done" {
+		t.Fatalf("exec cut by the call timeout: %v %+v", err, out)
+	}
 }

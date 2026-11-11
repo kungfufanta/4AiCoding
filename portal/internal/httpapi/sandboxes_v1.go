@@ -45,6 +45,18 @@ func (s *Server) withAPIKey(w http.ResponseWriter, r *http.Request, scope string
 	h(w, r, key)
 }
 
+// keyOwnsSandbox reports whether the key may touch sandbox id: it must
+// be in the key's org AND, for a project-pinned key, in that project —
+// the same boundary create and list already enforce. Anything else is
+// the same 404 as an unknown id.
+func (s *Server) keyOwnsSandbox(ctx context.Context, key apikeys.Key, id string) bool {
+	projectID, ok := s.sandboxOwned(ctx, key.OrgID, id)
+	if !ok {
+		return false
+	}
+	return key.ProjectID == "" || projectID == key.ProjectID
+}
+
 // handleV1CreateSandbox — POST /v1/sandboxes.
 func (s *Server) handleV1CreateSandbox(w http.ResponseWriter, r *http.Request) {
 	s.withAPIKey(w, r, "sandbox:create", func(w http.ResponseWriter, r *http.Request, key apikeys.Key) {
@@ -175,6 +187,10 @@ func (s *Server) handleV1GetSandbox(w http.ResponseWriter, r *http.Request) {
 		if !s.requireSandboxd(w) {
 			return
 		}
+		if !s.keyOwnsSandbox(r.Context(), key, r.PathValue("id")) {
+			writeErr(w, http.StatusNotFound, "not_found", "sandbox not found")
+			return
+		}
 		s.getSandboxCommon(w, r, key.OrgID, r.PathValue("id"))
 	})
 }
@@ -186,7 +202,7 @@ func (s *Server) handleV1ExecSandbox(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		id := r.PathValue("id")
-		if _, ok := s.sandboxOwned(r.Context(), key.OrgID, id); !ok {
+		if !s.keyOwnsSandbox(r.Context(), key, id) {
 			writeErr(w, http.StatusNotFound, "not_found", "sandbox not found")
 			return
 		}
@@ -243,7 +259,7 @@ func (s *Server) handleV1SandboxLogs(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		id := r.PathValue("id")
-		if _, ok := s.sandboxOwned(r.Context(), key.OrgID, id); !ok {
+		if !s.keyOwnsSandbox(r.Context(), key, id) {
 			writeErr(w, http.StatusNotFound, "not_found", "sandbox not found")
 			return
 		}
@@ -261,7 +277,7 @@ func (s *Server) handleV1SandboxAction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		id := r.PathValue("id")
-		if _, ok := s.sandboxOwned(r.Context(), key.OrgID, id); !ok {
+		if !s.keyOwnsSandbox(r.Context(), key, id) {
 			writeErr(w, http.StatusNotFound, "not_found", "sandbox not found")
 			return
 		}

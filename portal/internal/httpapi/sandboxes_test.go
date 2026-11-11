@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -82,7 +81,6 @@ func (f *fakeGateway) handler() http.HandlerFunc {
 func setupGateway(t *testing.T) (*Server, *fakeGateway) {
 	t.Helper()
 	srv := setupBFF(t)                                      // skips itself without PORTAL_TEST_DATABASE_URL
-	srv.Log = slog.New(slog.NewTextHandler(os.Stderr, nil)) // TEMP-DEBUG
 	fake := &fakeGateway{}
 	sbx := httptest.NewServer(fake.handler())
 	t.Cleanup(sbx.Close)
@@ -239,6 +237,59 @@ func TestSandboxGatewayV1(t *testing.T) {
 	rec = v1do(t, srv, http.MethodGet, "/v1/sandboxes", "", "sbx_live_AAAAAAAAAAAA_wrongwrongwrongwrongwrongwrong12", nil)
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("bogus key = %d, want 401", rec.Code)
+	}
+}
+
+// TestSandboxGatewayProjectPinnedKey: a key pinned to one project
+// cannot read, exec, stop or delete a sandbox of another project in the
+// same org (404, as for a foreign org), but still reaches its own.
+func TestSandboxGatewayProjectPinnedKey(t *testing.T) {
+	srv, fake := setupGateway(t)
+	orgID, projA, keyAll, cookies := newOrgWithKey(t, srv, "gw-pin", "gw-pin@example.test")
+
+	rec := do(t, srv, http.MethodPost, "/api/orgs/"+orgID+"/projects", `{"name":"proj-b"}`, cookies...)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create project b = %d: %s", rec.Code, rec.Body.String())
+	}
+	projB := extractString(t, rec.Body.String(), "id")
+	rec = do(t, srv, http.MethodPost, "/api/orgs/"+orgID+"/api-keys",
+		`{"name":"pinned-b","scopes":["sandbox:create","sandbox:read","sandbox:exec"],"project_id":"`+projB+`"}`,
+		cookies...)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create pinned key = %d: %s", rec.Code, rec.Body.String())
+	}
+	keyB := extractString(t, rec.Body.String(), "secret")
+
+	hdr := map[string]string{"Content-Type": "application/json"}
+	rec = v1do(t, srv, http.MethodPost, "/v1/sandboxes", `{"image":"ubuntu:24.04","project_id":"`+projA+`"}`, keyAll, hdr)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create in project a = %d: %s", rec.Code, rec.Body.String())
+	}
+	sbxA := extractString(t, rec.Body.String(), "id")
+
+	for _, c := range []struct{ method, path, body string }{
+		{http.MethodGet, "/v1/sandboxes/" + sbxA, ""},
+		{http.MethodPost, "/v1/sandboxes/" + sbxA + "/exec", `{"cmd":["true"]}`},
+		{http.MethodGet, "/v1/sandboxes/" + sbxA + "/logs", ""},
+		{http.MethodPost, "/v1/sandboxes/" + sbxA + "/stop", ""},
+		{http.MethodDelete, "/v1/sandboxes/" + sbxA, ""},
+	} {
+		if rec := v1do(t, srv, c.method, c.path, c.body, keyB, hdr); rec.Code != http.StatusNotFound {
+			t.Errorf("pinned key %s %s = %d, want 404", c.method, c.path, rec.Code)
+		}
+	}
+	if len(fake.deleted) != 0 {
+		t.Fatalf("pinned key deleted another project's sandbox: %v", fake.deleted)
+	}
+
+	// Its own project still works.
+	rec = v1do(t, srv, http.MethodPost, "/v1/sandboxes", `{"image":"ubuntu:24.04"}`, keyB, hdr)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("pinned create = %d: %s", rec.Code, rec.Body.String())
+	}
+	sbxB := extractString(t, rec.Body.String(), "id")
+	if rec := v1do(t, srv, http.MethodGet, "/v1/sandboxes/"+sbxB, "", keyB, nil); rec.Code != http.StatusOK {
+		t.Errorf("pinned get own = %d: %s", rec.Code, rec.Body.String())
 	}
 }
 
