@@ -50,8 +50,19 @@ resources:
     memory: 256Mi
 
 # The image runs as nonroot (distroless); keep the guardrails on.
-podSecurityContext: {}
+# Passes PodSecurity "restricted". 65532 is the distroless "nonroot" user
+# that portal/Dockerfile runs as.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
 containerSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
   allowPrivilegeEscalation: false
   readOnlyRootFilesystem: true
   capabilities:
