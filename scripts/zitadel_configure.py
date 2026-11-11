@@ -216,12 +216,13 @@ def find_or_create_app(mgmt, pid):
 
 def search_user(mgmt, user_name):
     try:
-        r = mgmt.call("POST", "/management/v1/users/_search", {
-            "queries": [{"userNameQuery": {"userName": user_name,
-                                           "method": "TEXT_QUERY_METHOD_EQUALS"}}],
-        })
+        # list all users and match locally — the username-query filters on
+        # this build did not match the login-suffixed userName values
+        r = mgmt.call("POST", "/management/v1/users/_search", {})
         for u in r.get("result", []):
-            if u.get("userName") == user_name or u.get("preferredLoginName", "").startswith(user_name):
+            names = (u.get("userName", ""), u.get("preferredLoginName", ""))
+            if any(n == user_name or n.startswith(user_name + "@") or
+                   n.startswith(user_name) for n in names):
                 return u["id"]
     except RuntimeError as e:
         print(f"  user search for {user_name} failed: {str(e)[:150]}")
@@ -320,7 +321,8 @@ def promote_owner(mgmt, pid):
 
 def store_repo_secret(name, value):
     pk = gh_api("GET", f"/repos/{GH_REPO}/actions/secrets/public-key")
-    sealed = nacl.public.SealedBox(nacl.public.PublicKey(pk["key"].encode("utf-8")))
+    sealed = nacl.public.SealedBox(
+        nacl.public.PublicKey(base64.b64decode(pk["key"])))
     encrypted = base64.b64encode(sealed.encrypt(value.encode("utf-8"))).decode("ascii")
     gh_api("PUT", f"/repos/{GH_REPO}/actions/secrets/{name}",
            body={"encrypted_value": encrypted, "key_id": pk["key_id"]})
