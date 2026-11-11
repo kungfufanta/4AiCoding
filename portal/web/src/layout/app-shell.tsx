@@ -20,6 +20,7 @@ import {
   LayoutGrid,
   LogOut,
   Menu,
+  MessageSquare,
   Moon,
   Plus,
   ScrollText,
@@ -152,6 +153,7 @@ function Shell({ me, org }: { me: Me; org: Org }) {
 function SidebarContent({ org }: { org: Org }) {
   const base = `/orgs/${org.slug}`;
   const items = [
+    { to: `${base}/chat`, label: "Chat", icon: MessageSquare },
     { to: `${base}/projects`, label: "Projects", icon: FolderKanban },
     { to: `${base}/members`, label: "Members", icon: Users },
     { to: `${base}/api-keys`, label: "API keys", icon: KeyRound },

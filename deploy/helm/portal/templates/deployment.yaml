@@ -59,6 +59,26 @@ spec:
                   name: {{ default (include "portal.fullname" .) .Values.database.existingSecret }}
                   key: {{ .Values.adminLogin.passwordKey | default "admin-password" }}
                   optional: true
+            # Chat page LLM key (WebHub wh_ key by default): on only
+            # when this key exists in the secret.
+            - name: PORTAL_DEFAULT_LLM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ default (include "portal.fullname" .) .Values.database.existingSecret }}
+                  key: {{ .Values.chat.apiKeyKey | default "llm-api-key" }}
+                  optional: true
+            {{- if .Values.chat.baseURL }}
+            - name: PORTAL_DEFAULT_LLM_BASE_URL
+              value: {{ .Values.chat.baseURL | quote }}
+            {{- end }}
+            {{- if .Values.chat.model }}
+            - name: PORTAL_DEFAULT_LLM_MODEL
+              value: {{ .Values.chat.model | quote }}
+            {{- end }}
+            {{- if .Values.chat.flavor }}
+            - name: PORTAL_DEFAULT_LLM_FLAVOR
+              value: {{ .Values.chat.flavor | quote }}
+            {{- end }}
             {{- if .Values.publicURL }}
             - name: PORTAL_PUBLIC_URL
               value: {{ .Values.publicURL | quote }}

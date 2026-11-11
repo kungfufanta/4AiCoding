@@ -14,6 +14,7 @@ File theo dõi cho kế hoạch [`docs/PORTAL_PLAN_V2.md`](PORTAL_PLAN_V2.md). C
 | P4 | Gateway sandboxd + trang Sandboxes (S3 + UI) | ⬜ | | Cần P2 + P3 |
 | P5 | Quota + rate limit + trang Usage (S4 + UI) | ⬜ | | Cần P4 |
 | P6 | SDK + MCP + trang Quickstart (S5 + UI) | ⬜ | | Cần P4 |
+| Chat MVP | Trang Chat (stream SSE qua WebHub glm-4.6, chưa tool/sandbox) | 🟨 Đang review | | Claude làm; branch `claude/project-thread-rhrt1v`; A2/A3 sẽ gắn model connection + agent vào chính trang này |
 
 ⬜ chưa bắt đầu · 🟨 đang làm/review · ✅ xong (đã merge) · ⏸ chờ gì đó
 
@@ -60,6 +61,8 @@ Việc còn mở (không chặn merge):
 | 2026-11-11 | P2 trên branch `portal-p2-api-keys` → PR #37 | Go tests + 8/8 Playwright pass local; fix bug SELECT cột không có trong RETURNS TABLE |
 | 2026-11-11 | Claude review #37, fix cache verify (PR #38) | Đã merge; lỗi: cache key theo key_id công khai → giả mạo secret pass 60s; giờ bind key id + sha256(secret), không cache lỗi DB, map bounded |
 | 2026-11-11 | P3/S3a trên branch `portal-p3-sandboxd-tag-webhook` | workspace_id + filter + require_external + webhook HMAC; go test ./... xanh, -race sạch; PR chờ CI |
+
+| 2026-11-11 | Chat MVP (Claude) | Migration `0005_chat.sql` (hội thoại riêng theo user, RLS org+user), `internal/llm` (client OpenAI-compatible stream, header WebHub), BFF `/api/orgs/{id}/chats…` + SSE, trang `/orgs/:slug/chat`; env `PORTAL_DEFAULT_LLM_{BASE_URL,MODEL,FLAVOR,API_KEY}`, secret k3s `llm-api-key` từ GitHub secret `PORTAL_DEFAULT_LLM_API_KEY` |
 
 ## Ghi chú cho lần sau
 

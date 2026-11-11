@@ -2,7 +2,7 @@
 //
 //   /login                    — sign-in (SSO + password)
 //   /invites/:orgId?token=…   — accept an invite (signs in first)
-//   /orgs/:orgSlug/…          — app shell: projects, members, audit
+//   /orgs/:orgSlug/…          — app shell: chat, projects, members, api keys, audit
 //
 // The org context rides in the URL so refresh and deep links keep it.
 
@@ -21,6 +21,7 @@ import { ProjectsPage } from "../features/projects/projects-page";
 import { MembersPage } from "../features/members/members-page";
 import { ApiKeysPage } from "../features/api-keys/api-keys-page";
 import { AuditPage } from "../features/audit/audit-page";
+import { ChatPage } from "../features/chat/chat-page";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -45,6 +46,8 @@ export function PortalApp() {
                 <Route path="/" element={<OrgIndexRedirect />} />
                 <Route path="/orgs/:orgSlug" element={<AppShell />}>
                   <Route index element={<Navigate to="projects" replace />} />
+                  <Route path="chat" element={<ChatPage />} />
+                  <Route path="chat/:chatId" element={<ChatPage />} />
                   <Route path="projects" element={<ProjectsPage />} />
                   <Route path="members" element={<MembersPage />} />
                   <Route path="api-keys" element={<ApiKeysPage />} />

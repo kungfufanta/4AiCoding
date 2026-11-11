@@ -39,6 +39,18 @@ export type ApiKeyCreateBody = {
   expires_in_days?: number;
 };
 
+// Chat MVP: conversations are private to their author.
+export type ChatStatus = { enabled: boolean; model: string };
+export type ChatConversation = { id: string; title: string; created_at: string; updated_at: string };
+export type ChatMessage = { id: string; role: "user" | "assistant"; content: string; created_at: string };
+
+export type ChatStreamHandlers = {
+  onUser?: (m: ChatMessage) => void;
+  onDelta: (text: string) => void;
+  onDone: (m: ChatMessage, title: string) => void;
+  onError: (code: string, message: string) => void;
+};
+
 export class ApiError extends Error {
   status: number;
   code: string;
@@ -103,4 +115,70 @@ export const api = {
   revokeApiKey: (orgID: string, keyID: string) =>
     call<{ key_id: string; status: string }>("DELETE", `/api/orgs/${orgID}/api-keys/${encodeURIComponent(keyID)}`),
   logout: () => call<void>("POST", "/auth/logout"),
+  chatStatus: () => call<ChatStatus>("GET", "/api/chat/status"),
+  listChats: (orgID: string) => call<ChatConversation[]>("GET", `/api/orgs/${orgID}/chats`),
+  createChat: (orgID: string) => call<ChatConversation>("POST", `/api/orgs/${orgID}/chats`, {}),
+  deleteChat: (orgID: string, chatID: string) => call<void>("DELETE", `/api/orgs/${orgID}/chats/${chatID}`),
+  chatMessages: (orgID: string, chatID: string) =>
+    call<ChatMessage[]>("GET", `/api/orgs/${orgID}/chats/${chatID}/messages`),
+  sendChatMessage: (orgID: string, chatID: string, content: string, h: ChatStreamHandlers, signal?: AbortSignal) =>
+    streamChat(`/api/orgs/${orgID}/chats/${chatID}/messages`, content, h, signal),
 };
+
+// streamChat POSTs one message and parses the SSE reply (events
+// user / delta / done / error). EventSource cannot POST or send the
+// CSRF header, so this reads the fetch body stream directly.
+async function streamChat(path: string, content: string, h: ChatStreamHandlers, signal?: AbortSignal) {
+  const res = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken(), Accept: "text/event-stream" },
+    body: JSON.stringify({ content }),
+    credentials: "same-origin",
+    signal,
+  });
+  if (!res.ok || !res.body) {
+    const data = (await res.json().catch(() => ({}))) as { error?: { code: string; message: string } };
+    throw new ApiError(res.status, data.error?.code ?? "unknown", data.error?.message ?? res.statusText);
+  }
+  const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buf = "";
+  let finished = false;
+  const dispatch = (block: string) => {
+    let event = "message";
+    const data: string[] = [];
+    for (const line of block.split("\n")) {
+      if (line.startsWith("event:")) event = line.slice(6).trim();
+      else if (line.startsWith("data:")) data.push(line.slice(5).trimStart());
+    }
+    if (data.length === 0) return;
+    const payload = JSON.parse(data.join("\n")) as Record<string, unknown>;
+    switch (event) {
+      case "user":
+        h.onUser?.(payload.message as ChatMessage);
+        break;
+      case "delta":
+        h.onDelta(String(payload.text ?? ""));
+        break;
+      case "done":
+        finished = true;
+        h.onDone(payload.message as ChatMessage, String(payload.title ?? ""));
+        break;
+      case "error":
+        finished = true;
+        h.onError(String(payload.code ?? "error"), String(payload.message ?? "error"));
+        break;
+    }
+  };
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += value.replace(/\r\n/g, "\n");
+    let i: number;
+    while ((i = buf.indexOf("\n\n")) >= 0) {
+      dispatch(buf.slice(0, i));
+      buf = buf.slice(i + 2);
+    }
+  }
+  if (buf.trim()) dispatch(buf);
+  if (!finished) h.onError("disconnected", "the connection closed before the reply finished");
+}
