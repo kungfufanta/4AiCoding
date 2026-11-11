@@ -266,7 +266,7 @@ func TestRLSInviteAcceptCrossOrg(t *testing.T) {
 	// context and the token does the rest.
 	ctxC := WithUserID(ctx, userC)
 	if err := WithOrg(ctxC, pool, orgA, func(tx Tx) error {
-		role, err := tenants.AcceptInvite(ctx, tx, orgA, inviteToken, userC)
+		role, err := tenants.AcceptInvite(ctx, tx, orgA, inviteToken, userC, "rls-c@example.test")
 		if err != nil {
 			return err
 		}
@@ -280,7 +280,7 @@ func TestRLSInviteAcceptCrossOrg(t *testing.T) {
 
 	// Replay must fail (single-use token).
 	if err := WithOrg(ctxC, pool, orgA, func(tx Tx) error {
-		_, err := tenants.AcceptInvite(ctx, tx, orgA, inviteToken, userC)
+		_, err := tenants.AcceptInvite(ctx, tx, orgA, inviteToken, userC, "rls-c@example.test")
 		if !errors.Is(err, tenants.ErrNotFound) {
 			t.Errorf("replayed invite accepted: %v, want ErrNotFound", err)
 		}

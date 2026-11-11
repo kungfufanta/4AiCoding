@@ -38,6 +38,16 @@ type Server struct {
 	PublicURL     string // e.g. https://app.example.com (no trailing slash)
 	SecureCookies bool   // derived in main from PublicURL's scheme
 	InviteTTL     time.Duration
+	// SessionTTL sets the cookie lifetime; it should match the
+	// session store's TTL (PORTAL_SESSION_TTL). Zero means 12h.
+	SessionTTL time.Duration
+}
+
+func (s *Server) sessionTTL() time.Duration {
+	if s.SessionTTL > 0 {
+		return s.SessionTTL
+	}
+	return 12 * time.Hour
 }
 
 // Handler returns the root mux with every route registered. Callers

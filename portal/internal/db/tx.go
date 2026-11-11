@@ -157,3 +157,13 @@ func SetRoleConn(ctx context.Context, conn *pgx.Conn, role string) error {
 	}
 	return nil
 }
+
+// PinUser sets app.user_id inside an open transaction, for flows that
+// learn the user id mid-transaction (first login upserts the user,
+// then reads that user's memberships).
+func PinUser(ctx context.Context, tx pgx.Tx, userID string) error {
+	if _, err := tx.Exec(ctx, `SELECT set_config('app.user_id', $1, true)`, userID); err != nil {
+		return fmt.Errorf("pin user: %w", err)
+	}
+	return nil
+}

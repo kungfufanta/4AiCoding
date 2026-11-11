@@ -6,6 +6,25 @@ All notable changes to 4AiCoding. The project started from
 
 ## Unreleased
 
+### Portal S1 fixes
+- Org slugs: creating an org whose slug another tenant already uses no
+  longer fails with a 500. RLS hid the other org, so the "is it free"
+  check always said yes; the insert now probes the unique index
+  (`ON CONFLICT (slug) DO NOTHING`) and retries with a suffix.
+- First sign-in creates the user and personal org in one transaction,
+  and any signed-in user with no org gets a personal org, so an earlier
+  half-finished bootstrap no longer leaves a user orgless.
+- Roles: only an owner can grant `owner`, and nobody can change their
+  own role (an admin could promote themselves to owner).
+- Invites can only be accepted by the email they were sent to
+  (`403 invite_email_mismatch`).
+- Signing in with a second identity provider account that has an
+  email already in use answers `409 email_in_use` instead of a 500.
+  Accounts are not linked automatically. An ID token with
+  `email_verified: false` is refused (`403 email_unverified`).
+- The session cookie lifetime follows `PORTAL_SESSION_TTL` instead of
+  a fixed 12h.
+
 ### Portal S1 — login and tenants (docs/PORTAL_PLAN.md 6/S1)
 - Migration `0002_tenants_rls.sql`: `users`, `orgs`, `memberships`,
   `invites`, `projects`, `audit_events`, `web_sessions` + Row Level

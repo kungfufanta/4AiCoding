@@ -19,9 +19,11 @@ import (
 
 // Claims are the ID-token fields the Portal relies on.
 type Claims struct {
-	Sub   string
-	Email string
-	Name  string
+	Sub   string `json:"sub"`
+	Email string `json:"email"`
+	Name  string `json:"name"`
+	// EmailVerified is nil when the provider omits the claim.
+	EmailVerified *bool `json:"email_verified"`
 }
 
 // Provider bundles the discovery result and the OAuth2 config.
