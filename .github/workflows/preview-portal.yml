@@ -45,7 +45,19 @@ jobs:
 
       - name: install browser test deps
         working-directory: portal/e2e
-        run: npm install --no-audit --no-fund && npx playwright install --with-deps chromium
+        # --with-deps apt-installs browser libraries; the runner's DNS
+        # occasionally fails mid-apt (2026-11-11: 52 resolve failures in
+        # one run), so retry the whole install once before failing.
+        run: |
+          ok=""
+          for i in 1 2; do
+            if npm install --no-audit --no-fund && npx playwright install --with-deps chromium; then
+              ok=1; break
+            fi
+            [ "$i" = 1 ] && echo "install failed — retrying once" && sleep 10
+          done
+          [ -n "$ok" ] || { echo "browser deps install failed twice"; exit 1; }
+          npx playwright --version
 
       - name: sandbox backend up (build sandboxd + e2e base image)
         run: docker compose -f docker-compose.portal.yml --profile sandboxes up -d --build sandboxd
