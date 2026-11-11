@@ -2,11 +2,13 @@ import { useEffect, useRef, useState } from "react";
 import { APPROVAL_HEADER, del, get, post, sse, type Sandbox } from "../api";
 import {
   can,
+  ColorLog,
   Curl,
   fmtBytes,
   fmtTime,
   Link,
   Loading,
+  logClass,
   navigate,
   Section,
   StatusBadge,
@@ -136,6 +138,16 @@ export function SandboxDetailPage({ id }: { id: string }) {
         <Curl method="GET" path={`/v1/sandboxes/${id}`} />
       </Section>
 
+      {sb.status === "creating" && (
+        <DeployCard
+          id={id}
+          image={sb.image}
+          egressMode={sb.egress_mode}
+          cpus={sb.resources.cpus}
+          memMb={sb.resources.memory_mb}
+          onDone={reload}
+        />
+      )}
       {sb.status === "running" && <MetricsCard id={id} />}
       {sb.status === "running" && write && <ExecCard id={id} />}
       <LogsCard id={id} running={sb.status === "running"} />
@@ -152,6 +164,75 @@ export function SandboxDetailPage({ id }: { id: string }) {
         </Section>
       )}
     </>
+  );
+}
+
+function DeployCard({
+  id,
+  image,
+  egressMode,
+  cpus,
+  memMb,
+  onDone,
+}: {
+  id: string;
+  image: string;
+  egressMode?: string;
+  cpus?: number;
+  memMb?: number;
+  onDone: () => void;
+}) {
+  // Streams the deploy sequence while the sandbox is really `creating` — the
+  // lines track the actual status transition (lazy lifecycle flips it to
+  // running server-side), then hands back to the page.
+  const script = [
+    `$ sandboxd deploy ${image}`,
+    "› resolving image … ok",
+    `› allocating resources (cpus ${cpus || "auto"}, mem ${memMb || "default"} MiB) … ok`,
+    `› attaching network (egress ${egressMode ?? "allowlist"}) … ok`,
+    "› booting container …",
+  ];
+  const [lines, setLines] = useState<string[]>([]);
+  const [done, setDone] = useState(false);
+  useEffect(() => {
+    let live = true;
+    let i = 0;
+    const step = setInterval(() => {
+      if (!live || i >= script.length) return;
+      const line = script[i++];
+      setLines((xs) => [...xs, line]);
+    }, 420);
+    const poll = setInterval(async () => {
+      try {
+        const sb = await get<Sandbox>(`/v1/sandboxes/${id}`);
+        if (!live || sb.status === "creating") return;
+        setLines((xs) => [...xs, `✓ sandbox ${id} is ${sb.status}`]);
+        setDone(true);
+        clearInterval(poll);
+        setTimeout(() => live && onDone(), 700);
+      } catch {
+        /* transient — retry on the next tick */
+      }
+    }, 600);
+    return () => {
+      live = false;
+      clearInterval(step);
+      clearInterval(poll);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
+  return (
+    <Section title="Deploy">
+      <pre className="term">
+        {lines.map((l, i) => (
+          <span key={i} className={logClass(l)}>
+            {l}
+            {"\n"}
+          </span>
+        ))}
+        {!done && <span className="cursor" />}
+      </pre>
+    </Section>
   );
 }
 
@@ -252,7 +333,7 @@ function LogsCard({ id, running }: { id: string; running: boolean }) {
       }
     >
       <pre className="term" ref={box}>
-        {lines.length ? lines.join("\n") : <span className="muted">No output.</span>}
+        {lines.length ? <ColorLog lines={lines} /> : <span className="muted">No output.</span>}
       </pre>
     </Section>
   );

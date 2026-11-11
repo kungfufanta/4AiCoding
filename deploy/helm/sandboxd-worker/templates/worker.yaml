@@ -98,6 +98,14 @@ spec:
             {{- end }}
             - name: SANDBOXD_HEARTBEAT_INTERVAL_SECONDS
               value: {{ .Values.heartbeatIntervalSeconds | quote }}
+            {{- if not .Values.telemetry.enabled }}
+            - name: SANDBOXD_TELEMETRY
+              value: "off"
+            {{- end }}
+            {{- with .Values.telemetry.diskPath }}
+            - name: SANDBOXD_TELEMETRY_DISK_PATH
+              value: {{ . | quote }}
+            {{- end }}
             {{- if .Values.executor.enabled }}
             - name: HOST_IP
               valueFrom:

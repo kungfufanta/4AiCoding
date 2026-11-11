@@ -5,6 +5,7 @@
 package api
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"time"
@@ -41,6 +42,12 @@ type v1Node struct {
 	Sandboxes    int            `json:"sandboxes"`
 	RegisteredAt string         `json:"registered_at"`
 	HeartbeatAt  string         `json:"heartbeat_at"`
+	// Telemetry is the latest host sample (hosttelemetry.Snapshot) the
+	// node sent; absent when it never reported one (an older worker).
+	Telemetry json.RawMessage `json:"telemetry,omitempty"`
+	// ChangeFile is the deploy values file a capacity change request for
+	// this node edits ("" = no GitOps mapping for this node).
+	ChangeFile string `json:"change_file,omitempty"`
 }
 
 // v1NodeFromRow reshapes a node row (+ its placement-derived usage) for
@@ -65,6 +72,8 @@ func (s *Server) v1NodeFromRow(n *store.Node, derived store.Usage) v1Node {
 		Sandboxes:    u.Sandboxes,
 		RegisteredAt: n.RegisteredAt.UTC().Format(time.RFC3339),
 		HeartbeatAt:  n.HeartbeatAt.UTC().Format(time.RFC3339),
+		Telemetry:    n.Telemetry,
+		ChangeFile:   s.GitOps.fileFor(n.NodeID),
 	}
 	return out
 }

@@ -566,5 +566,6 @@ func (s *Server) v1DeleteNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.auditAction(r, audit.Entry{Action: "node.delete", Target: id})
+	s.nodeHist.forget(id)
 	w.WriteHeader(http.StatusNoContent)
 }

@@ -1,0 +1,287 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  --font-inter: "Inter Variable";
+  --font-jetbrains: "JetBrains Mono Variable";
+}
+
+@theme inline {
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: var(--font-jetbrains), ui-monospace, "SF Mono", "Fira Code", Menlo, monospace;
+
+  /* ── Sandbox Platform design tokens (theme-aware) ──────────── */
+  --color-navy: var(--bg);        /* app background */
+  --color-surface: var(--panel);  /* card surface */
+  --color-sunken: var(--sunken);  /* terminal / inset panels */
+  --color-line: var(--line);      /* 1px borders */
+  --color-line-soft: var(--line-soft); /* fainter dividers */
+  --color-neon: var(--neon);      /* primary accent / running */
+  --color-info: var(--info);      /* cyan — info & charts */
+  --color-warn: var(--warn);      /* amber — warning / starting */
+  --color-danger: var(--danger);  /* red — error / suspended */
+  --color-data: var(--data);      /* normal data text */
+  --color-admin: var(--admin);    /* purple — Admin role */
+  --color-ink: var(--ink);        /* strong headings */
+  --color-fg: var(--fg);          /* overlay tint base (bg-fg/5) */
+
+  /* gray scale re-levelled per theme for legibility */
+  --color-gray-100: var(--g100);
+  --color-gray-200: var(--g200);
+  --color-gray-300: var(--g300);
+  --color-gray-400: var(--g400);
+  --color-gray-500: var(--g500);
+  --color-gray-600: var(--g600);
+  --color-gray-700: var(--g700);
+
+  /* shadcn token bridge */
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+/* ══ DARK — brand default ═══════════════════════════════════════ */
+:root {
+  --radius: 0.75rem; /* 12px card radius */
+
+  --bg: #0a0f1d;
+  --panel: #111827;
+  --sunken: #0d1322;
+  --line: #1f2937;
+  --line-soft: #16203a;
+  --neon: #00ff9d;
+  --info: #22d3ee;
+  --warn: #f59e0b;
+  --danger: #ef4444;
+  --data: #d1d5db;
+  --admin: #a78bfa;
+  --ink: #e5e7eb;
+  --fg: #ffffff;
+
+  --g100: #f3f4f6;
+  --g200: #e5e7eb;
+  --g300: #d1d5db;
+  --g400: #9ca3af;
+  --g500: #6b7280;
+  --g600: #4b5563;
+  --g700: #374151;
+
+  --grid: rgba(148, 163, 184, 0.05);
+  --grid-fine: rgba(148, 163, 184, 0.04);
+  --shadow-panel: 0 4px 24px rgba(0, 0, 0, 0.4);
+  --scrollbar-hover: #2b3a52;
+  --glow-soft: rgba(0, 255, 157, 0.15);
+  --glow-mid: rgba(0, 255, 157, 0.25);
+  --glow-live: rgba(0, 255, 157, 0.35);
+  --sel-text: #e5e7eb;
+
+  /* shadcn bridge — dark */
+  --background: #0a0f1d;
+  --foreground: #d1d5db;
+  --card: #111827;
+  --card-foreground: #e5e7eb;
+  --popover: #111827;
+  --popover-foreground: #e5e7eb;
+  --primary: #00ff9d;
+  --primary-foreground: #0a0f1d;
+  --secondary: #1f2937;
+  --secondary-foreground: #e5e7eb;
+  --muted: #182236;
+  --muted-foreground: #6b7280;
+  --accent: #1f2937;
+  --accent-foreground: #e5e7eb;
+  --destructive: #ef4444;
+  --border: #1f2937;
+  --input: #1f2937;
+  --ring: rgba(0, 255, 157, 0.45);
+}
+
+/* ══ LIGHT — daylight enterprise ════════════════════════════════ */
+html.light {
+  --bg: #f4f6fb;
+  --panel: #ffffff;
+  /* consoles stay "inset": slightly tinted, still readable */
+  --sunken: #eef2f8;
+  --line: #e2e8f0;
+  --line-soft: #edf1f7;
+  --neon: #047857;      /* emerald-700 — AA on white */
+  --info: #0e7490;      /* cyan-700 */
+  --warn: #b45309;      /* amber-700 */
+  --danger: #dc2626;    /* red-600 */
+  --data: #334155;      /* slate-700 */
+  --admin: #7c3aed;     /* violet-600 */
+  --ink: #0f172a;       /* slate-900 */
+  --fg: #0f172a;
+
+  --g100: #0f172a;
+  --g200: #1e293b;
+  --g300: #334155;
+  --g400: #475569;
+  --g500: #556277;
+  --g600: #6b7891;
+  --g700: #7d8aa0;
+
+  --grid: rgba(15, 23, 42, 0.045);
+  --grid-fine: rgba(15, 23, 42, 0.035);
+  --shadow-panel: 0 4px 20px rgba(15, 23, 42, 0.07);
+  --scrollbar-hover: #cbd5e1;
+  --glow-soft: rgba(4, 120, 87, 0.14);
+  --glow-mid: rgba(4, 120, 87, 0.22);
+  --glow-live: rgba(4, 120, 87, 0.32);
+  --sel-text: #0f172a;
+
+  /* shadcn bridge — light */
+  --background: #f4f6fb;
+  --foreground: #334155;
+  --card: #ffffff;
+  --card-foreground: #0f172a;
+  --popover: #ffffff;
+  --popover-foreground: #0f172a;
+  --primary: #047857;
+  --primary-foreground: #f8fafc;
+  --secondary: #e2e8f0;
+  --secondary-foreground: #0f172a;
+  --muted: #eef2f7;
+  --muted-foreground: #64748b;
+  --accent: #e2e8f0;
+  --accent-foreground: #0f172a;
+  --destructive: #dc2626;
+  --border: #e2e8f0;
+  --input: #e2e8f0;
+  --ring: rgba(4, 120, 87, 0.4);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html.dark {
+    color-scheme: dark;
+  }
+  html.light {
+    color-scheme: light;
+  }
+  body {
+    @apply bg-navy text-data font-sans antialiased;
+    font-feature-settings: "cv11", "ss01";
+  }
+  ::selection {
+    background: var(--glow-live);
+    color: var(--sel-text);
+  }
+}
+
+/* ── Subtle 1px grid background (≤5% opacity) ─────────────────── */
+.grid-bg {
+  background-image:
+    linear-gradient(to right, var(--grid) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--grid) 1px, transparent 1px);
+  background-size: 40px 40px;
+}
+.grid-bg-fine {
+  background-image:
+    linear-gradient(to right, var(--grid-fine) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--grid-fine) 1px, transparent 1px);
+  background-size: 20px 20px;
+}
+
+/* Card elevation used across the platform */
+.panel-shadow {
+  box-shadow: var(--shadow-panel);
+}
+
+/* ── Scrollbars ───────────────────────────────────────────────── */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 8px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-hover);
+}
+
+/* ── Terminal ─────────────────────────────────────────────────── */
+.terminal-cursor::after {
+  content: "▋";
+  margin-left: 2px;
+  color: var(--neon);
+  animation: cursor-blink 1.05s steps(1) infinite;
+}
+@keyframes cursor-blink {
+  0%, 55% { opacity: 1; }
+  56%, 100% { opacity: 0; }
+}
+
+.log-line {
+  animation: log-in 0.18s ease-out both;
+}
+@keyframes log-in {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Status dot heartbeat for "Running / Active" states */
+.dot-live {
+  animation: dot-live 2.4s ease-in-out infinite;
+}
+@keyframes dot-live {
+  0%, 100% { box-shadow: 0 0 0 0 var(--glow-live); }
+  50% { box-shadow: 0 0 0 4px transparent; }
+}
+
+/* ── Range slider (resource limits) ───────────────────────────── */
+[data-slot="slider-track"] {
+  background: var(--line) !important;
+}
+[data-slot="slider-range"] {
+  background: linear-gradient(90deg, var(--glow-mid), var(--neon)) !important;
+}
+[data-slot="slider-thumb"] {
+  border-color: var(--neon) !important;
+  background: var(--bg) !important;
+  box-shadow: 0 0 0 3px var(--glow-soft), 0 0 12px var(--glow-mid);
+}
+[data-slot="slider-thumb"]:hover,
+[data-slot="slider-thumb"]:focus-visible {
+  box-shadow: 0 0 0 4px var(--glow-mid), 0 0 16px var(--glow-live);
+}
+
+/*
+ * Restored from the original SBX Console template (git history, commit
+ * df68103). The SBX design system lives here: @theme tokens → Tailwind
+ * utilities (bg-navy, text-ink, border-line, grid-bg …) for the platform
+ * components in src/components/platform. The ported console SPA keeps its
+ * own stylesheet in src/console/console.css, wrapped in @layer components
+ * so template utilities always win where both target the same elements.
+ */

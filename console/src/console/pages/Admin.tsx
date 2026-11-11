@@ -199,7 +199,8 @@ function NodesTab({ isAdmin }: { isAdmin: boolean }) {
     <Section title="Nodes">
       <p className="muted">
         The control plane itself is the <code>local</code> node; workers register with the worker token and stay online
-        by heartbeating. A draining node refuses new sandboxes; its running sandboxes are untouched.
+        by heartbeating. A draining node refuses new sandboxes; its running sandboxes are untouched. Host CPU, memory, disk
+        and network per node, and capacity change requests, are on <Link to="/nodes">Nodes</Link>.
       </p>
       {!data ? (
         <Loading error={error} />
@@ -252,19 +253,17 @@ function NodesTab({ isAdmin }: { isAdmin: boolean }) {
                 <td className="small" title={n.heartbeat_at}>
                   {n.role === "local" ? "self" : fmtTime(n.heartbeat_at)}
                 </td>
-                <td className="actions">
-                  <div className="row right">
-                    {isAdmin &&
-                      (n.drain_state === "drain" ? (
-                        <button disabled={busy} onClick={() => drain(n, "undrain")}>
-                          Undrain
-                        </button>
-                      ) : (
-                        <button className="ghost danger" disabled={busy} onClick={() => drain(n, "drain")}>
-                          Drain
-                        </button>
-                      ))}
-                  </div>
+                <td className="row right">
+                  {isAdmin &&
+                    (n.drain_state === "drain" ? (
+                      <button disabled={busy} onClick={() => drain(n, "undrain")}>
+                        Undrain
+                      </button>
+                    ) : (
+                      <button className="ghost danger" disabled={busy} onClick={() => drain(n, "drain")}>
+                        Drain
+                      </button>
+                    ))}
                 </td>
               </tr>
             ))}
@@ -333,23 +332,21 @@ function ApprovalsTab({ canDecide }: { canDecide: boolean }) {
                   {a.decided_by && <div className="small muted">by {a.decided_by}{a.reason ? `: ${a.reason}` : ""}</div>}
                 </td>
                 <td className="small">{fmtTime(a.created_at)}</td>
-                <td className="actions">
-                  <div className="row right">
-                    <details>
-                      <summary className="small">payload</summary>
-                      <pre className="term small">{prettyJSON(a.payload)}</pre>
-                    </details>
-                    {canDecide && a.status === "pending" && (
-                      <>
-                        <button disabled={busy} onClick={() => decide(a, "approve")}>
-                          Approve
-                        </button>
-                        <button className="ghost danger" disabled={busy} onClick={() => decide(a, "deny")}>
-                          Deny
-                        </button>
-                      </>
-                    )}
-                  </div>
+                <td className="row right">
+                  <details>
+                    <summary className="small">payload</summary>
+                    <pre className="term small">{prettyJSON(a.payload)}</pre>
+                  </details>
+                  {canDecide && a.status === "pending" && (
+                    <>
+                      <button disabled={busy} onClick={() => decide(a, "approve")}>
+                        Approve
+                      </button>
+                      <button className="ghost danger" disabled={busy} onClick={() => decide(a, "deny")}>
+                        Deny
+                      </button>
+                    </>
+                  )}
                 </td>
               </tr>
             ))}
@@ -421,25 +418,23 @@ function UsersTab() {
                 </td>
                 <td>{u.disabled ? <span className="badge st-error">disabled</span> : <span className="badge st-running">active</span>}</td>
                 <td className="small">{fmtTime(u.created_at)}</td>
-                <td className="actions">
-                  <div className="row right">
-                    <button className="ghost" disabled={busy} onClick={() => update(u, { disabled: !u.disabled }, u.disabled ? "User enabled" : "User disabled")}>
-                      {u.disabled ? "Enable" : "Disable"}
-                    </button>
-                    <button
-                      className="ghost"
-                      disabled={busy}
-                      onClick={() => {
-                        const pw = prompt(`New password for ${u.username} (min 8 chars)`);
-                        if (pw) void update(u, { password: pw }, "Password changed");
-                      }}
-                    >
-                      Set password
-                    </button>
-                    <button className="ghost danger" disabled={busy} onClick={() => remove(u)}>
-                      Delete
-                    </button>
-                  </div>
+                <td className="row right">
+                  <button className="ghost" disabled={busy} onClick={() => update(u, { disabled: !u.disabled }, u.disabled ? "User enabled" : "User disabled")}>
+                    {u.disabled ? "Enable" : "Disable"}
+                  </button>
+                  <button
+                    className="ghost"
+                    disabled={busy}
+                    onClick={() => {
+                      const pw = prompt(`New password for ${u.username} (min 8 chars)`);
+                      if (pw) void update(u, { password: pw }, "Password changed");
+                    }}
+                  >
+                    Set password
+                  </button>
+                  <button className="ghost danger" disabled={busy} onClick={() => remove(u)}>
+                    Delete
+                  </button>
                 </td>
               </tr>
             ))}

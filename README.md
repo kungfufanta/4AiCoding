@@ -108,6 +108,8 @@ curl -s -H "$AUTH" -X POST $API/v1/nodes/$ID/undrain  # admin: back to the pool
 
 Every sandbox response carries its `node` (its placement). Draining the `local` node blocks sandbox creation on the control plane itself; draining a worker is preparation for moving work onto it — sandboxes run on workers in executor mode (below). The console shows the fleet in **Admin → Nodes**, refreshed live.
 
+Every node also reports its host's real CPU, memory, disk and network with its heartbeat (from the worker image itself, so it works on a VPS, under Docker or in k3s). The console's **Nodes** page shows it with an hour of history, and admins can propose a new advertised capacity there: that opens a pull request editing the node's Helm values file, which the deploy workflow applies once merged. See [docs/NODE_RESOURCES.md](docs/NODE_RESOURCES.md).
+
 ### Workers on Kubernetes / k3s (M7a)
 
 `deploy/helm/sandboxd-worker` runs `sandboxd worker` as a DaemonSet: every Kubernetes node joins the fleet under its node name, so the id survives pod restarts. Build the image from `control-plane/` (it is the control plane image; the chart starts it with `worker`), make it available to the cluster, then:
