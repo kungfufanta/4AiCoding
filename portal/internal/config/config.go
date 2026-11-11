@@ -59,7 +59,23 @@ type Config struct {
 	// PasswordLogin reports whether the local login endpoint is
 	// served. Derived from AdminPassword != "-".
 	PasswordLogin bool
+
+	// Platform LLM connection for the Chat page (AGENT_PLAN 5.2.1:
+	// WebHub glm-4.6 is the free default). The chat routes answer
+	// 503 chat_not_configured until an API key is set; A2 replaces
+	// this with per-org model connections.
+	LLMBaseURL string // PORTAL_DEFAULT_LLM_BASE_URL
+	LLMModel   string // PORTAL_DEFAULT_LLM_MODEL, default glm-4.6
+	LLMFlavor  string // PORTAL_DEFAULT_LLM_FLAVOR: webhub | generic
+	LLMAPIKey  string // PORTAL_DEFAULT_LLM_API_KEY (secret; never logged)
 }
+
+// DefaultLLMBaseURL is the WebHub endpoint chosen as the free default
+// (AGENT_PLAN 5.2.1).
+const DefaultLLMBaseURL = "https://h11hp9dd1y90-d.space-z.ai/v1"
+
+// ChatEnabled reports whether the platform LLM connection is usable.
+func (c Config) ChatEnabled() bool { return c.LLMBaseURL != "" && c.LLMAPIKey != "" }
 
 // MinAdminPasswordLen is the shortest PORTAL_ADMIN_PASSWORD accepted.
 const MinAdminPasswordLen = 12
@@ -100,6 +116,20 @@ func Parse(getenv func(string) string) (Config, error) {
 			return cfg, fmt.Errorf("PORTAL_ADMIN_PASSWORD must be at least %d characters (or unset to disable the password login)", MinAdminPasswordLen)
 		}
 		cfg.AdminPassword, cfg.PasswordLogin = pw, true
+	}
+	cfg.LLMBaseURL = strings.TrimRight(firstNonEmpty(strings.TrimSpace(getenv("PORTAL_DEFAULT_LLM_BASE_URL")), DefaultLLMBaseURL), "/")
+	cfg.LLMModel = firstNonEmpty(strings.TrimSpace(getenv("PORTAL_DEFAULT_LLM_MODEL")), "glm-4.6")
+	cfg.LLMAPIKey = strings.TrimSpace(getenv("PORTAL_DEFAULT_LLM_API_KEY"))
+	switch f := strings.ToLower(strings.TrimSpace(getenv("PORTAL_DEFAULT_LLM_FLAVOR"))); f {
+	case "", "webhub":
+		cfg.LLMFlavor = "webhub"
+	case "generic":
+		cfg.LLMFlavor = "generic"
+	default:
+		return cfg, fmt.Errorf("PORTAL_DEFAULT_LLM_FLAVOR: want webhub or generic, got %q", f)
+	}
+	if !strings.HasPrefix(cfg.LLMBaseURL, "https://") && !strings.HasPrefix(cfg.LLMBaseURL, "http://") {
+		return cfg, fmt.Errorf("PORTAL_DEFAULT_LLM_BASE_URL must be an http(s) URL")
 	}
 	if v := getenv("PORTAL_SESSION_TTL"); v != "" {
 		d, err := time.ParseDuration(v)

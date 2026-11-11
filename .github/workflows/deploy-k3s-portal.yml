@@ -15,6 +15,9 @@
 #   PORTAL_OIDC_ISSUER             optional (S1 login); the login route
 #   PORTAL_OIDC_CLIENT_ID          stays disabled unless all three are set
 #   PORTAL_OIDC_CLIENT_SECRET
+#   PORTAL_DEFAULT_LLM_API_KEY     optional: WebHub wh_ key for the Chat
+#                                  page (glm-4.6). Unset = chat shows
+#                                  "not configured".
 #
 # DNS: chat.devhub.io.vn must point at the k3s-1 edge (same target as
 # 4aicoding.devhub.io.vn) so Traefik routes the host and cert-manager can
@@ -100,6 +103,7 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.PORTAL_DATABASE_URL }}
           ADMIN_PASSWORD: ${{ secrets.PORTAL_ADMIN_PASSWORD }}
+          LLM_API_KEY: ${{ secrets.PORTAL_DEFAULT_LLM_API_KEY }}
         run: |
           set -eu
           # The namespace already exists (the deployer ServiceAccount lives
@@ -120,6 +124,13 @@ jobs:
             echo "bootstrap password login: enabled"
           else
             echo "bootstrap password login: disabled (PORTAL_ADMIN_PASSWORD not set)"
+          fi
+          if [ -n "$LLM_API_KEY" ]; then
+            printf '%s' "$LLM_API_KEY" > "$d/llm-api-key"
+            args+=(--from-file=llm-api-key="$d/llm-api-key")
+            echo "chat: enabled"
+          else
+            echo "chat: disabled (PORTAL_DEFAULT_LLM_API_KEY not set)"
           fi
           kubectl -n "$NAMESPACE" create secret generic portal-database "${args[@]}" \
             --dry-run=client -o yaml | kubectl apply -f -

@@ -47,6 +47,10 @@ type statusWriter struct {
 	status int
 }
 
+// Unwrap lets http.ResponseController reach the real writer (Flush
+// for the chat SSE stream).
+func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
 func (w *statusWriter) WriteHeader(code int) {
 	w.status = code
 	w.ResponseWriter.WriteHeader(code)

@@ -53,3 +53,25 @@ export function useApiKeys(orgID: string) {
     enabled: orgID !== "",
   });
 }
+
+export function useChatStatus() {
+  return useQuery({ queryKey: ["chat-status"], queryFn: api.chatStatus, staleTime: 60_000 });
+}
+
+export function useChats(orgID: string) {
+  return useQuery({
+    queryKey: ["chats", orgID],
+    queryFn: () => api.listChats(orgID),
+    enabled: orgID !== "",
+  });
+}
+
+export function useChatMessages(orgID: string, chatID: string | undefined) {
+  return useQuery({
+    queryKey: ["chat-messages", orgID, chatID],
+    queryFn: () => api.chatMessages(orgID, chatID!),
+    enabled: orgID !== "" && !!chatID,
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+  });
+}

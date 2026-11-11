@@ -15,6 +15,7 @@ import (
 
 	"github.com/tastyeffectco/sandboxd/portal/internal/agenttoken"
 	"github.com/tastyeffectco/sandboxd/portal/internal/apikeys"
+	"github.com/tastyeffectco/sandboxd/portal/internal/llm"
 	"github.com/tastyeffectco/sandboxd/portal/internal/oidcauth"
 	"github.com/tastyeffectco/sandboxd/portal/internal/session"
 )
@@ -47,6 +48,10 @@ type Server struct {
 	// tokens. Both are wired in main; nil disables /v1/tokens.
 	Keys   *apikeys.Verifier
 	Tokens *agenttoken.Signer
+
+	// LLM answers the Chat page; nil (no PORTAL_DEFAULT_LLM_API_KEY)
+	// makes sending a message answer 503 chat_not_configured.
+	LLM *llm.Client
 
 	PublicURL     string // e.g. https://app.example.com (no trailing slash)
 	SecureCookies bool   // derived in main from PublicURL's scheme
@@ -94,6 +99,13 @@ func (s *Server) Handler() *http.ServeMux {
 	mux.Handle("GET /api/orgs/{orgID}/api-keys", s.withSession(http.HandlerFunc(s.handleListApiKeys)))
 	mux.Handle("POST /api/orgs/{orgID}/api-keys", s.withSession(http.HandlerFunc(s.handleCreateApiKey)))
 	mux.Handle("DELETE /api/orgs/{orgID}/api-keys/{keyID}", s.withSession(http.HandlerFunc(s.handleRevokeApiKey)))
+	// Chat MVP: conversations with the platform LLM (SSE replies).
+	mux.Handle("GET /api/chat/status", s.withSession(http.HandlerFunc(s.handleChatStatus)))
+	mux.Handle("GET /api/orgs/{orgID}/chats", s.withSession(http.HandlerFunc(s.handleListChats)))
+	mux.Handle("POST /api/orgs/{orgID}/chats", s.withSession(http.HandlerFunc(s.handleCreateChat)))
+	mux.Handle("DELETE /api/orgs/{orgID}/chats/{chatID}", s.withSession(http.HandlerFunc(s.handleDeleteChat)))
+	mux.Handle("GET /api/orgs/{orgID}/chats/{chatID}/messages", s.withSession(http.HandlerFunc(s.handleListChatMessages)))
+	mux.Handle("POST /api/orgs/{orgID}/chats/{chatID}/messages", s.withSession(http.HandlerFunc(s.handleSendChatMessage)))
 	// Public API surface (S2: token exchange; S3 grows here).
 	mux.Handle("POST /v1/tokens", http.HandlerFunc(s.handleAgentToken))
 	mux.HandleFunc("/api/", NotFound)

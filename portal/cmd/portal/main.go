@@ -22,6 +22,7 @@ import (
 	"github.com/tastyeffectco/sandboxd/portal/internal/config"
 	"github.com/tastyeffectco/sandboxd/portal/internal/db"
 	"github.com/tastyeffectco/sandboxd/portal/internal/httpapi"
+	"github.com/tastyeffectco/sandboxd/portal/internal/llm"
 	"github.com/tastyeffectco/sandboxd/portal/internal/logging"
 	"github.com/tastyeffectco/sandboxd/portal/internal/oidcauth"
 	"github.com/tastyeffectco/sandboxd/portal/internal/passwordauth"
@@ -105,6 +106,14 @@ func run() error {
 	}
 	keys := &apikeys.Verifier{Pool: pool, Log: log}
 
+	var chat *llm.Client
+	if cfg.ChatEnabled() {
+		chat = &llm.Client{BaseURL: cfg.LLMBaseURL, APIKey: cfg.LLMAPIKey, Model: cfg.LLMModel, Flavor: cfg.LLMFlavor}
+		log.Info("chat enabled", "llm_base_url", cfg.LLMBaseURL, "model", cfg.LLMModel, "flavor", cfg.LLMFlavor)
+	} else {
+		log.Info("chat disabled: PORTAL_DEFAULT_LLM_API_KEY not set")
+	}
+
 	srv := &httpapi.Server{
 		Log:           log,
 		Pool:          pool,
@@ -113,6 +122,7 @@ func run() error {
 		PasswordLogin: cfg.PasswordLogin,
 		Keys:          keys,
 		Tokens:        signer,
+		LLM:           chat,
 		PublicURL:     cfg.PublicURL,
 		SecureCookies: strings.HasPrefix(cfg.PublicURL, "https://"),
 		SessionTTL:    cfg.SessionTTL,

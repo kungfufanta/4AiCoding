@@ -41,6 +41,15 @@ oidc:
 adminLogin:
   passwordKey: admin-password
 
+# Chat page (Chat MVP). The API key lives in the database Secret
+# under apiKeyKey; without it the page shows "not configured". Empty
+# values keep the binary defaults (WebHub, glm-4.6, flavor webhub).
+chat:
+  apiKeyKey: llm-api-key
+  baseURL: ""
+  model: ""
+  flavor: ""
+
 service:
   type: ClusterIP
   port: 80

@@ -142,3 +142,36 @@ func TestParsePasswordLogin(t *testing.T) {
 		t.Errorf("custom = %+v", cfg)
 	}
 }
+
+func TestParseLLMDefaults(t *testing.T) {
+	env := map[string]string{"PORTAL_DATABASE_URL": "postgres://x"}
+	cfg, err := Parse(func(k string) string { return env[k] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LLMBaseURL != DefaultLLMBaseURL || cfg.LLMModel != "glm-4.6" || cfg.LLMFlavor != "webhub" {
+		t.Fatalf("defaults = %q %q %q", cfg.LLMBaseURL, cfg.LLMModel, cfg.LLMFlavor)
+	}
+	if cfg.ChatEnabled() {
+		t.Fatal("chat must stay off without an API key")
+	}
+	env["PORTAL_DEFAULT_LLM_API_KEY"] = "wh_test"
+	env["PORTAL_DEFAULT_LLM_BASE_URL"] = "http://llm.local/v1/"
+	env["PORTAL_DEFAULT_LLM_FLAVOR"] = "generic"
+	cfg, err = Parse(func(k string) string { return env[k] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.ChatEnabled() || cfg.LLMBaseURL != "http://llm.local/v1" || cfg.LLMFlavor != "generic" {
+		t.Fatalf("got %+v", cfg)
+	}
+	env["PORTAL_DEFAULT_LLM_FLAVOR"] = "bogus"
+	if _, err := Parse(func(k string) string { return env[k] }); err == nil {
+		t.Fatal("bogus flavor accepted")
+	}
+	env["PORTAL_DEFAULT_LLM_FLAVOR"] = ""
+	env["PORTAL_DEFAULT_LLM_BASE_URL"] = "file:///etc/passwd"
+	if _, err := Parse(func(k string) string { return env[k] }); err == nil {
+		t.Fatal("non-http base url accepted")
+	}
+}
