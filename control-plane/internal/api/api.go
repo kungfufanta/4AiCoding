@@ -210,6 +210,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/sandboxes/{id}/restart", s.observe("POST /v1/sandboxes/{id}/restart", s.remoteRoute(s.v1RestartSandbox)))
 	mux.HandleFunc("POST /v1/sandboxes/{id}/exec", s.observe("POST /v1/sandboxes/{id}/exec", s.remoteRoute(s.v1ExecSandbox)))
 	mux.HandleFunc("GET /v1/sandboxes/{id}/logs", s.observe("GET /v1/sandboxes/{id}/logs", s.remoteRoute(s.v1SandboxLogs)))
+	// Workspace files API (AGENT_PLAN A0) — host-side workspace access;
+	// remote sandboxes are forwarded to the owning worker by remoteRoute.
+	mux.HandleFunc("GET /v1/sandboxes/{id}/files", s.observe("GET /v1/sandboxes/{id}/files", s.remoteRoute(s.v1ListFiles)))
+	mux.HandleFunc("GET /v1/sandboxes/{id}/files/content", s.observe("GET /v1/sandboxes/{id}/files/content", s.remoteRoute(s.v1FileContent)))
+	mux.HandleFunc("PUT /v1/sandboxes/{id}/files/content", s.observe("PUT /v1/sandboxes/{id}/files/content", s.remoteRoute(s.v1PutFile)))
+	mux.HandleFunc("DELETE /v1/sandboxes/{id}/files", s.observe("DELETE /v1/sandboxes/{id}/files", s.remoteRoute(s.v1DeleteFile)))
+	mux.HandleFunc("POST /v1/sandboxes/{id}/files/move", s.observe("POST /v1/sandboxes/{id}/files/move", s.remoteRoute(s.v1MoveFile)))
 	mux.HandleFunc("GET /v1/sandboxes/{id}/network/ports", s.observe("GET /v1/sandboxes/{id}/network/ports", s.remoteRoute(s.v1GetPorts)))
 	mux.HandleFunc("PUT /v1/sandboxes/{id}/network/ports", s.observe("PUT /v1/sandboxes/{id}/network/ports", s.remoteRoute(s.v1PutPorts)))
 	mux.HandleFunc("POST /v1/sandboxes/{id}/network/ports", s.observe("POST /v1/sandboxes/{id}/network/ports", s.remoteRoute(s.v1AddPort)))

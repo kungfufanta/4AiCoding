@@ -141,6 +141,27 @@ expect 201 jar:admin POST /v1/api-keys '{"name":"reader","role":"viewer","scopes
 READER="$(jget key)"
 expect 200 "key:$READER" GET "/v1/sandboxes/$SID"
 expect 403 "key:$READER" POST "/v1/sandboxes/$SID/exec" '{"cmd":["true"]}'
+# 5b. Scope sandboxes:files (AGENT_PLAN A0) gates the workspace files API.
+expect 201 jar:admin POST /v1/api-keys '{"name":"execer","role":"operator","scopes":["sandboxes:exec"]}'
+EXECER="$(jget key)"
+expect 200 "key:$EXECER" POST "/v1/sandboxes/$SID/exec" '{"cmd":["true"]}'
+expect 403 "key:$EXECER" GET "/v1/sandboxes/$SID/files"
+expect 403 "key:$EXECER" PUT "/v1/sandboxes/$SID/files/content?path=x.txt"
+expect 201 jar:admin POST /v1/api-keys '{"name":"nocap","role":"operator","scopes":[]}'
+NOCAP="$(jget key)"
+# A key with no scopes may do whatever its role allows; the PUT also
+# materialises the workspace dir so the listings below have something to show.
+expect 200 "key:$NOCAP" PUT "/v1/sandboxes/$SID/files/content?path=scope-e2e.txt" 'hello'
+expect 200 "key:$NOCAP" GET "/v1/sandboxes/$SID/files"
+expect 200 "key:$NOCAP" POST "/v1/sandboxes/$SID/exec" '{"cmd":["true"]}'
+expect 201 jar:admin POST /v1/api-keys '{"name":"filer","role":"operator","scopes":["sandboxes:files"]}'
+FILER="$(jget key)"
+expect 200 "key:$FILER" GET "/v1/sandboxes/$SID/files"
+expect 200 "key:$FILER" GET "/v1/sandboxes/$SID/files/content?path=scope-e2e.txt"
+expect 403 "key:$FILER" POST "/v1/sandboxes/$SID/exec" '{"cmd":["true"]}'
+expect 204 "key:$FILER" DELETE "/v1/sandboxes/$SID/files?path=scope-e2e.txt"
+log "files scope ✓"
+
 expect 204 jar:admin DELETE "/v1/api-keys/$BOUND_ID"
 expect 401 "key:$BOUND" GET "/v1/sandboxes/$SID"
 log "api keys ✓"

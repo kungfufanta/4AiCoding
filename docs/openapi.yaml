@@ -190,7 +190,8 @@ paths:
         `scopes` further restricts what it may call (omitted = everything its
         role allows): `health` (health/version/status probes only),
         `sandboxes:read`, `sandboxes:write`, `sandboxes:exec`, `snapshots`,
-        `sandboxes:egress`. `sandbox_id` binds the key to one sandbox's routes.
+        `sandboxes:egress`, `sandboxes:files`. `sandbox_id` binds the key to
+        one sandbox's routes.
         `ttl_seconds` makes it expire (capped by SANDBOXD_API_KEY_MAX_TTL_SECONDS).
       requestBody:
         required: true
@@ -203,7 +204,7 @@ paths:
                 name: { type: string, description: 1-64 printable chars }
                 scopes:
                   type: array
-                  items: { type: string, enum: [health, "sandboxes:read", "sandboxes:write", "sandboxes:exec", snapshots, "sandboxes:egress"] }
+                  items: { type: string, enum: [health, "sandboxes:read", "sandboxes:write", "sandboxes:exec", snapshots, "sandboxes:egress", "sandboxes:files"] }
                   description: Optional restriction; omitted = everything the role allows
                 role: { $ref: "#/components/schemas/Role" }
                 ttl_seconds: { type: integer }
@@ -391,7 +392,14 @@ paths:
     post:
       operationId: execSandbox
       tags: [sandboxes]
-      summary: Run a one-shot command in a running sandbox. A non-zero exit code is still 200.
+      summary: >-
+        Run a one-shot command in a running sandbox. A non-zero exit code is
+        still 200. A bare {cmd} request keeps the legacy behaviour (no
+        timeout, unbounded output buffers); presence of any v2 field
+        (cwd/env/stdin/timeout_s/max_output_bytes) switches to exec v2
+        semantics (AGENT_PLAN A0).
+      parameters:
+        - { name: stream, in: query, schema: { type: string, enum: [ndjson] }, description: "stream=ndjson streams the run as newline-delimited JSON instead of one buffered response" }
       requestBody:
         required: true
         content:
@@ -401,9 +409,28 @@ paths:
               required: [cmd]
               properties:
                 cmd: { type: array, items: { type: string }, minItems: 1 }
+                cwd:
+                  type: string
+                  description: Working directory inside the sandbox; must be under /home/sandbox
+                env:
+                  type: object
+                  description: Extra env vars (K=V). PATH, HOME and LD_* may not be overridden.
+                  additionalProperties: { type: string }
+                stdin:
+                  type: string
+                  description: Optional stdin payload, max 1 MiB
+                timeout_s:
+                  type: integer
+                  default: 60
+                  description: Hard in-container timeout; the whole process group is killed. Capped by policy.exec.max_timeout_s (default 600).timed_out=true and exit_code=124 on expiry.
+                max_output_bytes:
+                  type: integer
+                  format: int64
+                  default: 262144
+                  description: Per-stream output bound (head+tail kept, truncated=true). Max 4 MiB.
       responses:
         "200":
-          description: Command finished
+          description: Command finished (or an ndjson stream when stream=ndjson)
           content:
             application/json:
               schema:
@@ -412,6 +439,13 @@ paths:
                   stdout: { type: string }
                   stderr: { type: string }
                   exit_code: { type: integer }
+                  timed_out: { type: boolean }
+                  truncated: { type: boolean }
+                  duration_ms: { type: integer, format: int64 }
+            application/x-ndjson:
+              schema:
+                type: string
+                description: One {"stream":"stdout"|"stderr","data":"…"} JSON line per chunk, final line {"exit_code":…,"timed_out":…,"duration_ms":…}
         "400": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
@@ -432,6 +466,143 @@ paths:
             text/plain: { schema: { type: string } }
             text/event-stream: { schema: { type: string } }
         "404": { $ref: "#/components/responses/Error" }
+
+  /v1/sandboxes/{id}/files:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    get:
+      operationId: listSandboxFiles
+      tags: [files]
+      summary: >-
+        List workspace files (relative to /home/sandbox). Symlinks are never
+        listed or followed; node_modules, .git, .venv, dist and .vite are
+        skipped in recursive listings. Scope: sandboxes:files.
+      parameters:
+        - { name: path, in: query, schema: { type: string }, description: Directory to list, relative to the workspace root (default root) }
+        - { name: recursive, in: query, schema: { type: boolean, default: false } }
+        - { name: max_entries, in: query, schema: { type: integer, minimum: 1, maximum: 10000, default: 500 } }
+      responses:
+        "200":
+          description: Directory listing
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  path: { type: string }
+                  recursive: { type: boolean }
+                  truncated: { type: boolean, description: max_entries was hit — entries are partial }
+                  entries:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        path: { type: string }
+                        type: { type: string, enum: [file, dir] }
+                        size: { type: integer, format: int64 }
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+    delete:
+      operationId: deleteSandboxFile
+      tags: [files]
+      summary: Delete a file or an EMPTY directory. Scope: sandboxes:files.
+      parameters:
+        - { name: path, in: query, required: true, schema: { type: string } }
+      responses:
+        "204": { description: Deleted }
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+
+  /v1/sandboxes/{id}/files/content:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    get:
+      operationId: readSandboxFile
+      tags: [files]
+      summary: >-
+        Read file content as UTF-8 text or base64 (binary). One request is
+        capped at 2 MiB — larger files page with offset/limit.
+        Scope: sandboxes:files.
+      parameters:
+        - { name: path, in: query, required: true, schema: { type: string } }
+        - { name: offset, in: query, schema: { type: integer, minimum: 0, default: 0 } }
+        - { name: limit, in: query, schema: { type: integer, maximum: 2097152 }, description: Window size; omitted reads the whole file up to the 2 MiB cap }
+      responses:
+        "200":
+          description: File content window
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  path: { type: string }
+                  size: { type: integer, format: int64 }
+                  offset: { type: integer, format: int64 }
+                  encoding: { type: string, enum: [utf-8, base64] }
+                  data: { type: string }
+                  truncated: { type: boolean, description: more content remains beyond this window }
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+    put:
+      operationId: writeSandboxFile
+      tags: [files]
+      summary: >-
+        Write a whole file (parent dirs are created). Body is opaque bytes
+        (max 25 MiB); files land 0644 owned by the sandbox user — no
+        host-side exec bits. Optional if_match (sha256 of the current
+        content) refuses clobbering writes. Scope: sandboxes:files.
+      parameters:
+        - { name: path, in: query, required: true, schema: { type: string } }
+        - { name: if_match, in: query, schema: { type: string }, description: sha256 hex of the current content; mismatch (or missing file) answers 409 }
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary }
+      responses:
+        "200":
+          description: Written
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  path: { type: string }
+                  size: { type: integer, format: int64 }
+                  sha256: { type: string }
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+
+  /v1/sandboxes/{id}/files/move:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    post:
+      operationId: moveSandboxFile
+      tags: [files]
+      summary: Rename/move a file or directory within the workspace; the target must not exist. Scope: sandboxes:files.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [from, to]
+              properties:
+                from: { type: string }
+                to: { type: string }
+      responses:
+        "200":
+          description: Moved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  from: { type: string }
+                  to: { type: string }
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
 
   /v1/sandboxes/{id}/network/ports:
     parameters: [ { $ref: "#/components/parameters/Id" } ]

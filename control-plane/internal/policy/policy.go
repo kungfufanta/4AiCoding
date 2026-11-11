@@ -25,10 +25,18 @@ type Policy struct {
 	Resources Resources `json:"resources"`
 	Egress    Egress    `json:"egress"`
 	Lifecycle Lifecycle `json:"lifecycle"`
+	// Exec bounds v1 exec requests (AGENT_PLAN A0). MaxTimeoutSecs caps
+	// timeout_s (0 = the built-in default of 600).
+	Exec Exec `json:"exec"`
 	// Approvals lists the actions that need a one-time human approval
 	// (PLAN §8 #11), e.g. "sandbox.delete_keep_alive", "policy.update",
 	// "sandbox.egress_outside_policy", "sandbox.public". See M3c.
 	Approvals []string `json:"approvals"`
+}
+
+// Exec policy: per-request exec limits.
+type Exec struct {
+	MaxTimeoutSecs int `json:"max_timeout_s"` // 0 = default 600
 }
 
 // Images: the instance image is always allowed; Allowed adds more.
@@ -77,9 +85,14 @@ func Default() Policy {
 		Resources: Resources{MaxPortsPerSandbox: 16, MaxMemoryMB: 10240},
 		Egress:    Egress{Mode: EgressStrict, Allow: []string{}},
 		Lifecycle: Lifecycle{AllowKeepAlive: false, MaxIdleTimeoutSecs: 7 * 24 * 3600},
+		Exec:      Exec{MaxTimeoutSecs: DefaultExecMaxTimeoutSecs},
 		Approvals: []string{},
 	}
 }
+
+// DefaultExecMaxTimeoutSecs is the built-in exec timeout ceiling when the
+// policy does not name one.
+const DefaultExecMaxTimeoutSecs = 600
 
 // Validate normalises p and reports the first problem.
 func (p *Policy) Validate() error {
@@ -121,6 +134,9 @@ func (p *Policy) Validate() error {
 	}
 	if p.Lifecycle.MaxIdleTimeoutSecs < 0 {
 		return fmt.Errorf("lifecycle.max_idle_timeout_secs must not be negative")
+	}
+	if p.Exec.MaxTimeoutSecs < 0 {
+		return fmt.Errorf("exec.max_timeout_s must not be negative")
 	}
 	if p.Approvals == nil {
 		p.Approvals = []string{}

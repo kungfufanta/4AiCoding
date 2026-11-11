@@ -204,6 +204,84 @@ OUT="$(curl -s -m30 -XPOST "$API/v1/sandboxes/$ID/exec" -H 'content-type: applic
 [ "$(echo "$OUT" | jget exit_code)" = "7" ] || fail "exec exit code not reported: $OUT"
 log "exec ✓"
 
+# 4b. Exec v2 (AGENT_PLAN A0): in-container timeout kills the whole process
+# group, the output bound keeps control-plane RAM bounded, ?stream=ndjson
+# streams live, and a bare {cmd} request behaves exactly as before.
+log "exec v2"
+T0="$(date +%s%3N)"
+OUT="$(curl -s -m10 -XPOST "$API/v1/sandboxes/$ID/exec" -H 'content-type: application/json' \
+  -d '{"cmd":["sleep","999"],"timeout_s":2,"max_output_bytes":1024}')"
+T1="$(date +%s%3N)"
+[ "$(echo "$OUT" | jget timed_out)" = "True" ] || fail "exec v2 timed_out: $OUT"
+[ "$(echo "$OUT" | jget exit_code)" = "124" ] || fail "exec v2 exit_code: $OUT"
+[ $((T1 - T0)) -le 6000 ] || fail "exec v2 timeout answered after $((T1 - T0))ms (want <= ~3s)"
+docker top "s-$ID" 2>/dev/null | grep -q "sleep 999" && fail "sleep 999 survived the timeout in the container"
+OUT="$(curl -s -m30 -XPOST "$API/v1/sandboxes/$ID/exec" -H 'content-type: application/json' \
+  -d '{"cmd":["sh","-c","head -c 50000000 /dev/zero | tr '\''\0'\'' 'A'"],"timeout_s":60,"max_output_bytes":4096}')"
+[ "$(echo "$OUT" | jget truncated)" = "True" ] || fail "50 MB output not truncated: $(echo "$OUT" | head -c 200)"
+[ "$(echo "$OUT" | jget exit_code)" = "0" ] || fail "truncated run exit: $OUT"
+[ "$(echo "$OUT" | wc -c)" -lt 30000 ] || fail "truncated response still huge: $(echo "$OUT" | wc -c) bytes"
+OUT="$(curl -s -m10 -XPOST "$API/v1/sandboxes/$ID/exec?stream=ndjson" -H 'content-type: application/json' \
+  -d '{"cmd":["sh","-c","echo nd-hello"],"timeout_s":10}')"
+echo "$OUT" | grep -q '"stream":"stdout"' || fail "ndjson missing stdout lines: $OUT"
+echo "$OUT" | tail -1 | grep -q '"exit_code":0' || fail "ndjson last line not the exit status: $OUT"
+ND_DUR="$(echo "$OUT" | tail -1 | python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["duration_ms"] >= 0)')"
+[ "$ND_DUR" = "True" ] || fail "ndjson duration_ms missing"
+for BODY in '{"cmd":["ls"],"cwd":"/etc"}' '{"cmd":["ls"],"env":{"PATH":"/x"}}' '{"cmd":["ls"],"timeout_s":0}' '{"cmd":["ls"],"max_output_bytes":999999999}' ; do
+  code="$(curl -s -m10 -o /dev/null -w '%{http_code}' -XPOST "$API/v1/sandboxes/$ID/exec" -H 'content-type: application/json' -d "$BODY")"
+  [ "$code" = "400" ] || fail "exec v2 validation ($BODY) returned $code, want 400"
+done
+OUT="$(curl -s -m10 -XPOST "$API/v1/sandboxes/$ID/exec" -H 'content-type: application/json' -d '{"cmd":["sh","-c","echo legacy-ok"]}')"
+[ "$(echo "$OUT" | jget stdout | tr -d '\n')" = "legacy-ok" ] || fail "legacy {cmd} broke: $OUT"
+echo "$OUT" | grep -q '"timed_out":false' || fail "legacy response lost the timed_out field"
+log "exec v2 ✓"
+
+# 4c. Files API (AGENT_PLAN A0): write/read roundtrip with sha256, traversal
+# and symlink escapes refused, listing exclusions, if_match, move, delete.
+log "files api"
+CONTENT="portal-a0-hello"
+SHA="$(printf '%s' "$CONTENT" | curl -s -m10 -XPUT "$API/v1/sandboxes/$ID/files/content?path=a0%2Fhello.txt" --data-binary @- | jget sha256)"
+[ "$SHA" = "$(printf '%s' "$CONTENT" | sha256sum | cut -d' ' -f1)" ] || fail "files sha256 mismatch: $SHA"
+OUT="$(curl -s -m10 "$API/v1/sandboxes/$ID/files/content?path=a0%2Fhello.txt")"
+[ "$(echo "$OUT" | jget encoding)" = "utf-8" ] || fail "read encoding: $OUT"
+[ "$(echo "$OUT" | jget data)" = "$CONTENT" ] || fail "read data: $OUT"
+printf '\x00\x01\x02binary' > "$DD/blob.bin"
+BIN_SHA="$(sha256sum "$DD/blob.bin" | cut -d' ' -f1)"
+BIN_RESP="$(curl -s -m10 -XPUT "$API/v1/sandboxes/$ID/files/content?path=a0%2Fblob.bin" --data-binary @"$DD/blob.bin")"
+[ "$(echo "$BIN_RESP" | jget sha256)" = "$BIN_SHA" ] || fail "binary write sha256: $BIN_RESP"
+OUT="$(curl -s -m10 "$API/v1/sandboxes/$ID/files/content?path=a0%2Fblob.bin")"
+[ "$(echo "$OUT" | jget encoding)" = "base64" ] || fail "binary encoding: $OUT"
+OUT="$(curl -s -m10 -o /dev/null -w '%{http_code}' "$API/v1/sandboxes/$ID/files/content?path=..%2F..%2Fetc%2Fpasswd")"
+[ "$OUT" != "200" ] || fail "traversal read leaked /etc/passwd"
+curl -s -m10 -XPOST "$API/v1/sandboxes/$ID/exec" -H 'content-type: application/json' -d '{"cmd":["ln","-s","/etc/passwd","/home/sandbox/leak"]}' >/dev/null
+OUT="$(curl -s -m10 -o /dev/null -w '%{http_code}' "$API/v1/sandboxes/$ID/files/content?path=leak")"
+[ "$OUT" != "200" ] || fail "symlink read leaked /etc/passwd"
+code="$(curl -s -m10 -o /dev/null -w '%{http_code}' -XPUT "$API/v1/sandboxes/$ID/files/content?path=leak" --data-binary PWNED)"
+[ "$code" = "400" ] || fail "symlink overwrite returned $code, want 400"
+curl -s -m10 -XPUT "$API/v1/sandboxes/$ID/files/content?path=node_modules%2Fx.js" --data-binary 'js' >/dev/null
+OUT="$(curl -s -m10 "$API/v1/sandboxes/$ID/files?recursive=true")"
+echo "$OUT" | grep -q '"a0/hello.txt"' || fail "listing missing a0/hello.txt: $(echo "$OUT" | head -c 300)"
+echo "$OUT" | grep -q 'node_modules' && fail "listing included node_modules"
+curl -s -m10 -XPUT "$API/v1/sandboxes/$ID/files/content?path=a0%2Fhello.txt" --data-binary "$CONTENT" >/dev/null
+GOOD_SHA="$SHA"
+code="$(curl -s -m10 -o /dev/null -w '%{http_code}' -XPUT "$API/v1/sandboxes/$ID/files/content?path=a0%2Fhello.txt&if_match=0000000000000000000000000000000000000000000000000000000000000000" --data-binary X)"
+[ "$code" = "409" ] || fail "stale if_match returned $code, want 409"
+code="$(curl -s -m10 -o /dev/null -w '%{http_code}' -XPUT "$API/v1/sandboxes/$ID/files/content?path=a0%2Fhello.txt&if_match=$GOOD_SHA" --data-binary "$CONTENT")"
+[ "$code" = "200" ] || fail "matching if_match returned $code, want 200"
+OUT="$(curl -s -m10 -XPOST "$API/v1/sandboxes/$ID/files/move" -H 'content-type: application/json' -d '{"from":"a0/hello.txt","to":"a0/renamed.txt"}')"
+echo "$OUT" | grep -q '"to":"a0/renamed.txt"' || fail "move: $OUT"
+code="$(curl -s -m10 -o /dev/null -w '%{http_code}' "$API/v1/sandboxes/$ID/files/content?path=a0%2Fhello.txt")"
+[ "$code" = "404" ] || fail "old path still readable after move: $code"
+code="$(curl -s -m10 -o /dev/null -w '%{http_code}' -XDELETE "$API/v1/sandboxes/$ID/files?path=a0%2Frenamed.txt")"
+[ "$code" = "204" ] || fail "delete file returned $code, want 204"
+code="$(curl -s -m10 -o /dev/null -w '%{http_code}' -XDELETE "$API/v1/sandboxes/$ID/files?path=a0%2Fblob.bin")"
+[ "$code" = "204" ] || fail "delete blob returned $code, want 204"
+code="$(curl -s -m10 -o /dev/null -w '%{http_code}' -XDELETE "$API/v1/sandboxes/$ID/files?path=a0")"
+[ "$code" = "204" ] || fail "delete empty dir returned $code, want 204"
+code="$(curl -s -m10 -o /dev/null -w '%{http_code}' -XDELETE "$API/v1/sandboxes/$ID/files?path=a0")"
+[ "$code" = "404" ] || fail "delete missing returned $code, want 404"
+log "files api ✓"
+
 # 5. Logs: the main process writes nothing, so seed a line via PID 1's stdout.
 log "logs"
 curl -s -m30 -o /dev/null -XPOST "$API/v1/sandboxes/$ID/exec" -H 'content-type: application/json' -d '{"cmd":["sh","-c","echo e2e-log-line > /proc/1/fd/1"]}'
