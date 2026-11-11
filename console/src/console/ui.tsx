@@ -127,6 +127,30 @@ export function StatusBadge({ status }: { status: string }) {
   return <span className={`badge st-${status}`}>{status}</span>;
 }
 
+/** Color class for a terminal line — color-coded log streaming. */
+export function logClass(line: string): string {
+  const s = line.trim();
+  if (/\b(error|fail|failed|denied|blocked|refused|fatal|panic)\b/i.test(line)) return "log-err";
+  if (/\b(warn|warning|deprecated|retry|pending)\b/i.test(line)) return "log-warn";
+  if (/^[$]/.test(s) || /sandboxd deploy/.test(line)) return "log-cmd";
+  if (/\b(ok|ready|started|listening|allowed|success|completed|running|live)\b/i.test(line) || s.endsWith("ok")) return "log-ok";
+  return "";
+}
+
+/** Renders log lines as color-coded spans inside a .term block. */
+export function ColorLog({ lines }: { lines: string[] }) {
+  return (
+    <>
+      {lines.map((l, i) => (
+        <span key={i} className={logClass(l)}>
+          {l}
+          {"\n"}
+        </span>
+      ))}
+    </>
+  );
+}
+
 export function Section({ title, actions, children }: { title: string; actions?: ReactNode; children: ReactNode }) {
   return (
     <section className="card">

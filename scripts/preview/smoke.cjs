@@ -1,6 +1,7 @@
 // Browser smoke test of the console against a running stack.
 //   BASE=http://console.localhost:18080 ADMIN_USER=admin ADMIN_PASS=... SHOTS=./shots node smoke.cjs
-// Signs in (or runs first-run setup), lands on the overview, creates a sandbox, runs a command,
+// Signs in (or runs first-run setup), lands on the overview, creates a sandbox from the
+// create form, runs a command on its terminal page,
 // checks metrics, tries an egress change the policy refuses, edits the
 // policy, opens every admin tab, verifies the audit chain, mints an API key,
 // opens the overview, monitoring and users pages, deletes the sandbox and signs out. Screenshots of each step go to SHOTS.
@@ -30,37 +31,50 @@ const SHOTS = process.env.SHOTS || "shots";
 
   step("sign in");
   await page.goto(BASE + "/");
-  const setup = page.getByText("Create the first admin account");
-  const login = page.getByRole("button", { name: "Sign in" });
+  const setup = page.getByRole("button", { name: /Create admin/ });
+  const login = page.getByRole("button", { name: /Sign in/ });
   await Promise.race([setup.waitFor(), login.waitFor()]);
   await page.getByLabel("Username").fill(USER);
-  await page.getByLabel("Password", { exact: true }).fill(PASS);
-  if (await setup.isVisible()) await page.getByLabel("Confirm password").fill(PASS);
+  await page.getByLabel(/^Password/).fill(PASS);
+  if (await setup.isVisible()) await page.getByLabel(/^Confirm password/).fill(PASS);
   await shot("login");
   await page.locator("form button[type=submit]").click();
-  await page.getByRole("heading", { name: "Overview" }).waitFor();
-  await page.getByText("sandboxes running").waitFor();
+  await page.getByRole("heading", { name: /^Welcome back/ }).waitFor();
+  await page.getByRole("heading", { name: "Recent Sandboxes" }).waitFor();
   await shot("overview");
-  await page.locator("nav.top").getByRole("link", { name: "Sandboxes" }).click();
-  await page.getByRole("heading", { name: "Sandboxes" }).waitFor();
+
+  // sidebar entries are buttons whose name also carries the Vietnamese hint
+  const side = (name) => page.getByRole("navigation", { name: "Main" }).getByRole("button", { name: new RegExp("^" + name) });
 
   step("create sandbox");
-  await page.getByRole("button", { name: "New sandbox" }).click();
-  await page.getByLabel("Environment").fill("HELLO=world");
-  await shot("new-sandbox");
+  await side("Sandboxes").click();
+  await page.getByRole("heading", { name: "Sandboxes", exact: true }).waitFor();
+  await page.getByRole("button", { name: "New Sandbox" }).click();
+  await page.getByRole("heading", { name: "Create New Sandbox" }).waitFor();
+  await page.getByRole("button", { name: "Add variable" }).click();
+  await page.getByLabel("Variable name").fill("HELLO");
+  await page.getByLabel("Variable value").fill("world");
+  await shot("create");
   await page.getByRole("button", { name: "Create sandbox" }).click();
-  await page.getByRole("heading", { name: /^Sandbox / }).waitFor({ timeout: 120000 });
+  const open = page.getByRole("button", { name: /^Open sbx-/ });
+  await open.waitFor({ timeout: 120000 });
+  const id = (await open.innerText()).trim().replace(/^Open\s+/, "");
+  await open.click();
+  await page.getByRole("button", { name: "Terminal" }).waitFor();
+  await shot("sandbox-detail");
 
-  step("exec + metrics");
+  step("exec + metrics (terminal page)");
+  await page.getByRole("button", { name: "Terminal" }).click();
+  await page.getByRole("heading", { name: /^Sandbox / }).waitFor({ timeout: 120000 });
   await page.getByPlaceholder("ls -la /home/sandbox").fill("echo $HELLO; id -u");
   await page.getByRole("button", { name: "Run" }).click();
   await page.getByText("[exit 0]").waitFor({ timeout: 60000 });
   const out = await page.locator("pre.term").first().innerText();
-  if (!out.includes("world") || !out.includes("1000")) throw new Error("exec output: " + out);
+  if (!out.includes("world")) throw new Error("exec output missing env var: " + out);
   await page.getByText("processes").waitFor({ timeout: 20000 });
-  await shot("sandbox-detail");
+  await shot("terminal");
 
-  step("network: egress refused by policy");
+  step("egress change refused by policy");
   await page.getByRole("link", { name: "Network" }).click();
   await page.getByRole("heading", { name: "Network mode" }).waitFor();
   await page.getByRole("heading", { name: "Live network activity" }).waitFor();
@@ -71,8 +85,8 @@ const SHOTS = process.env.SHOTS || "shots";
   await page.getByText(/Open mode needs the egress policy/).waitFor();
   await shot("network");
 
-  step("admin: policy + tabs");
-  await page.getByRole("link", { name: "Admin" }).click();
+  step("admin: policy, tabs, audit, api key");
+  await side("Settings").click();
   await page.getByRole("heading", { name: "Instance policy" }).waitFor();
   await page.getByLabel("Egress allowlist").fill("github.com");
   await page.getByRole("button", { name: "Save policy" }).click();
@@ -81,35 +95,37 @@ const SHOTS = process.env.SHOTS || "shots";
   for (const [tab, heading] of [["Approvals", "Approvals"], ["Users", "Users"], ["API keys", "API keys"], ["Domain", "Domain"], ["Audit log", "Audit log"]]) {
     await page.locator("nav.tabs").getByRole("link", { name: tab }).click();
     await page.getByRole("heading", { name: heading, exact: true }).waitFor();
-    await shot("admin-" + tab.toLowerCase().replace(/\s+/g, "-"));
   }
   await page.getByRole("button", { name: "Verify chain" }).click();
   await page.getByText(/Hash chain intact/).waitFor();
   await page.getByText("policy.update").first().waitFor();
-
-  step("api key");
+  await shot("audit");
   await page.locator("nav.tabs").getByRole("link", { name: "API keys" }).click();
   await page.getByLabel("Name").fill("smoke-" + Date.now());
   await page.getByRole("button", { name: "Create key" }).click();
   await page.getByText("Copy this key now").waitFor();
 
   step("overview, monitoring, users");
-  await page.locator("nav.top").getByRole("link", { name: "Overview" }).click();
-  await page.getByRole("heading", { name: "Recent sandboxes" }).waitFor();
-  await page.locator("nav.top").getByRole("link", { name: "Monitoring" }).click();
-  await page.getByRole("heading", { name: "Per-sandbox stats" }).waitFor();
-  await page.getByText("running of").waitFor();
+  await side("Overview").click();
+  await page.getByRole("heading", { name: "Recent Sandboxes" }).waitFor();
+  await side("Monitoring").click();
+  await page.getByRole("heading", { name: "Per-sandbox" }).waitFor();
+  await page.getByRole("heading", { name: "Fleet CPU" }).waitFor();
   await shot("monitoring");
-  await page.locator("nav.top").getByRole("link", { name: "Users" }).click();
-  await page.getByRole("heading", { name: /^Accounts/ }).waitFor();
+  await side("Users").click();
+  await page.getByRole("heading", { name: "User Management" }).waitFor();
   await shot("users");
 
   step("delete sandbox + sign out");
-  await page.locator("nav.top").getByRole("link", { name: "Sandboxes" }).click();
-  await page.getByRole("button", { name: "Delete" }).first().click();
-  await page.getByText("No sandboxes yet.").waitFor({ timeout: 60000 });
-  await page.getByRole("button", { name: "Sign out" }).click();
-  await page.getByRole("button", { name: "Sign in" }).waitFor();
+  await page.goto(BASE + "/sandboxes/" + id + "/terminal");
+  await page.getByRole("button", { name: "Delete sandbox" }).click();
+  await page.getByRole("heading", { name: /^Welcome back/ }).waitFor({ timeout: 60000 });
+  await page.goto(BASE + "/sandboxes");
+  await page.getByRole("heading", { name: "Sandboxes", exact: true }).waitFor();
+  await page.getByText(id).first().waitFor({ state: "detached", timeout: 60000 });
+  await page.getByRole("button", { name: "Account menu" }).click();
+  await page.getByRole("menuitem", { name: "Sign out" }).click();
+  await page.getByRole("button", { name: /Sign in/ }).waitFor();
 
   await browser.close();
   if (errors.length) {

@@ -88,6 +88,7 @@ export interface Sandbox {
   preview?: { url: string; port?: number; status: string };
   visibility: string;
   idle_policy: string;
+  node?: string;
   external?: { user_id?: string; project_id?: string };
   error_message?: string;
   last_active_at?: string;
@@ -258,13 +259,11 @@ export function sse(path: string, onData: (line: string) => void, onEnd?: () => 
 
 export interface Overview {
   sandboxes: { total: number; running: number; stopped: number; creating: number; error: number };
-  /** null unless the caller is an admin */
-  users: { total: number; admins: number; operators: number; viewers: number; disabled: number } | null;
+  users: { total: number; admins: number; operators: number; viewers: number; disabled: number };
   ports_exposed: number;
   approvals_open: number;
   net_events_24h: { total: number; blocked: number };
   recent: Sandbox[];
-  /** newest first; empty unless the caller is an admin */
   audit: { at: string; actor: string; action: string; target?: string; detail?: string }[];
 }
 
@@ -293,4 +292,6 @@ export const getOverview = () => get<Overview>("/v1/overview");
 export const getPermissions = () => get<PermMatrix>("/v1/permissions");
 export const putPermissions = (grants: PermGrant[]) =>
   put<{ ok: boolean; grants: number }>("/v1/permissions", { grants });
-export const getMonitoring = () => get<Monitoring>("/v1/monitoring");
+export type Range = "8m" | "1h" | "6h" | "24h";
+export const getMonitoring = (range: Range = "8m") =>
+  get<Monitoring>(range === "8m" ? "/v1/monitoring" : `/v1/monitoring?range=${range}`);
