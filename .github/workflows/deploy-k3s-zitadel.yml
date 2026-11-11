@@ -1,0 +1,156 @@
+# Self-hosts Zitadel, the Portal's OIDC identity provider
+# (docs/PORTAL_PLAN.md), on k3s-1 at https://auth.devhub.io.vn, with the
+# upstream Helm chart and deploy/k3s-1-zitadel-values.yaml.
+#
+# One-time setup, under GitHub → Settings → Environments → k3s-1:
+#   ZITADEL_MASTERKEY          exactly 32 characters; encrypts secrets in
+#                              the DB. Never change it after the first
+#                              deploy. Generate with: openssl rand -hex 16
+#   ZITADEL_DB_ADMIN_PASSWORD  password of the Postgres admin `postgres`
+#                              on stag.postgres.devhub.io.vn. The init job
+#                              uses it to create the `zitadel` DB and login.
+#   ZITADEL_DB_PASSWORD        password for the `zitadel` DB login (new)
+#   ZITADEL_ADMIN_PASSWORD     password of the first console user
+#                              admin@devhub.io.vn: 8+ chars, with upper,
+#                              lower, digit and symbol
+#
+# DNS: auth.devhub.io.vn must point at the k3s-1 edge (the same target as
+# chat.devhub.io.vn) so Traefik routes it and cert-manager can issue
+# auth-devhub-io-vn-tls.
+#
+# RBAC: the deployer account needs Jobs, ConfigMaps, Roles and
+# RoleBindings in 4aicoding (deploy/rbac/portal-deployer.yaml, applied by
+# k3s-portal-rbac.yml, which re-runs this workflow afterwards).
+
+name: deploy-k3s-zitadel
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "deploy/k3s-1-zitadel-values.yaml"
+      - ".github/workflows/deploy-k3s-zitadel.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-k3s-zitadel
+  cancel-in-progress: false
+
+env:
+  NAMESPACE: 4aicoding
+  RELEASE: zitadel
+  CHART_VERSION: 10.4.0 # app v4.19.2
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: k3s-1
+    steps:
+      - uses: actions/checkout@v7
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
+      - name: Configure scoped kubeconfig
+        env:
+          KUBECONFIG_B64: ${{ secrets.K3S_4AICODING_KUBECONFIG_B64 }}
+        run: |
+          set -eu
+          test -n "$KUBECONFIG_B64"
+          echo "$KUBECONFIG_B64" | base64 --decode > "$RUNNER_TEMP/kubeconfig"
+          chmod 600 "$RUNNER_TEMP/kubeconfig"
+          echo "KUBECONFIG=$RUNNER_TEMP/kubeconfig" >> "$GITHUB_ENV"
+      - name: Check required secrets
+        env:
+          ZITADEL_MASTERKEY: ${{ secrets.ZITADEL_MASTERKEY }}
+          ZITADEL_DB_ADMIN_PASSWORD: ${{ secrets.ZITADEL_DB_ADMIN_PASSWORD }}
+          ZITADEL_DB_PASSWORD: ${{ secrets.ZITADEL_DB_PASSWORD }}
+          ZITADEL_ADMIN_PASSWORD: ${{ secrets.ZITADEL_ADMIN_PASSWORD }}
+        run: |
+          set -eu
+          missing=0
+          for v in ZITADEL_MASTERKEY ZITADEL_DB_ADMIN_PASSWORD ZITADEL_DB_PASSWORD ZITADEL_ADMIN_PASSWORD; do
+            if [ -z "${!v}" ]; then
+              echo "$v is not set on the k3s-1 environment (see the header of this workflow)" >&2
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ]
+          if [ "${#ZITADEL_MASTERKEY}" -ne 32 ]; then
+            echo "ZITADEL_MASTERKEY must be exactly 32 characters (openssl rand -hex 16)" >&2
+            exit 1
+          fi
+      - name: Apply Zitadel secrets
+        env:
+          ZITADEL_MASTERKEY: ${{ secrets.ZITADEL_MASTERKEY }}
+          ZITADEL_DB_ADMIN_PASSWORD: ${{ secrets.ZITADEL_DB_ADMIN_PASSWORD }}
+          ZITADEL_DB_PASSWORD: ${{ secrets.ZITADEL_DB_PASSWORD }}
+          ZITADEL_ADMIN_PASSWORD: ${{ secrets.ZITADEL_ADMIN_PASSWORD }}
+        run: |
+          set -eu
+          # Values go through files, not command lines, so they never show
+          # up in a process list.
+          d="$RUNNER_TEMP/zitadel-secrets"
+          mkdir -m 700 -p "$d"
+          printf '%s' "$ZITADEL_MASTERKEY" > "$d/masterkey"
+          printf '%s' "$ZITADEL_DB_PASSWORD" > "$d/ZITADEL_DATABASE_POSTGRES_USER_PASSWORD"
+          printf '%s' "$ZITADEL_DB_ADMIN_PASSWORD" > "$d/ZITADEL_DATABASE_POSTGRES_ADMIN_PASSWORD"
+          printf '%s' "$ZITADEL_ADMIN_PASSWORD" > "$d/ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORD"
+          kubectl -n "$NAMESPACE" create secret generic zitadel-masterkey \
+            --from-file=masterkey="$d/masterkey" \
+            --dry-run=client -o yaml | kubectl apply -f -
+          kubectl -n "$NAMESPACE" create secret generic zitadel-env \
+            --from-file="$d/ZITADEL_DATABASE_POSTGRES_USER_PASSWORD" \
+            --from-file="$d/ZITADEL_DATABASE_POSTGRES_ADMIN_PASSWORD" \
+            --from-file="$d/ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORD" \
+            --dry-run=client -o yaml | kubectl apply -f -
+          rm -rf "$d"
+      - name: Deploy Zitadel (auth.devhub.io.vn)
+        run: |
+          set -eu
+          helm repo add zitadel https://charts.zitadel.com
+          helm repo update zitadel
+          helm upgrade --install "$RELEASE" zitadel/zitadel \
+            --version "$CHART_VERSION" \
+            --namespace "$NAMESPACE" \
+            --values deploy/k3s-1-zitadel-values.yaml \
+            --wait --timeout 10m
+      - name: Smoke test in-cluster health
+        run: |
+          set -eu
+          for attempt in $(seq 1 10); do
+            if kubectl -n "$NAMESPACE" run "zitadel-smoke-${GITHUB_SHA:0:12}" --rm -i --restart=Never \
+              --image=curlimages/curl:8.10.1 \
+              --overrides='{"spec":{"securityContext":{"runAsNonRoot":true,"runAsUser":100,"seccompProfile":{"type":"RuntimeDefault"}},"containers":[{"name":"zitadel-smoke-'"${GITHUB_SHA:0:12}"'","image":"curlimages/curl:8.10.1","command":["curl","-fsS","--max-time","5","-H","Host: auth.devhub.io.vn","http://'"$RELEASE"':8080/debug/healthz"],"securityContext":{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]}}}]}}'; then
+              echo "zitadel healthy through the Service"
+              exit 0
+            fi
+            echo "attempt $attempt failed; retrying"
+            sleep 5
+          done
+          echo "zitadel /debug/healthz did not answer through the Service" >&2
+          exit 1
+      - name: Diagnose a failed rollout
+        if: failure()
+        run: |
+          set +e
+          sel="app.kubernetes.io/instance=$RELEASE"
+          kubectl -n "$NAMESPACE" get deploy,rs,jobs,pods -l "$sel" -o wide
+          for pod in $(kubectl -n "$NAMESPACE" get pods -l "$sel" -o jsonpath='{.items[*].metadata.name}'); do
+            echo "::group::describe $pod"
+            kubectl -n "$NAMESPACE" describe pod "$pod" | sed -n '/^Init Containers:\|^Containers:/,$p'
+            echo "::endgroup::"
+            echo "::group::logs $pod"
+            kubectl -n "$NAMESPACE" logs "$pod" --tail=100 --all-containers
+            kubectl -n "$NAMESPACE" logs "$pod" --tail=100 --all-containers --previous 2>/dev/null
+            echo "::endgroup::"
+          done
+          kubectl -n "$NAMESPACE" get events --sort-by=.lastTimestamp | tail -40
+      - name: Report certificate status
+        # Informational: the certificate needs auth.devhub.io.vn DNS first.
+        run: |
+          kubectl -n "$NAMESPACE" get certificate auth-devhub-io-vn-tls \
+            -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}{"\n"}' \
+            || echo "certificate auth-devhub-io-vn-tls not created yet (ingress-shim waits for the DNS)"

@@ -1,0 +1,126 @@
+# Zitadel (OIDC identity provider for the Portal, docs/PORTAL_PLAN.md)
+# on k3s-1, public at https://auth.devhub.io.vn.
+#
+# Chart: zitadel/zitadel (https://charts.zitadel.com), version pinned in
+# .github/workflows/deploy-k3s-zitadel.yml.
+#
+# Secrets are never in this file. The workflow builds two Kubernetes
+# Secrets from the GitHub environment k3s-1:
+#   zitadel-masterkey  key "masterkey"  <- ZITADEL_MASTERKEY
+#   zitadel-env        env vars         <- ZITADEL_DB_PASSWORD,
+#                                          ZITADEL_DB_ADMIN_PASSWORD,
+#                                          ZITADEL_ADMIN_PASSWORD
+#
+# Database: the init job logs in as the Postgres admin (user postgres)
+# and creates the `zitadel` database and login itself. After that,
+# Zitadel only uses the `zitadel` login.
+
+replicaCount: 1
+
+zitadel:
+  masterkeySecretName: zitadel-masterkey
+  configmapConfig:
+    ExternalDomain: auth.devhub.io.vn
+    ExternalPort: 443
+    ExternalSecure: true
+    TLS:
+      Enabled: false
+    Database:
+      Postgres:
+        Host: stag.postgres.devhub.io.vn
+        Port: 5432
+        Database: zitadel
+        MaxOpenConns: 10
+        MaxIdleConns: 5
+        MaxConnLifetime: 30m
+        MaxConnIdleTime: 5m
+        User:
+          Username: zitadel
+          SSL:
+            Mode: prefer
+        Admin:
+          Username: postgres
+          SSL:
+            Mode: prefer
+    FirstInstance:
+      Org:
+        Name: DevHub
+        Human:
+          UserName: admin
+          FirstName: DevHub
+          LastName: Admin
+          Email:
+            Address: admin@devhub.io.vn
+            Verified: true
+          # The password comes from ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORD
+          # in the zitadel-env Secret.
+          PasswordChangeRequired: false
+
+envVarsSecret: zitadel-env
+
+# The 4aicoding namespace enforces PodSecurity "restricted". The login
+# deployment falls back to these when login.* contexts are empty.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  readOnlyRootFilesystem: true
+  privileged: false
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: [ALL]
+  seccompProfile:
+    type: RuntimeDefault
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 1Gi
+
+ingress:
+  enabled: true
+  className: traefik
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    cert-manager.io/cluster-issuer: letsencrypt-production
+  hosts:
+    - host: auth.devhub.io.vn
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: auth-devhub-io-vn-tls
+      hosts: [auth.devhub.io.vn]
+
+login:
+  enabled: true
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+  ingress:
+    enabled: true
+    className: traefik
+    annotations:
+      traefik.ingress.kubernetes.io/router.entrypoints: websecure
+      traefik.ingress.kubernetes.io/router.tls: "true"
+    hosts:
+      - host: auth.devhub.io.vn
+        paths:
+          - path: /ui/v2/login
+            pathType: Prefix
+    tls:
+      - secretName: auth-devhub-io-vn-tls
+        hosts: [auth.devhub.io.vn]

@@ -1,8 +1,8 @@
 # Grants the Portal deployer ServiceAccount the namespaced rights that
-# deploy-k3s-portal.yml needs (deploy/rbac/portal-deployer.yaml). That
+# deploy-k3s-portal.yml and deploy-k3s-zitadel.yml need (deploy/rbac/portal-deployer.yaml). That
 # account cannot grant itself rights, so this applies the Role with the
-# cluster's admin kubeconfig on the k3s VM, over SSH, then re-runs the
-# Portal deploy.
+# cluster's admin kubeconfig on the k3s VM, over SSH, then re-runs both
+# deploys.
 #
 # Secrets (repository or the k3s-1 environment):
 #   K3S_VM_IP, K3S_VM_SSH_PORT, K3S_VM_USERNAME, K3S_VM_PASSWORD
@@ -69,7 +69,9 @@ jobs:
             eval "$run $kc apply -f /tmp/portal-deployer-rbac.yaml"
             rm -f /tmp/portal-deployer-rbac.yaml
           '
-      - name: Re-run the Portal deploy
+      - name: Re-run the Portal and Zitadel deploys
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh workflow run deploy-k3s-portal.yml --ref main --repo "$GITHUB_REPOSITORY"
+        run: |
+          gh workflow run deploy-k3s-portal.yml --ref main --repo "$GITHUB_REPOSITORY"
+          gh workflow run deploy-k3s-zitadel.yml --ref main --repo "$GITHUB_REPOSITORY"
