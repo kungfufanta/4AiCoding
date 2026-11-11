@@ -149,6 +149,8 @@ Dashboard API (`app.<domain>/api/...`) là API riêng của BFF, không công kh
 
 Mỗi milestone một PR vào `main`. Không gộp. Test nằm cùng PR.
 
+> **Trạng thái 2026-11-11:** S0, S1 đã xong (kèm password bootstrap admin, migration `0003`). Lịch làm việc tiếp theo (UI hiện đại + S2–S5 gói lại thành P1–P6) được lập lại trong [`docs/PORTAL_PLAN_V2.md`](PORTAL_PLAN_V2.md) — nội dung S2–S5 giữ nguyên, chỉ tái lập kế hoạch cùng phần UI.
+
 ### S0 — Khung dự án
 - `portal/` (Go module), `portal/web/` (Vite + React 19 + TS), `portal/migrations/`.
 - `cmd/portal`: đọc config từ env, `/healthz`, `/readyz` (kiểm tra Postgres), log JSON.
