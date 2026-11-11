@@ -4,7 +4,7 @@
 // create form, runs a command on its terminal page,
 // checks metrics, tries an egress change the policy refuses, edits the
 // policy, opens every admin tab, verifies the audit chain, mints an API key,
-// opens the overview, monitoring and users pages, deletes the sandbox and signs out. Screenshots of each step go to SHOTS.
+// opens the overview, monitoring, node resources and users pages, deletes the sandbox and signs out. Screenshots of each step go to SHOTS.
 const { chromium } = require("playwright");
 const fs = require("fs");
 
@@ -105,13 +105,21 @@ const SHOTS = process.env.SHOTS || "shots";
   await page.getByRole("button", { name: "Create key" }).click();
   await page.getByText("Copy this key now").waitFor();
 
-  step("overview, monitoring, users");
+  step("overview, monitoring, nodes, users");
   await side("Overview").click();
   await page.getByRole("heading", { name: "Recent Sandboxes" }).waitFor();
   await side("Monitoring").click();
   await page.getByRole("heading", { name: "Per-sandbox" }).waitFor();
   await page.getByRole("heading", { name: "Fleet CPU" }).waitFor();
   await shot("monitoring");
+  await side("Nodes").click();
+  await page.getByRole("heading", { name: "Node resources" }).waitFor();
+  // The local node samples its host every 10 s; wait for the first meter.
+  await page.getByRole("meter", { name: "CPU" }).first().waitFor({ timeout: 30000 });
+  await shot("nodes");
+  await page.getByRole("button", { name: "Details" }).first().click();
+  await page.getByRole("heading", { name: "Change capacity" }).waitFor();
+  await shot("node-detail");
   await side("Users").click();
   await page.getByRole("heading", { name: "User Management" }).waitFor();
   await shot("users");

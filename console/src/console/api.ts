@@ -218,6 +218,81 @@ export interface NodeInfo {
   sandboxes: number;
   registered_at: string;
   heartbeat_at: string;
+  /** Latest host sample the node sent with its heartbeat (absent = never reported). */
+  telemetry?: HostTelemetry;
+  /** Values file a capacity change request edits (absent = no GitOps mapping). */
+  change_file?: string;
+}
+
+/** Host telemetry: the machine a node runs on (VPS, Docker host or k3s node). */
+export interface HostTelemetry {
+  collected_at: string;
+  hostname?: string;
+  os?: string;
+  arch?: string;
+  kernel?: string;
+  uptime_sec?: number;
+  in_container?: boolean;
+  cpu: { cores: number; usage_percent: number; load1: number; load5: number; load15: number };
+  memory: { total_mb: number; used_mb: number; available_mb: number; swap_total_mb?: number; swap_used_mb?: number };
+  disk: { path?: string; total_mb: number; used_mb: number; free_mb: number };
+  network: { interfaces?: string[]; rx_bytes: number; tx_bytes: number; rx_bps: number; tx_bps: number; host_namespace: boolean };
+}
+
+export interface NodeMetricPoint {
+  t: string;
+  cpu_percent: number;
+  load1: number;
+  mem_used_mb: number;
+  mem_total_mb: number;
+  disk_used_mb: number;
+  disk_total_mb: number;
+  rx_bps: number;
+  tx_bps: number;
+}
+
+export interface NodeMetrics {
+  node: NodeInfo;
+  history: NodeMetricPoint[];
+  step: string;
+  window: string;
+  now: string;
+}
+
+export interface NodeChangePR {
+  number: number;
+  url: string;
+  title: string;
+  state: "open" | "closed" | "merged" | string;
+  branch: string;
+  created_at?: string;
+  merged_at?: string;
+}
+
+export interface NodeChange {
+  node_id: string;
+  dry_run: boolean;
+  repo?: string;
+  base: string;
+  file: string;
+  current: NodeAmount;
+  proposed: NodeAmount;
+  diff: string[];
+  content?: string;
+  can_open_pr: boolean;
+  pr?: NodeChangePR;
+}
+
+export interface NodeChangeList {
+  node_id: string;
+  repo?: string;
+  base?: string;
+  file: string;
+  can_open_pr: boolean;
+  /** Capacity in the values file on the base branch. */
+  current?: NodeAmount;
+  error?: string;
+  requests: NodeChangePR[];
 }
 
 export interface AuditEntry {

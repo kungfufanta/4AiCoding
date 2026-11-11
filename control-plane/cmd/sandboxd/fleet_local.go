@@ -11,6 +11,8 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/tastyeffectco/sandboxd/control-plane/internal/api"
+	"github.com/tastyeffectco/sandboxd/control-plane/internal/hosttelemetry"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/reaper"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/store"
 )
@@ -62,15 +64,23 @@ func ensureLocalNode(ctx context.Context, st *store.Store, log *slog.Logger) str
 // reports itself online regardless (we are the process answering), but a
 // moving heartbeat makes /v1/nodes honest for external inspection and
 // keeps one code path for lease expiry.
-func bumpLocalNodeLoop(ctx context.Context, st *store.Store, log *slog.Logger, nodeID string) {
+//
+// Each tick also samples this host (tel, nil = telemetry off) into the
+// node's metrics, exactly like a remote worker's heartbeat does.
+func bumpLocalNodeLoop(ctx context.Context, st *store.Store, srv *api.Server, log *slog.Logger, nodeID string, tel *hosttelemetry.Collector) {
 	if nodeID == "" {
 		return
 	}
-	t := time.NewTicker(30 * time.Second)
+	t := time.NewTicker(localHeartbeatInterval)
 	defer t.Stop()
 	bump := func() {
 		if _, err := st.NodeHeartbeat(ctx, nodeID, nil, nil); err != nil && ctx.Err() == nil {
 			log.Warn("local node heartbeat failed", "err", err.Error())
+		}
+		if snap := tel.Collect(); snap != nil {
+			if err := srv.RecordNodeTelemetry(ctx, nodeID, snap); err != nil && ctx.Err() == nil {
+				log.Warn("local node telemetry failed", "err", err.Error())
+			}
 		}
 	}
 	bump() // first tick immediately after boot
@@ -83,6 +93,10 @@ func bumpLocalNodeLoop(ctx context.Context, st *store.Store, log *slog.Logger, n
 		}
 	}
 }
+
+// localHeartbeatInterval is the local node's heartbeat + telemetry period
+// (the same default as a worker's, so node charts have the same step).
+const localHeartbeatInterval = 10 * time.Second
 
 func buildIdentString() string {
 	v, c := buildIdent()

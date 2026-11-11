@@ -1129,6 +1129,92 @@ paths:
               schema: { $ref: "#/components/schemas/NodeCapacity" }
         "404": { description: No such node }
 
+  /v1/nodes/{id}/metrics:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    get:
+      operationId: getNodeMetrics
+      tags: [nodes]
+      summary: Host telemetry of one node (CPU, memory, disk, network) and its recent history
+      description: |
+        Every fleet member (local node, `sandboxd worker`, executor) samples the
+        machine it runs on from procfs/statfs and sends it with its heartbeat, so
+        this works on a VPS, under Docker and in k3s alike. The history is kept in
+        memory for one hour (one point per 5 s at most) and starts over when the
+        control plane restarts.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  node: { $ref: "#/components/schemas/Node" }
+                  history:
+                    type: array
+                    items: { $ref: "#/components/schemas/NodeMetricPoint" }
+                  step: { type: string }
+                  window: { type: string }
+                  now: { type: string, format: date-time }
+        "404": { description: No such node }
+
+  /v1/nodes/{id}/change-requests:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    get:
+      operationId: listNodeChangeRequests
+      tags: [nodes]
+      summary: Recent capacity change pull requests for a node (head branch capacity/<id>-*)
+      responses:
+        "200":
+          description: OK (an empty list when GitOps is not configured for the node)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  node_id: { type: string }
+                  repo: { type: string }
+                  base: { type: string }
+                  file: { type: string, description: Values file mapped to the node; empty = not configured }
+                  can_open_pr: { type: boolean }
+                  current: { $ref: "#/components/schemas/ResourceAmount" }
+                  error: { type: string }
+                  requests:
+                    type: array
+                    items: { $ref: "#/components/schemas/NodeChangePR" }
+    post:
+      operationId: createNodeChangeRequest
+      tags: [nodes]
+      summary: Propose a new advertised capacity as a pull request on the deploy repo. Admin only.
+      description: |
+        Edits the `capacity:` block of the node's Helm values file
+        (SANDBOXD_GITOPS_NODE_FILES) and opens a pull request. Nothing changes on
+        the node until a human merges it and the deploy workflow runs helm upgrade;
+        reverting the PR rolls it back. The request may not exceed what the host
+        reports in its telemetry, nor the SANDBOXD_GITOPS_MAX_* ceilings.
+        `dry_run: true` returns the preview without touching the repo.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [cpus, memory_mb]
+              properties:
+                cpus: { type: number, description: "> 0, at most 2 decimals" }
+                memory_mb: { type: integer, minimum: 256 }
+                disk_mb: { type: integer, minimum: 0 }
+                reason: { type: string, maxLength: 1000 }
+                dry_run: { type: boolean }
+      responses:
+        "200": { description: Dry-run preview, content: { application/json: { schema: { $ref: "#/components/schemas/NodeChange" } } } }
+        "201": { description: Pull request opened, content: { application/json: { schema: { $ref: "#/components/schemas/NodeChange" } } } }
+        "400": { description: Invalid request, or more than the host has }
+        "403": { description: Caller is not an admin }
+        "404": { description: No such node }
+        "409": { description: "gitops_not_configured (no mapping or no token) or no_change" }
+        "502": { description: GitHub call failed }
+
   /v1/nodes/{id}/drain:
     parameters: [ { $ref: "#/components/parameters/Id" } ]
     post:
@@ -1676,6 +1762,87 @@ components:
         sandboxes: { type: integer }
         registered_at: { type: string, format: date-time }
         heartbeat_at: { type: string, format: date-time }
+        telemetry: { $ref: "#/components/schemas/HostTelemetry" }
+        change_file: { type: string, description: Values file a capacity change request edits (absent = no GitOps mapping) }
+    HostTelemetry:
+      type: object
+      description: Latest host sample a node sent with its heartbeat. Zero = not reported.
+      properties:
+        collected_at: { type: string, format: date-time }
+        hostname: { type: string }
+        os: { type: string }
+        arch: { type: string }
+        kernel: { type: string }
+        uptime_sec: { type: integer }
+        in_container: { type: boolean }
+        cpu:
+          type: object
+          properties:
+            cores: { type: integer }
+            usage_percent: { type: number }
+            load1: { type: number }
+            load5: { type: number }
+            load15: { type: number }
+        memory:
+          type: object
+          properties:
+            total_mb: { type: integer }
+            used_mb: { type: integer }
+            available_mb: { type: integer }
+            swap_total_mb: { type: integer }
+            swap_used_mb: { type: integer }
+        disk:
+          type: object
+          properties:
+            path: { type: string }
+            total_mb: { type: integer }
+            used_mb: { type: integer }
+            free_mb: { type: integer }
+        network:
+          type: object
+          properties:
+            interfaces: { type: array, items: { type: string } }
+            rx_bytes: { type: integer }
+            tx_bytes: { type: integer }
+            rx_bps: { type: number }
+            tx_bps: { type: number }
+            host_namespace: { type: boolean, description: false = counters of a container's own network namespace }
+    NodeMetricPoint:
+      type: object
+      properties:
+        t: { type: string, format: date-time }
+        cpu_percent: { type: number }
+        load1: { type: number }
+        mem_used_mb: { type: integer }
+        mem_total_mb: { type: integer }
+        disk_used_mb: { type: integer }
+        disk_total_mb: { type: integer }
+        rx_bps: { type: number }
+        tx_bps: { type: number }
+    NodeChangePR:
+      type: object
+      properties:
+        number: { type: integer }
+        url: { type: string }
+        title: { type: string }
+        state: { type: string, enum: [open, closed, merged] }
+        branch: { type: string }
+        created_at: { type: string }
+        merged_at: { type: string }
+    NodeChange:
+      type: object
+      properties:
+        node_id: { type: string }
+        dry_run: { type: boolean }
+        repo: { type: string }
+        base: { type: string }
+        file: { type: string }
+        current: { $ref: "#/components/schemas/ResourceAmount" }
+        proposed: { $ref: "#/components/schemas/ResourceAmount" }
+        diff: { type: array, items: { type: string } }
+        content: { type: string, description: The whole edited values file }
+        can_open_pr: { type: boolean }
+        pr: { $ref: "#/components/schemas/NodeChangePR" }
     NodeCapacity:
       type: object
       properties:

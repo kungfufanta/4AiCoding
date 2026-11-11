@@ -95,9 +95,10 @@ func (s *Server) internalNodeRegister(w http.ResponseWriter, r *http.Request) {
 // are optional updates; the response returns the node's desired state —
 // above all drain_state, so a drained worker learns to stop taking work.
 type internalHeartbeatReq struct {
-	NodeID   string          `json:"node_id"`
-	Capacity *store.Capacity `json:"capacity,omitempty"`
-	Used     *store.Capacity `json:"used,omitempty"`
+	NodeID    string          `json:"node_id"`
+	Capacity  *store.Capacity `json:"capacity,omitempty"`
+	Used      *store.Capacity `json:"used,omitempty"`
+	Telemetry json.RawMessage `json:"telemetry,omitempty"` // hosttelemetry.Snapshot
 }
 
 type internalHeartbeatResp struct {
@@ -121,6 +122,11 @@ func (s *Server) internalNodeHeartbeat(w http.ResponseWriter, r *http.Request) {
 			"node_id must match [a-z0-9][a-z0-9.-]{0,62}")
 		return
 	}
+	snap, err := decodeTelemetry(req.Telemetry)
+	if err != nil {
+		writeV1Err(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
 	n, err := s.Store.NodeHeartbeat(r.Context(), req.NodeID, req.Capacity, req.Used)
 	if errors.Is(err, store.ErrNotFound) {
 		// The control plane does not know this node (fresh DB, or the
@@ -131,6 +137,13 @@ func (s *Server) internalNodeHeartbeat(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeV1Err(w, http.StatusInternalServerError, "internal", "heartbeat: "+err.Error())
 		return
+	}
+	if snap != nil {
+		// Telemetry is best-effort: a failure to store it must not fail
+		// the heartbeat (liveness and drain matter more).
+		if terr := s.RecordNodeTelemetry(r.Context(), n.NodeID, snap); terr != nil && s.Log != nil {
+			s.Log.Warn("store node telemetry failed", "node_id", n.NodeID, "err", terr.Error())
+		}
 	}
 	resp := internalHeartbeatResp{
 		NodeID: n.NodeID, DrainState: n.DrainState, Now: time.Now().UTC().Format(time.RFC3339),

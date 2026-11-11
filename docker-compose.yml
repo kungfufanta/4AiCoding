@@ -149,6 +149,19 @@ services:
       SANDBOXD_CAPACITY_CPUS: ${SANDBOXD_CAPACITY_CPUS:-}
       SANDBOXD_CAPACITY_MEMORY_MB: ${SANDBOXD_CAPACITY_MEMORY_MB:-}
       SANDBOXD_CAPACITY_DISK_MB: ${SANDBOXD_CAPACITY_DISK_MB:-}
+      # Host telemetry of this machine (CPU/RAM/disk/net, docs/NODE_RESOURCES.md).
+      # On by default; "off" disables it. Disk defaults to the data dir.
+      SANDBOXD_TELEMETRY: ${SANDBOXD_TELEMETRY:-}
+      SANDBOXD_TELEMETRY_DISK_PATH: ${SANDBOXD_TELEMETRY_DISK_PATH:-}
+      # Capacity change requests as pull requests on the deploy repo (GitOps).
+      # NODE_FILES maps node ids to Helm values files, e.g.
+      # "k3s-1=deploy/k3s-1-values.yaml"; empty = feature off. Without a
+      # token the console only previews the edit. The token needs Contents +
+      # Pull requests write on that one repo, nothing else.
+      SANDBOXD_GITOPS_NODE_FILES: ${SANDBOXD_GITOPS_NODE_FILES:-}
+      SANDBOXD_GITOPS_REPO: ${SANDBOXD_GITOPS_REPO:-}
+      SANDBOXD_GITOPS_TOKEN: ${SANDBOXD_GITOPS_TOKEN:-}
+      SANDBOXD_GITOPS_BASE: ${SANDBOXD_GITOPS_BASE:-main}
       # --- egress (PLAN §8 #5) ---
       SANDBOXD_EGRESS_PROXY_ADDR: ${SANDBOXD_EGRESS_PROXY_ADDR:-:3128}
       SANDBOXD_EGRESS_PROXY_URL: ${SANDBOXD_EGRESS_PROXY_URL:-http://sandboxd-egress:3128}

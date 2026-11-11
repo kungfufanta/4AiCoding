@@ -5,6 +5,7 @@ import {
   Box,
   LayoutDashboard,
   Network,
+  Server,
   Settings,
   Users,
 } from "lucide-react";
@@ -22,6 +23,7 @@ const MAIN_NAV: Array<{ key: ViewKey; label: string; vi: string; icon: typeof Us
 ];
 
 const SYSTEM_NAV: Array<{ key: ViewKey; label: string; vi: string; icon: typeof Users }> = [
+  { key: "nodes",    label: "Nodes",    vi: "Máy chủ",     icon: Server },
   { key: "network",  label: "Network",  vi: "Mạng",        icon: Network },
   { key: "settings", label: "Settings", vi: "Cài đặt",     icon: Settings },
 ];
@@ -110,7 +112,7 @@ export function SidebarContent({
         <div className="px-3 pt-6 pb-2 text-[10px] font-semibold tracking-[0.14em] text-gray-600 uppercase">
           System
         </div>
-        {SYSTEM_NAV.map((item) => (
+        {SYSTEM_NAV.filter((item) => item.key !== "nodes" || me?.role !== "viewer").map((item) => (
           <NavItem key={item.key} item={item} />
         ))}
       </nav>

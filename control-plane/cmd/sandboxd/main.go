@@ -42,6 +42,7 @@ import (
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/egressproxy"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/events"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/fleet"
+	"github.com/tastyeffectco/sandboxd/control-plane/internal/hosttelemetry"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/idlock"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/instancecfg"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/logging"
@@ -617,6 +618,14 @@ func main() {
 	// join through POST /internal/nodes/register (worker token).
 	nodeLease := durationFromEnvSec("SANDBOXD_NODE_LEASE_SECONDS", int(fleet.DefaultLease.Seconds()))
 	server.NodeLease = nodeLease
+	// Capacity change requests become PRs on the deploy repo (GitOps);
+	// unset SANDBOXD_GITOPS_NODE_FILES = feature off.
+	server.GitOps = api.GitOpsFromEnv()
+	if server.GitOps != nil {
+		log.Info("startup: gitops capacity change requests enabled",
+			"repo", server.GitOps.Repo, "nodes", len(server.GitOps.NodeFiles),
+			"can_open_pr", server.GitOps.Token != "")
+	}
 	localNodeID := ensureLocalNode(ctx, st, log)
 
 	// Phase 5 — after reconcile, if MemAvailable is
@@ -710,9 +719,13 @@ func main() {
 
 	// M6 — keep the local node's heartbeat fresh so the fleet view
 	// reflects liveness even though role='local' is always online.
-	go bumpLocalNodeLoop(gctx, st, log, localNodeID)
+	// Host telemetry of this machine: the local node's metrics, and the
+	// executor's heartbeat sample when this sandboxd works for a control
+	// plane. Disk defaults to the data dir (where workspaces live).
+	hostTel := hosttelemetry.FromEnv(dataDir)
+	go bumpLocalNodeLoop(gctx, st, server, log, localNodeID, hostTel)
 	if exec != nil {
-		go runExecutorAgent(gctx, log.With("component", "fleet-executor"), st, server, *exec)
+		go runExecutorAgent(gctx, log.With("component", "fleet-executor"), st, server, *exec, hostTel)
 	}
 
 	// Idle reaper.

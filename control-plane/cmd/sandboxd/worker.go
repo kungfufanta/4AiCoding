@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/fleet"
+	"github.com/tastyeffectco/sandboxd/control-plane/internal/hosttelemetry"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/logging"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/reaper"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/store"
@@ -151,6 +152,12 @@ func runWorker(args []string) int {
 		Version:  fmt.Sprintf("%s (%s)", version, commit),
 		Capacity: capacity,
 	}
-	runFleetAgent(ctx, log, client, req, interval, nil, nil)
+	// Host telemetry: the worker image reports the machine it runs on, so
+	// node metrics work on a VPS, under Docker or in k3s alike.
+	tel := hosttelemetry.FromEnv("/")
+	if tel == nil {
+		log.Info("worker: host telemetry disabled (SANDBOXD_TELEMETRY=off)")
+	}
+	runFleetAgent(ctx, log, client, req, interval, nil, nil, tel)
 	return 0
 }

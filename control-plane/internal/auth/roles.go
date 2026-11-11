@@ -28,6 +28,7 @@ var adminRoutes = []string{
 	"GET /v1/audit", "GET /v1/audit/verify",
 	"PATCH /v1/settings",
 	"POST /v1/nodes/*/drain", "POST /v1/nodes/*/undrain", "DELETE /v1/nodes/*",
+	"POST /v1/nodes/*/change-requests",
 	"DELETE /v1/auth/password",
 	"POST /sandbox/*/purge", "POST /external-users/*/purge", "POST /external-projects/*/purge",
 }

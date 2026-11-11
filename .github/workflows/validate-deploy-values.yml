@@ -1,0 +1,49 @@
+name: validate-deploy-values
+
+# Guards capacity change requests (and any other edit) to the worker's Helm
+# values files: the chart must still lint and render with them, and the
+# advertised capacity must be sane, before anyone merges the PR that the
+# deploy-k3s-1 workflow will then apply.
+on:
+  pull_request:
+    paths:
+      - "deploy/*-values.yaml"
+      - "deploy/helm/sandboxd-worker/**"
+      - ".github/workflows/validate-deploy-values.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  worker-values:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
+      - name: helm lint + template every worker values file
+        run: |
+          set -eu
+          found=0
+          for f in deploy/*-values.yaml; do
+            # Only files for the worker chart (portal / zitadel have their own).
+            case "$f" in *-portal-values.yaml|*-zitadel-values.yaml) continue ;; esac
+            found=1
+            echo "::group::$f"
+            helm lint deploy/helm/sandboxd-worker --values "$f"
+            helm template w deploy/helm/sandboxd-worker --values "$f" > "$RUNNER_TEMP/out.yaml"
+            # Advertised capacity: positive CPUs and >= 256 MiB when set.
+            cpus=$(yq '.capacity.cpus // 0' "$f")
+            mem=$(yq '.capacity.memoryMB // 0' "$f")
+            disk=$(yq '.capacity.diskMB // 0' "$f")
+            echo "capacity: cpus=$cpus memoryMB=$mem diskMB=$disk"
+            awk -v c="$cpus" -v m="$mem" -v d="$disk" 'BEGIN {
+              if (c < 0 || m < 0 || d < 0) { print "negative capacity"; exit 1 }
+              if (c > 0 && c > 256) { print "cpus above 256"; exit 1 }
+              if (m > 0 && m < 256) { print "memoryMB below 256"; exit 1 }
+            }'
+            echo "::endgroup::"
+          done
+          test "$found" = 1

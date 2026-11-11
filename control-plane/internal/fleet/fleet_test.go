@@ -197,3 +197,16 @@ func TestClientAPIError(t *testing.T) {
 		t.Fatalf("want APIError 404, got %v", err)
 	}
 }
+
+func TestIsUnknownTelemetryField(t *testing.T) {
+	old := &APIError{Status: 400, Body: `{"error":{"code":"invalid_request","message":"invalid json: json: unknown field \"telemetry\""}}`}
+	if !IsUnknownTelemetryField(old) {
+		t.Fatal("old control plane 400 not detected")
+	}
+	if IsUnknownTelemetryField(&APIError{Status: 400, Body: "telemetry too large"}) {
+		t.Fatal("other 400 misdetected")
+	}
+	if IsUnknownTelemetryField(&APIError{Status: 404, Body: "unknown field telemetry"}) {
+		t.Fatal("404 misdetected")
+	}
+}

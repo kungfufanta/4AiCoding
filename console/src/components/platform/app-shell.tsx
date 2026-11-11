@@ -17,6 +17,7 @@ import { CreateSandboxView } from "./views/create-sandbox";
 import { MonitoringView } from "./views/monitoring";
 import { SandboxListView } from "./views/sandbox-list";
 import { SandboxDetailView } from "./views/sandbox-detail";
+import { NodeDetailView, NodesView } from "./views/nodes";
 import { MeContext, NoticeProvider, navigate as go, usePath } from "@/console/ui";
 import { AdminPage } from "@/console/pages/Admin";
 import { NetworkPage } from "@/console/pages/Network";
@@ -30,10 +31,12 @@ import "@/console/console.css";
 type OpsRoute =
   | { kind: "admin"; tab: string }
   | { kind: "network"; id: string }
-  | { kind: "terminal"; id: string };
+  | { kind: "terminal"; id: string }
+  | { kind: "nodes"; id?: string };
 
 function opsFromPath(pathname: string): OpsRoute | null {
   const seg = pathname.split("/").filter(Boolean);
+  if (seg[0] === "nodes") return { kind: "nodes", id: seg[1] };
   if (seg[0] === "admin") return { kind: "admin", tab: seg[1] || "policy" };
   if (seg[0] === "settings") return { kind: "admin", tab: "policy" };
   if (seg[0] === "network") return { kind: "admin", tab: "domain" };
@@ -44,8 +47,10 @@ function opsFromPath(pathname: string): OpsRoute | null {
 
 /** sidebar entry an ops page belongs to */
 function opsNav(o: OpsRoute): ViewKey {
+  if (o.kind === "nodes") return "nodes";
   if (o.kind !== "admin") return "sandboxes";
-  return o.tab === "domain" || o.tab === "nodes" ? "network" : "settings";
+  if (o.tab === "nodes") return "nodes";
+  return o.tab === "domain" ? "network" : "settings";
 }
 
 function ModulePlaceholder({
@@ -175,7 +180,8 @@ export function AppShell() {
     if (v !== "sandboxes") usePlatform.getState().closeSandbox();
     setView(v);
     setMobileNav(false);
-    if (v === "network" || v === "settings") go(v === "network" ? "/admin/domain" : "/admin/policy");
+    if (v === "nodes") go("/nodes");
+    else if (v === "network" || v === "settings") go(v === "network" ? "/admin/domain" : "/admin/policy");
     else go(viewPath(v));
   };
 
@@ -217,7 +223,8 @@ export function AppShell() {
                 exit={{ opacity: 0, y: -6 }}
                 transition={{ duration: 0.18, ease: "easeOut" }}
               >
-                {ops && (
+                {ops?.kind === "nodes" && (ops.id ? <NodeDetailView id={ops.id} /> : <NodesView />)}
+                {ops && ops.kind !== "nodes" && (
                   <MeContext.Provider value={me ? { kind: "user", user: me.username, role: me.role } : null}>
                     <NoticeProvider>
                       <div className="legacy">

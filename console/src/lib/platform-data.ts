@@ -12,6 +12,7 @@ export type ViewKey =
   | "create"
   | "monitoring"
   | "network"
+  | "nodes"
   | "settings";
 
 export interface User {
