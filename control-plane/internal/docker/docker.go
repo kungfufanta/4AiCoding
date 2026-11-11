@@ -328,10 +328,12 @@ func (c *Client) Exec(ctx context.Context, name string, cmd []string) (ExecResul
 // --- exec v2 (AGENT_PLAN A0) -----------------------------------------
 
 // ExecV2Request is the extended exec call: working directory, extra env,
-// stdin, a hard timeout (enforced INSIDE the container by the `timeout`
-// coreutils wrapper so the whole process group dies), and a bounded
-// output buffer (head + tail kept, middle dropped — the control plane
-// never buffers unbounded output in RAM).
+// stdin, a hard timeout (enforced INSIDE the container by the coreutils
+// `timeout` wrapper: at expiry the child's whole process group gets TERM,
+// a TERM-ignoring command escalates to SIGKILL after kill-after, and the
+// wrapper exits 124 — timed_out in the result), and a bounded output
+// buffer (head + tail kept, middle dropped — the control plane never
+// buffers unbounded output in RAM).
 type ExecV2Request struct {
 	Cmd []string
 	// WorkDir is passed as docker exec -w. "" = container default.
@@ -341,8 +343,10 @@ type ExecV2Request struct {
 	Env []string
 	// Stdin (optional) is fed to `docker exec -i`. nil = no stdin.
 	Stdin []byte
-	// TimeoutS > 0 wraps the command in `timeout --signal=KILL <n>` so
-	// expiry kills the child's whole process group inside the container.
+	// TimeoutS > 0 wraps the command in `timeout --kill-after=2 <n>` so
+	// expiry signals the child's whole process group inside the container
+	// (TERM, then SIGKILL for a TERM-ignoring command) and the wrapper
+	// exits 124 — the TimedOut marker.
 	TimeoutS int
 	// MaxOutputBytes > 0 bounds stdout+stderr independently: over the
 	// limit the head and tail of the stream are kept (75%/25%) and
@@ -380,7 +384,11 @@ func (c *Client) ExecV2(ctx context.Context, name string, req ExecV2Request) (Ex
 	args = append(args, name)
 	inner := req.Cmd
 	if req.TimeoutS > 0 {
-		args = append(args, "timeout", "--signal=KILL", strconv.Itoa(req.TimeoutS), "--")
+		// `timeout DURATION CMD…` stops option parsing at the first
+		// non-option argument (the duration); everything after it is the
+		// command. At expiry the child's process group gets TERM, a
+		// TERM-ignorer escalates to SIGKILL 2s later, exit 124.
+		args = append(args, "timeout", "--kill-after=2", strconv.Itoa(req.TimeoutS))
 	}
 	args = append(args, inner...)
 	started := time.Now()
@@ -454,7 +462,7 @@ func (c *Client) ExecV2Stream(ctx context.Context, name string, req ExecV2Reques
 	}
 	args = append(args, name)
 	if req.TimeoutS > 0 {
-		args = append(args, "timeout", "--signal=KILL", strconv.Itoa(req.TimeoutS), "--")
+		args = append(args, "timeout", "--kill-after=2", strconv.Itoa(req.TimeoutS))
 	}
 	args = append(args, req.Cmd...)
 	cmdEx := exec.CommandContext(ctx, c.Bin, args...)
