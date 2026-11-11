@@ -139,3 +139,21 @@ body {
   word-break: break-all;
 }
 .invite-once code { display: block; margin-top: 0.35rem; color: #f0c674; }
+
+/* Password login (local admin) stacks vertically inside the card. */
+.login-form { flex-direction: column; width: 100%; }
+.login-form input { width: 100%; box-sizing: border-box; }
+.login-card .divider {
+  justify-self: stretch;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  color: #64748b;
+  font-size: 0.8rem;
+}
+.login-card .divider::before,
+.login-card .divider::after {
+  content: "";
+  flex: 1;
+  border-top: 1px solid #e2e8f0;
+}

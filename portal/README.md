@@ -15,6 +15,7 @@ which order: [`docs/PORTAL_PLAN.md`](../docs/PORTAL_PLAN.md).
 | `internal/tenants` | Tenant repositories: users, orgs, memberships, invites, projects, audit |
 | `internal/session` | `web_sessions`: hashed tokens, HttpOnly cookie, double-submit CSRF |
 | `internal/oidcauth` | OIDC Authorization Code + PKCE client (works with any provider) |
+| `internal/passwordauth` | Local username/password login: bootstrap admin (`password_logins`, bcrypt) |
 | `internal/httpapi` | `/healthz`, `/readyz`, the BFF (`/auth/*`, `/api/*`) |
 | `internal/webfs` | The embedded SPA (`web/dist`); same origin as the BFF (plan 3.1) |
 | `internal/logging` | slog JSON + request-id middleware (mirrors control-plane) |
@@ -42,6 +43,9 @@ docker compose -f docker-compose.portal.yml up --build
 # portal  → http://localhost:8080  (/healthz, /readyz, SPA)
 # postgres → localhost:5433 (portal/portal)
 
+# The local admin login is on by default: sign in at
+# http://localhost:8080 with admin / admin123 (see PORTAL_ADMIN_* below).
+
 # with the identity provider (S1 login):
 docker compose -f docker-compose.portal.yml --profile idp up
 # zitadel → http://localhost:8081
@@ -60,6 +64,9 @@ Or without Docker: point `PORTAL_DATABASE_URL` at any Postgres 16+ and
 | `PORTAL_PUBLIC_URL` | — | External base URL (cookies/OIDC redirect) |
 | `PORTAL_SESSION_TTL` | `12h` | Web-session lifetime |
 | `PORTAL_OIDC_ISSUER` / `_CLIENT_ID` / `_CLIENT_SECRET` | — | OIDC login (empty = login disabled, `/auth/login` answers 503) |
+| `PORTAL_ADMIN_USERNAME` | `admin` | Local password-login username (bootstrap admin) |
+| `PORTAL_ADMIN_PASSWORD` | `admin123` | Local password-login password; the stored bcrypt hash converges to this value on every boot (that is the rotation path). `-` disables the password login entirely |
+| `PORTAL_ADMIN_EMAIL` | `admin@portal.local` | Directory email of the bootstrap admin (gets a personal org like any user) |
 | `PORTAL_DB_ROLE` | `portal_app` | Non-owner role for RLS; `-` disables the `SET ROLE` |
 
 ## Tests

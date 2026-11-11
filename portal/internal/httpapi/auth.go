@@ -9,9 +9,11 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/tastyeffectco/sandboxd/portal/internal/db"
 	"github.com/tastyeffectco/sandboxd/portal/internal/oidcauth"
+	"github.com/tastyeffectco/sandboxd/portal/internal/passwordauth"
 	"github.com/tastyeffectco/sandboxd/portal/internal/session"
 	"github.com/tastyeffectco/sandboxd/portal/internal/tenants"
 )
@@ -103,10 +105,10 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			"SSO is not configured (PORTAL_OIDC_ISSUER / _CLIENT_ID / _CLIENT_SECRET)")
 		return
 	}
+
 	state := oidcauth.RandomToken()
 	verifier, challenge := oidcauth.PKCEPair()
 	nonce := oidcauth.RandomToken()
-
 	blob, err := json.Marshal(map[string]string{
 		"state": state, "verifier": verifier, "nonce": nonce,
 	})
@@ -188,6 +190,75 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 		target = s.PublicURL + "/"
 	}
 	http.Redirect(w, r, target, http.StatusFound)
+}
+
+// handleAuthMethods tells the SPA which sign-in surfaces to render:
+// SSO when an OIDC provider is configured, password when the local
+// login is enabled. Public (no session yet), no cookies needed.
+func (s *Server) handleAuthMethods(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]bool{
+		"sso":      s.OIDC != nil,
+		"password": s.PasswordLogin,
+	})
+}
+
+// handlePasswordLogin signs in the local admin (owner decision
+// 2026-11-11, passwordauth package): verify the bcrypt hash, then
+// mint the same session cookies as the SSO callback. There is no
+// CSRF pair yet (the double-submit pair is created with the session);
+// SameSite=Lax keeps the fresh cookies out of cross-site requests.
+// Unknown username and wrong password answer the same 401 code, and
+// both run one bcrypt comparison, so the endpoint leaks neither which
+// accounts exist nor timing differences.
+func (s *Server) handlePasswordLogin(w http.ResponseWriter, r *http.Request) {
+	if !s.PasswordLogin {
+		writeErr(w, http.StatusNotFound, "not_found", "password login is disabled")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 4096)
+	var req struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid_request", "expected JSON {username, password}")
+		return
+	}
+	username, password := strings.TrimSpace(req.Username), req.Password
+	if username == "" || password == "" {
+		writeErr(w, http.StatusBadRequest, "invalid_request", "username and password are required")
+		return
+	}
+
+	// Lookup + verify outside a transaction: one indexed read, no
+	// writes (sessions are minted by the session store below).
+	userID, hash, err := passwordauth.Lookup(r.Context(), s.Pool, username)
+	ok := err == nil && passwordauth.Verify(hash, password)
+	if errors.Is(err, passwordauth.ErrNotFound) {
+		ok = passwordauth.VerifyDummy(password)
+	}
+	if err != nil && !errors.Is(err, passwordauth.ErrNotFound) {
+		s.Log.Error("password login lookup failed", slog.Any("error", err))
+		writeErr(w, http.StatusInternalServerError, "internal", "could not sign in")
+		return
+	}
+	if !ok {
+		// Fixed backoff blunts online guessing without revealing why.
+		time.Sleep(250 * time.Millisecond)
+		writeErr(w, http.StatusUnauthorized, "invalid_credentials", "invalid username or password")
+		return
+	}
+
+	token, csrf, err := s.Sessions.Create(r.Context(), userID)
+	if err != nil {
+		s.Log.Error("session create failed", slog.Any("error", err))
+		writeErr(w, http.StatusInternalServerError, "internal", "could not create session")
+		return
+	}
+	maxAge := int(s.sessionTTL().Seconds())
+	http.SetCookie(w, s.sessionCookie(token, maxAge))
+	http.SetCookie(w, s.csrfCookie(csrf, maxAge))
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 // handleLogout deletes the session and clears both cookies.

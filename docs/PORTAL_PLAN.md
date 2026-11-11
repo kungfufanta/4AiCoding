@@ -22,7 +22,7 @@ sandboxd giữ mọi thứ "thuộc về máy": chạy sandbox, policy, approval
 1. **sandboxd không lộ ra Internet cho khách.** Chỉ Portal gọi control plane của sandboxd, qua mạng nội bộ. Console admin của sandboxd chỉ cho operator (VPN hoặc IP allowlist).
 2. **Agent không bao giờ cầm credential sandboxd dài hạn.** Agent dùng credential của Portal. Credential sandboxd duy nhất mà agent có thể thấy là key TTL ngắn gắn một `sandbox_id` (mục 3.3).
 3. **Cô lập tenant ở hai lớp.** Portal kiểm tra quyền sở hữu trước mọi lệnh gọi; sandboxd kiểm tra lại bằng tag tenant và key gắn sandbox. Một bug ở Portal không được phép cho org A chạm vào sandbox của org B.
-4. **Không tự viết password/MFA.** Người dùng đăng nhập qua OIDC.
+4. **Không tự viết password/MFA.** Người dùng đăng nhập qua OIDC. Ngoại lệ do chủ dự án quyết định (2026-11-11): một tài khoản bootstrap admin username/password (không MFA, không tự đăng ký) để dashboard dùng được khi chưa cấu hình IdP — xem dòng "Đăng nhập mật khẩu" ở mục 2.
 5. **Secret chỉ lưu hash.** API key hiển thị đúng một lần khi tạo.
 6. **Mọi thứ chạy trong sandbox là không đáng tin**, giống PLAN.md §8.
 
@@ -40,6 +40,7 @@ Các mục đánh dấu *(giả định)* là mặc định khi chưa có quyế
 | Identity provider | Zitadel tự host *(giả định)*; mọi code chỉ phụ thuộc OIDC chuẩn để đổi sang Keycloak/Auth0/Clerk được |
 | Session web | Mô hình BFF: cookie `HttpOnly; Secure; SameSite=Lax`, token OIDC chỉ nằm ở server |
 | Domain | Dashboard + API cùng origin tại `chat.devhub.io.vn` (đã quyết định, 2026-11-11). Edge: Traefik trên k3s-1 + cert-manager (Let's Encrypt), CI/CD `.github/workflows/deploy-k3s-portal.yml` + `deploy/k3s-1-portal-values.yaml`. Tách `api.<domain>` riêng chỉ khi cần |
+| Đăng nhập mật khẩu | Bootstrap admin cho staging/selfhost trước khi có IdP: `PORTAL_ADMIN_USERNAME` / `PORTAL_ADMIN_PASSWORD` (mặc định admin/admin123, bcrypt trong `password_logins`, migration 0003), `PORTAL_ADMIN_EMAIL` (mặc định admin@portal.local). Đổi mật khẩu = đổi env rồi redeploy (hash hội tụ về giá trị env mỗi lần boot); `PORTAL_ADMIN_PASSWORD="-"` tắt hẳn endpoint. Chỉ có tài khoản bootstrap, không tự đăng ký |
 | Phạm vi ban đầu | Multi-tenant ngay từ đầu, nhưng billing (S6) chỉ làm khi mở cho khách ngoài |
 | Deploy | Helm chart `deploy/helm/portal`, cùng cluster với sandboxd |
 

@@ -88,3 +88,49 @@ func TestParsePublicURLTrimmed(t *testing.T) {
 		t.Errorf("PublicURL = %q, want trailing slash trimmed", cfg.PublicURL)
 	}
 }
+
+func TestParsePasswordLogin(t *testing.T) {
+	base := func(kv map[string]string) func(string) string {
+		return func(k string) string {
+			if k == "PORTAL_DATABASE_URL" {
+				return "postgres://u:p@localhost:5432/portal"
+			}
+			return kv[k]
+		}
+	}
+
+	// Defaults: admin/admin123, enabled.
+	cfg, err := Parse(base(nil))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if !cfg.PasswordLogin || cfg.AdminUsername != "admin" || cfg.AdminPassword != "admin123" {
+		t.Errorf("defaults = user %q pass %q enabled %v; want admin/admin123 enabled",
+			cfg.AdminUsername, cfg.AdminPassword, cfg.PasswordLogin)
+	}
+	if cfg.AdminEmail != "admin@portal.local" {
+		t.Errorf("AdminEmail = %q, want admin@portal.local", cfg.AdminEmail)
+	}
+
+	// "-" disables the password login entirely (SSO-only).
+	cfg, err = Parse(base(map[string]string{"PORTAL_ADMIN_PASSWORD": "-"}))
+	if err != nil {
+		t.Fatalf("Parse dash: %v", err)
+	}
+	if cfg.PasswordLogin || cfg.AdminPassword != "" {
+		t.Errorf("dash password = pass %q enabled %v; want disabled", cfg.AdminPassword, cfg.PasswordLogin)
+	}
+
+	// Custom bootstrap identity.
+	cfg, err = Parse(base(map[string]string{
+		"PORTAL_ADMIN_USERNAME": "root",
+		"PORTAL_ADMIN_PASSWORD": "s3cret",
+		"PORTAL_ADMIN_EMAIL":    "root@corp.example",
+	}))
+	if err != nil {
+		t.Fatalf("Parse custom: %v", err)
+	}
+	if !cfg.PasswordLogin || cfg.AdminUsername != "root" || cfg.AdminPassword != "s3cret" || cfg.AdminEmail != "root@corp.example" {
+		t.Errorf("custom = %+v", cfg)
+	}
+}

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { ApiError, api, type AuditEvent, type Member, type Org, type Project, type User } from "./api";
+import { ApiError, api, type AuditEvent, type AuthMethods, type Member, type Org, type Project, type User } from "./api";
 
 // S1 dashboard (PORTAL_PLAN 6/S1): login via SSO, org switcher,
 // projects, members (invite + role change). No router yet — state
@@ -11,6 +11,16 @@ export function App() {
   const [me, setMe] = useState<Me | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [methods, setMethods] = useState<AuthMethods | null>(null);
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [signingIn, setSigningIn] = useState(false);
+
+  // The server decides which sign-in surfaces to render: SSO when an
+  // OIDC provider is configured, password for the local admin.
+  useEffect(() => {
+    api.authMethods().then(setMethods).catch(() => setMethods({ sso: true, password: false }));
+  }, []);
 
   const refresh = useCallback(async () => {
     try {
@@ -39,8 +49,52 @@ export function App() {
         </header>
         <section className="card login-card">
           <h2>Sign in</h2>
-          <p className="muted">Single sign-on via your organisation's identity provider.</p>
-          <a className="btn" href="/auth/login">Sign in with SSO</a>
+          {methods?.sso && (
+            <>
+              <p className="muted">Single sign-on via your organisation's identity provider.</p>
+              <a className="btn" href="/auth/login">Sign in with SSO</a>
+            </>
+          )}
+          {methods?.sso && methods?.password && <div className="divider">or</div>}
+          {methods?.password && (
+            <form
+              className="row-form login-form"
+              onSubmit={async (e) => {
+                e.preventDefault();
+                setSigningIn(true);
+                try {
+                  await api.passwordLogin(username, password);
+                  setUsername("");
+                  setPassword("");
+                  await refresh();
+                } catch (err) {
+                  setError(err instanceof Error ? err.message : String(err));
+                } finally {
+                  setSigningIn(false);
+                }
+              }}
+            >
+              <input
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                placeholder="Username"
+                autoComplete="username"
+                required
+              />
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="Password"
+                autoComplete="current-password"
+                required
+              />
+              <button className="btn" type="submit" disabled={signingIn}>
+                {signingIn ? "Signing in…" : "Sign in"}
+              </button>
+            </form>
+          )}
+          {!methods && <p className="muted">Loading…</p>}
           {error && <p className="bad">{error}</p>}
         </section>
       </main>
