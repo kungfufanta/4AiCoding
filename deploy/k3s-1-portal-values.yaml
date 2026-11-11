@@ -22,8 +22,11 @@
 #   DB      The portal applies its own migrations at boot and creates the
 #           non-owner role `portal_app` for RLS (migration
 #           0002_tenants_rls.sql), so the DSN user needs CREATE ROLE
-#           privilege on first boot. Prefer a dedicated `portal` database
-#           and login over the cluster superuser.
+#           privilege on first boot. If portal_app already exists on the
+#           server (roles are cluster-wide), a superuser must run once:
+#             GRANT portal_app TO <dsn user>;
+#           Prefer a dedicated `portal` database and login over the
+#           cluster superuser.
 #
 # The workflow .github/workflows/deploy-k3s-portal.yml builds
 # ghcr.io/kungfufanta/4aicoding-portal:<sha> and installs this release
