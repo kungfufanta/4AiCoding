@@ -17,6 +17,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/tastyeffectco/sandboxd/portal/internal/agenttoken"
+	"github.com/tastyeffectco/sandboxd/portal/internal/apikeys"
 	"github.com/tastyeffectco/sandboxd/portal/internal/config"
 	"github.com/tastyeffectco/sandboxd/portal/internal/db"
 	"github.com/tastyeffectco/sandboxd/portal/internal/httpapi"
@@ -95,12 +97,22 @@ func run() error {
 		}
 	}
 
+	// Agent tokens (PORTAL_PLAN 6/S2): the EdDSA key pair lives in
+	// this process; tokens die with it, API keys do not.
+	signer, err := agenttoken.NewSigner()
+	if err != nil {
+		return fmt.Errorf("agent token signer: %w", err)
+	}
+	keys := &apikeys.Verifier{Pool: pool, Log: log}
+
 	srv := &httpapi.Server{
 		Log:           log,
 		Pool:          pool,
 		Sessions:      session.New(pool, cfg.SessionTTL),
 		OIDC:          provider,
 		PasswordLogin: cfg.PasswordLogin,
+		Keys:          keys,
+		Tokens:        signer,
 		PublicURL:     cfg.PublicURL,
 		SecureCookies: strings.HasPrefix(cfg.PublicURL, "https://"),
 		SessionTTL:    cfg.SessionTTL,

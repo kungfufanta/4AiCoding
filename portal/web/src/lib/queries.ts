@@ -45,3 +45,11 @@ export function useAudit(orgID: string) {
     enabled: orgID !== "",
   });
 }
+
+export function useApiKeys(orgID: string) {
+  return useQuery({
+    queryKey: ["api-keys", orgID],
+    queryFn: () => api.listApiKeys(orgID),
+    enabled: orgID !== "",
+  });
+}

@@ -19,6 +19,7 @@ import { LoginPage } from "../features/auth/login-page";
 import { AcceptInvitePage } from "../features/invites/accept-invite-page";
 import { ProjectsPage } from "../features/projects/projects-page";
 import { MembersPage } from "../features/members/members-page";
+import { ApiKeysPage } from "../features/api-keys/api-keys-page";
 import { AuditPage } from "../features/audit/audit-page";
 
 const queryClient = new QueryClient({
@@ -46,6 +47,7 @@ export function PortalApp() {
                   <Route index element={<Navigate to="projects" replace />} />
                   <Route path="projects" element={<ProjectsPage />} />
                   <Route path="members" element={<MembersPage />} />
+                  <Route path="api-keys" element={<ApiKeysPage />} />
                   <Route path="audit" element={<AuditPage />} />
                 </Route>
               </Route>

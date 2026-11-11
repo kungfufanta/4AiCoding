@@ -22,7 +22,7 @@ export function TR({ children, className }: { children: ReactNode; className?: s
   return <tr className={cn("border-t border-border transition-colors hover:bg-surface-2/40", className)}>{children}</tr>;
 }
 
-export function TH({ children, className }: { children: ReactNode; className?: string }) {
+export function TH({ children, className }: { children?: ReactNode; className?: string }) {
   return (
     <th
       className={cn(

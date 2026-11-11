@@ -16,6 +16,7 @@ import {
   Check,
   ChevronDown,
   FolderKanban,
+  KeyRound,
   LayoutGrid,
   LogOut,
   Menu,
@@ -153,6 +154,7 @@ function SidebarContent({ org }: { org: Org }) {
   const items = [
     { to: `${base}/projects`, label: "Projects", icon: FolderKanban },
     { to: `${base}/members`, label: "Members", icon: Users },
+    { to: `${base}/api-keys`, label: "API keys", icon: KeyRound },
     { to: `${base}/audit`, label: "Audit", icon: ScrollText },
   ];
 
