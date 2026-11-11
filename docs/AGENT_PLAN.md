@@ -9,6 +9,7 @@
 - Agent "làm tay chân" trong sandbox qua **gateway Portal → sandboxd**: đọc/ghi file, chạy lệnh, xem preview, git checkpoint. Sandbox chỉ là máy để agent thao tác, không chứa agent, không chứa key LLM.
 - Học lại từ sandboxd gốc (`tastyeffectco/sandboxd`): mô hình task + event stream, checkpoint git + revert, kết quả trung thực (`files_changed`, `build_status`, `preview_ok`), system prompt, cấu hình "model connection". **Không** mang lại `runtimed`, các CLI agent trong sandbox (OpenCode/Claude Code/Codex/Pi) và auth proxy.
 - **Template + skill + hồ sơ khách** (mục 5.8, phase T1–T3): khách chọn loại web, điền thông tin doanh nghiệp trước; hệ thống dựng sẵn site từ template, agent nhận hồ sơ như tham số và dùng skill của template.
+- **LLM free mặc định: WebHub** (`glm-4.6`, OpenAI-compatible, có memory theo key/user/session). Mỗi org một key `wh_` riêng; memory tắt trong vòng lặp tool (mục 5.2.1).
 - Các phase A0–A6 và T1–T3, mỗi phase một PR. A0 làm được ngay (chỉ đụng `control-plane/`); A3 trở đi cần P4 (gateway) của Portal.
 
 ---
@@ -174,8 +175,15 @@ Nguyên tắc:
 ```sql
 model_connections(id uuid, org_id uuid NULL /* NULL = cấp nền tảng */, name text,
   protocol text CHECK (protocol IN ('anthropic-messages','openai-chat')),
-  base_url text, api_key_enc bytea NULL, models jsonb /* [{id,context_window,max_output,input_price,output_price}] */,
+  flavor text NOT NULL DEFAULT 'generic' CHECK (flavor IN ('generic','webhub')),  -- mục 5.2.1
+  key_mode text NOT NULL DEFAULT 'shared' CHECK (key_mode IN ('shared','per_org','per_project')),
+  base_url text, api_key_enc bytea NULL /* key_mode = shared */,
+  models jsonb /* [{id,context_window,max_output,supports_tools,input_price,output_price}] */,
   default_model text, created_by uuid, created_at, updated_at, disabled_at)
+
+-- key riêng của từng tenant cho connection key_mode = per_org / per_project
+model_connection_keys(connection_id, org_id, project_id NULL, api_key_enc bytea, key_label text,
+  created_at, rotated_at, PRIMARY KEY (connection_id, org_id, project_id))
 ```
 
 - RLS theo `org_id`; dòng `org_id IS NULL` là connection nền tảng do platform admin tạo, mọi org đọc được metadata (không bao giờ đọc được key).
@@ -183,6 +191,55 @@ model_connections(id uuid, org_id uuid NULL /* NULL = cấp nền tảng */, nam
 - `base_url` chỉ cho `https://` (trừ allowlist nội bộ do admin đặt, ví dụ `http://litellm.4aicoding.svc:4000`). Chặn IP private/link-local khi org tự nhập (chống SSRF vào mạng cluster).
 - `POST /api/orgs/{org}/model-connections/{id}/test` gửi một request nhỏ (như upstream).
 - Role: chỉ `owner`/`admin` của org tạo/sửa; `member` chọn model khi chạy.
+
+#### 5.2.1 Connection mặc định (free): WebHub
+
+Doan chốt (2026-11-11): agent **free mặc định** dùng WebHub tại `https://h11hp9dd1y90-d.space-z.ai`. Đây là hub OpenAI-compatible (`POST /v1/chat/completions`, SSE chuẩn `data: {...}` + `[DONE]`, `GET /v1/models`), model mặc định `glm-4.6`. Nó khác API thường ở chỗ có **bộ nhớ dài hạn built-in** và **mô hình tenant 3 tầng**:
+
+| Tầng WebHub | Cách truyền | Ranh giới |
+|---|---|---|
+| Key `wh_…` | `Authorization: Bearer wh_…` | Tenant. Memory, session, request log của key này không bao giờ lẫn sang key khác |
+| User | field `user` (chuẩn OpenAI) hoặc header `X-WebHub-User` | End-user trong tenant; chủ của bộ nhớ xuyên phiên (`scope=user`) |
+| Session | header `X-Session-Id` | Một cuộc trò chuyện; không có user thì "ghi nhớ" chỉ sống trong session |
+
+Thêm: memory `scope=client` là **kiến thức dùng chung cho mọi user của cùng key**; tắt memory theo request bằng `X-WebHub-Memory: 0` hoặc body `"memory": false`; `X-Request-Id` cho retry idempotent; header phản hồi `X-WebHub-Memory-Items`, `X-WebHub-Session`, `X-WebHub-Request-Id`; REST `POST/GET /api/memory`, `POST /api/memory/search`, `DELETE /api/memory/{id}`.
+
+**Ánh xạ tenant của Portal sang WebHub**
+
+| Portal | WebHub | Lý do |
+|---|---|---|
+| **Org** (hoặc project, xem Q14) | **một key `wh_` riêng** (`key_mode = per_org`) | Bắt buộc. Nếu nhiều org dùng chung một key thì memory `scope=client`, session và request log của org này đọc được từ org kia. Không bao giờ dùng chung một key `wh_` giữa các org |
+| User Portal (UUID) | `X-WebHub-User: u_<user_uuid>` | Dùng UUID, không dùng email (không gửi PII ra ngoài) |
+| API key / agent token (hệ multi-agent ngoài) | `X-WebHub-User: k_<api_key_id>` | Mỗi key là một "end-user" riêng, không đọc memory của người dùng |
+| `agent_sessions.id` | `X-Session-Id: s_<session_uuid>` | Gom các run của cùng một cuộc chat |
+| `run_id` + số bước | `X-Request-Id: <run_id>:<step>` | Worker retry không bị tính hai lần |
+
+Header tenant do **worker gắn từ dữ liệu của run** (org/user/session lấy từ DB), không bao giờ lấy từ prompt hay tool output. Test bắt buộc: run của org A không thể phát ra request mang key của org B.
+
+**Cách dùng memory cho coding agent (đề xuất)**
+
+Memory tự động của hub hữu ích cho chat, nhưng **nguy hiểm trong vòng lặp tool**: hub tự trích "ký ức" từ hội thoại, mà hội thoại của agent chứa nội dung file, output lệnh, có thể có `.env`. Nội dung đó có thể (1) bị lưu lâu dài bên ngoài, (2) quay lại như "background knowledge" ở các run sau, thành đường prompt injection bền vững. Vì vậy:
+
+- Mọi request **trong vòng lặp tool** gửi `X-WebHub-Memory: 0`.
+- Chỉ **lượt LLM đầu tiên của mỗi run** (chưa có tool output) bật memory, để agent nhận sở thích của người dùng ("thích tông xanh, trả lời tiếng Việt").
+- Portal **chủ động ghi** memory qua `POST /api/memory`, có kiểm soát: tóm tắt hồ sơ khách (mục 5.8) và `finish.summary` của run thành công (`scope=user`, `kind=summary`), không bao giờ ghi nội dung file hay output lệnh.
+- Khối `[Hub memory …]` hub chèn vào được coi là **dữ liệu không đáng tin**, giống tool output.
+- Khi org bị xoá: gọi `DELETE /api/memory/{id}` cho mọi item của key, rồi thu hồi key (cần API quản lý key của hub, Q14).
+- `BRAIN.md` trong repo vẫn là trí nhớ dự án chính (đọc được, review được, đi theo snapshot); memory của hub chỉ là trí nhớ về **người dùng**.
+
+**Cấu hình**
+
+- Connection nền tảng được seed lúc Portal khởi động từ env: `PORTAL_DEFAULT_LLM_BASE_URL=https://h11hp9dd1y90-d.space-z.ai/v1`, `PORTAL_DEFAULT_LLM_MODEL=glm-4.6`, `PORTAL_DEFAULT_LLM_FLAVOR=webhub`. Key `wh_` thật nằm trong Secret k8s / bảng `model_connection_keys` (mã hoá), **không bao giờ commit vào repo** (kể cả demo key).
+- `flavor = webhub` chỉ thêm header (`X-WebHub-User`, `X-Session-Id`, `X-WebHub-Memory`, `X-Request-Id`) và đọc header phản hồi để log; body vẫn là OpenAI chuẩn, nên cùng một client `openaichat` dùng được cho LiteLLM/OpenRouter/vLLM.
+- Domain hub được thêm vào NetworkPolicy egress của `portal-agent-worker` (A6).
+- **Không** chạy `install.sh` "worker onboarding" của WebHub trong sandbox: đó là cách đăng ký máy làm worker tính toán cho hub, sẽ đưa key của hub vào sandbox và mở egress, trái nguyên tắc "không credential trong sandbox".
+
+**Phải kiểm chứng ở đầu A2 (spike, ghi kết quả vào PR)**
+
+1. `glm-4.6` qua hub có hỗ trợ `tools` / `tool_choice` và trả `tool_calls` dạng delta khi `stream: true` không. Nếu không, phải có chế độ dự phòng (tool call dạng JSON trong text, parse chặt).
+2. Context window, max output thực tế, rate limit của gói free.
+3. Memory có bị inject khi gửi `X-WebHub-Memory: 0` không (đọc `X-WebHub-Memory-Items` phải bằng 0).
+4. Hub có API tạo/thu hồi key `wh_` theo tenant không (để Portal tự cấp key khi tạo org).
 
 ### 5.3 Vòng lặp agent (A3)
 
@@ -414,7 +471,8 @@ Mỗi phase **một PR**, có test, CI xanh. "Xong khi" là tiêu chí nghiệm 
 
 - Migration `model_connections`, mã hoá key, RLS, API BFF + `/v1`, nút Test, chặn SSRF.
 - UI Settings → Models.
-- **Xong khi:** key không bao giờ xuất hiện trong response/log (test grep); `base_url` trỏ `10.x`/`169.254.169.254` bị từ chối với connection của org; Test model chạy với server giả cả hai protocol; member không sửa được connection.
+- Connection nền tảng WebHub seed từ env, `flavor=webhub`, `key_mode=per_org` + bảng `model_connection_keys`; spike 4 điểm ở mục 5.2.1.
+- **Xong khi:** key không bao giờ xuất hiện trong response/log (test grep); `base_url` trỏ `10.x`/`169.254.169.254` bị từ chối với connection của org; Test model chạy với server giả cả hai protocol; member không sửa được connection; với flavor webhub, request của org A luôn mang key + `X-WebHub-User` của org A (test với hub giả ghi lại header), và request có tool output luôn có `X-WebHub-Memory: 0`.
 
 ### A3 — Agent runtime + API (cần A0, A1, A2)
 
@@ -487,8 +545,8 @@ A0 (ngay, chỉ control-plane) ───┘   │      └─▶ A5 (cần P5, P
 
 ## 8. Câu hỏi mở (cần Doan chốt)
 
-1. **Nhà cung cấp LLM mặc định**: có connection cấp nền tảng không (ví dụ LiteLLM tự host trên k3s, hoặc OpenRouter), hay mỗi org tự mang key (BYOK)? Đề xuất: có một connection nền tảng qua LiteLLM để kiểm soát chi phí, cho phép BYOK sau.
-2. **Model mặc định cho agent** (cần tool calling tốt): chọn model nào, giá trần bao nhiêu cho một run?
+1. ~~Nhà cung cấp LLM mặc định~~ → **đã chốt: WebHub** (mục 5.2.1). Còn mở: cho phép org tự mang key (BYOK, LiteLLM/OpenRouter) ngay từ A2 hay để sau?
+2. ~~Model mặc định~~ → `glm-4.6`. Còn mở: giới hạn free (số run/ngày, token/tháng) cho mỗi org là bao nhiêu?
 3. **Worker mất lease thì fail hay resume?** Đề xuất fail (đơn giản, giống upstream); resume để sau.
 4. **Image không có `git`**: chấp nhận "không revert được" hay bắt buộc image trong allowlist phải có `git` + `rg`? Đề xuất bắt buộc (thêm vào `verify-base.sh`).
 5. **Agent có được tự `start` sandbox đang `stopped` và bật keep-alive trong lúc chạy không?** Đề xuất có, tắt keep-alive khi run xong.
@@ -500,3 +558,5 @@ A0 (ngay, chỉ control-plane) ───┘   │      └─▶ A5 (cần P5, P
 11. **Danh mục loại web đợt đầu**: chốt 3 loại (landing công ty, giới thiệu sản phẩm, shop nhỏ) hay nhiều hơn? Và danh sách field hồ sơ bắt buộc cho từng loại.
 12. **Shop nhỏ**: đặt hàng ghi SQLite qua server Next.js (cần sandbox chạy liên tục / deploy có server) hay tĩnh 100 % + đặt hàng qua Zalo/Messenger/form email?
 13. **Ai viết template + skill đợt đầu**: Claude, z.ai, hay Doan có sẵn source mẫu muốn đưa vào?
+14. **Key `wh_` cấp theo org hay theo project?** WebHub khuyên "1 project = 1 key". Đề xuất theo org (đơn giản, memory người dùng dùng chung giữa các project của họ); chuyển sang theo project nếu cần cách ly chặt. Và hub có API để Portal **tự tạo/thu hồi key** khi tạo/xoá org không, hay admin phải tạo tay?
+15. **Gửi code và hồ sơ khách tới hub bên ngoài**: hub `space-z.ai` do ai vận hành, dữ liệu (request log, memory) giữ bao lâu? Cần ghi vào điều khoản cho khách.
