@@ -97,6 +97,16 @@ type Invite struct {
 // ErrConflict marks unique-violation style rejections.
 var ErrConflict = errors.New("conflict")
 
+// ErrEmailInUse means another sign-in identity (a different OIDC
+// subject) already owns this email. Accounts are not linked
+// automatically: that would let whoever controls the email at a
+// second provider take over the first account.
+var ErrEmailInUse = errors.New("email already used by another sign-in")
+
+// ErrInviteEmailMismatch means the invite was sent to a different
+// email than the signed-in user's.
+var ErrInviteEmailMismatch = errors.New("invite was sent to a different email")
+
 // ErrNotFound marks missing rows (callers answer 404 to avoid
 // revealing existence, PORTAL_PLAN 5).
 var ErrNotFound = errors.New("not found")
@@ -116,6 +126,10 @@ func UpsertUser(ctx context.Context, tx pgx.Tx, sub, email, name string) (User, 
                 RETURNING id::text, email::text, name, created_at, (xmax = 0)`,
 		sub, email, name).Scan(&u.ID, &u.Email, &u.Name, &u.CreatedAt, &created)
 	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "users_email_key" {
+			return User{}, false, ErrEmailInUse
+		}
 		return User{}, false, fmt.Errorf("upsert user: %w", err)
 	}
 	return u, created, nil
@@ -139,15 +153,36 @@ func UserByID(ctx context.Context, tx pgx.Tx, userID string) (User, error) {
 
 // CreateOrg inserts the org with a caller-generated id (the RLS
 // context is pinned to the same id inside BootstrapTx) and makes
-// ownerUserID the owner.
-func CreateOrg(ctx context.Context, tx pgx.Tx, orgID, slug, name, ownerUserID string) (Org, error) {
-	o := Org{ID: orgID, Slug: slug, Name: name, PlanID: "free"}
-	err := tx.QueryRow(ctx, `
+// ownerUserID the owner. The slug is baseSlug, or baseSlug plus a
+// short random suffix when it is taken.
+//
+// A SELECT cannot tell whether a slug is free: RLS hides every org
+// the caller is not in, so the check would always say "free" and the
+// INSERT would then fail on orgs_slug_key. Instead the INSERT itself
+// probes the unique index with ON CONFLICT (slug) DO NOTHING, which
+// sees every row and leaves the transaction usable on a clash.
+func CreateOrg(ctx context.Context, tx pgx.Tx, orgID, baseSlug, name, ownerUserID string) (Org, error) {
+	o := Org{}
+	for i := 0; ; i++ {
+		if i == 8 {
+			return Org{}, fmt.Errorf("%w: could not derive a free slug", ErrConflict)
+		}
+		candidate := baseSlug
+		if i > 0 {
+			candidate = baseSlug + "-" + randomSuffix()
+		}
+		err := tx.QueryRow(ctx, `
                 INSERT INTO orgs (id, slug, name) VALUES ($1, $2, $3)
+                ON CONFLICT (slug) DO NOTHING
                 RETURNING id::text, slug, name, plan_id`,
-		orgID, slug, name).Scan(&o.ID, &o.Slug, &o.Name, &o.PlanID)
-	if err != nil {
-		return Org{}, fmt.Errorf("insert org: %w", err)
+			orgID, candidate, name).Scan(&o.ID, &o.Slug, &o.Name, &o.PlanID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			continue // slug taken by an org we cannot see
+		}
+		if err != nil {
+			return Org{}, fmt.Errorf("insert org: %w", err)
+		}
+		break
 	}
 	if _, err := tx.Exec(ctx, `
                 INSERT INTO memberships (org_id, user_id, role) VALUES ($1, $2, $3)`,
@@ -155,6 +190,17 @@ func CreateOrg(ctx context.Context, tx pgx.Tx, orgID, slug, name, ownerUserID st
 		return Org{}, fmt.Errorf("insert owner membership: %w", err)
 	}
 	return o, nil
+}
+
+// CountMyMemberships reports how many orgs userID belongs to. The
+// caller must have app.user_id pinned to userID (memberships RLS).
+func CountMyMemberships(ctx context.Context, tx pgx.Tx, userID string) (int, error) {
+	var n int
+	if err := tx.QueryRow(ctx,
+		`SELECT count(*) FROM memberships WHERE user_id = $1`, userID).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count memberships: %w", err)
+	}
+	return n, nil
 }
 
 // ListMyOrgs returns the orgs the user belongs to (RLS does the
@@ -264,19 +310,30 @@ func CreateInvite(ctx context.Context, tx pgx.Tx, orgID, email, role, createdBy 
 
 // AcceptInvite exchanges the plaintext token for a membership in
 // orgID (the handler pins app.org_id = orgID first; the invite link
-// carries the org id — the token is the secret, plan 3.4).
-func AcceptInvite(ctx context.Context, tx pgx.Tx, orgID, token, userID string) (string, error) {
-	var role string
+// carries the org id). The token alone is not enough: the invite
+// must have been sent to userEmail (case-insensitive), so a
+// forwarded or leaked link cannot be used by someone else.
+func AcceptInvite(ctx context.Context, tx pgx.Tx, orgID, token, userID, userEmail string) (string, error) {
+	var role, inviteEmail string
 	err := tx.QueryRow(ctx, `
-                UPDATE invites SET accepted_at = now()
+                SELECT role, email::text FROM invites
                 WHERE org_id = $1 AND token_hash = $2
                   AND accepted_at IS NULL AND expires_at > now()
-                RETURNING role`,
-		orgID, HashToken(token)).Scan(&role)
+                FOR UPDATE`,
+		orgID, HashToken(token)).Scan(&role, &inviteEmail)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", ErrNotFound
 	}
 	if err != nil {
+		return "", fmt.Errorf("load invite: %w", err)
+	}
+	if !strings.EqualFold(inviteEmail, userEmail) {
+		return "", ErrInviteEmailMismatch
+	}
+	if _, err := tx.Exec(ctx, `
+                UPDATE invites SET accepted_at = now()
+                WHERE org_id = $1 AND token_hash = $2`,
+		orgID, HashToken(token)); err != nil {
 		return "", fmt.Errorf("accept invite: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `
@@ -385,26 +442,6 @@ func Slugify(name string) string {
 		return "org"
 	}
 	return s
-}
-
-// UniqueOrgSlug finds an unused org slug by appending a short random
-// suffix on collisions.
-func UniqueOrgSlug(ctx context.Context, tx pgx.Tx, base string) (string, error) {
-	for i := 0; i < 6; i++ {
-		candidate := base
-		if i > 0 {
-			candidate = base + "-" + randomSuffix()
-		}
-		var taken bool
-		if err := tx.QueryRow(ctx,
-			`SELECT EXISTS (SELECT 1 FROM orgs WHERE slug = $1)`, candidate).Scan(&taken); err != nil {
-			return "", fmt.Errorf("check slug: %w", err)
-		}
-		if !taken {
-			return candidate, nil
-		}
-	}
-	return "", fmt.Errorf("%w: could not derive a free slug", ErrConflict)
 }
 
 // HashToken is the one-way form stored for invite tokens.

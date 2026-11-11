@@ -88,6 +88,7 @@ func run() error {
 		OIDC:          provider,
 		PublicURL:     cfg.PublicURL,
 		SecureCookies: strings.HasPrefix(cfg.PublicURL, "https://"),
+		SessionTTL:    cfg.SessionTTL,
 	}
 	mux := srv.Handler()
 	// The SPA (embedded via internal/webfs) rides on the same origin:

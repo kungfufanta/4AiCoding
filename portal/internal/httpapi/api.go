@@ -53,11 +53,8 @@ func (s *Server) handleCreateOrg(w http.ResponseWriter, r *http.Request) {
 	userID := db.UserID(r.Context())
 	var org tenants.Org
 	err = db.BootstrapTx(r.Context(), s.Pool, orgID, func(tx db.Tx) error {
-		slug, err := tenants.UniqueOrgSlug(r.Context(), tx, tenants.Slugify(body.Name))
-		if err != nil {
-			return err
-		}
-		org, err = tenants.CreateOrg(r.Context(), tx, orgID, slug, body.Name, userID)
+		var err error
+		org, err = tenants.CreateOrg(r.Context(), tx, orgID, tenants.Slugify(body.Name), body.Name, userID)
 		if err != nil {
 			return err
 		}
@@ -130,8 +127,7 @@ func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 	orgID := pathOrgID(r)
-	role, ok := s.requireAdmin(w, r, orgID)
-	if !ok {
+	if _, ok := s.requireAdmin(w, r, orgID); !ok {
 		return
 	}
 	var body struct {
@@ -159,8 +155,6 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal", "could not create project")
 		return
 	}
-	meta, _ := json.Marshal(map[string]string{"actor_role": role})
-	_ = meta // role recorded in audit action above via audit row context
 	writeJSON(w, http.StatusCreated, project)
 }
 
@@ -188,7 +182,12 @@ func (s *Server) handleListMembers(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleSetMemberRole(w http.ResponseWriter, r *http.Request) {
 	orgID := pathOrgID(r)
 	targetID := r.PathValue("userID")
-	if _, ok := s.requireAdmin(w, r, orgID); !ok {
+	callerRole, ok := s.requireAdmin(w, r, orgID)
+	if !ok {
+		return
+	}
+	if targetID == db.UserID(r.Context()) {
+		writeErr(w, http.StatusForbidden, "forbidden", "you cannot change your own role")
 		return
 	}
 	var body struct {
@@ -200,6 +199,10 @@ func (s *Server) handleSetMemberRole(w http.ResponseWriter, r *http.Request) {
 	}
 	if !tenants.MembershipRoleValid(body.Role) {
 		writeErr(w, http.StatusBadRequest, "bad_request", "unknown role")
+		return
+	}
+	if body.Role == tenants.RoleOwner && callerRole != tenants.RoleOwner {
+		writeErr(w, http.StatusForbidden, "forbidden", "only an owner can grant the owner role")
 		return
 	}
 	err := db.WithOrg(r.Context(), s.Pool, orgID, func(tx db.Tx) error {
@@ -285,8 +288,11 @@ func (s *Server) handleAcceptInvite(w http.ResponseWriter, r *http.Request) {
 	}
 	var role string
 	err := db.WithOrg(r.Context(), s.Pool, orgID, func(tx db.Tx) error {
-		var err error
-		role, err = tenants.AcceptInvite(r.Context(), tx, orgID, body.Token, db.UserID(r.Context()))
+		user, err := tenants.UserByID(r.Context(), tx, db.UserID(r.Context()))
+		if err != nil {
+			return err
+		}
+		role, err = tenants.AcceptInvite(r.Context(), tx, orgID, body.Token, user.ID, user.Email)
 		if err != nil {
 			return err
 		}
@@ -295,6 +301,11 @@ func (s *Server) handleAcceptInvite(w http.ResponseWriter, r *http.Request) {
 	})
 	if errors.Is(err, tenants.ErrNotFound) {
 		writeErr(w, http.StatusNotFound, "not_found", "invite not found, expired or already used")
+		return
+	}
+	if errors.Is(err, tenants.ErrInviteEmailMismatch) {
+		writeErr(w, http.StatusForbidden, "invite_email_mismatch",
+			"this invite was sent to a different email; sign in with that email")
 		return
 	}
 	if errors.Is(err, tenants.ErrConflict) {

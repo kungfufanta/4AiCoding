@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
@@ -8,7 +9,6 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/tastyeffectco/sandboxd/portal/internal/db"
 	"github.com/tastyeffectco/sandboxd/portal/internal/oidcauth"
@@ -156,39 +156,17 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Step 1 (no org context): upsert the user; on first login also
-	// mint the personal org id (users has no RLS; the org row itself
-	// is created in step 2 inside BootstrapTx pinned to that id).
-	var userID, newOrgID string
-	err = db.WithTx(r.Context(), s.Pool, func(tx db.Tx) error {
-		u, created, err := tenants.UpsertUser(r.Context(), tx, claims.Sub, email, claims.Name)
-		if err != nil {
-			return err
-		}
-		userID = u.ID
-		if created {
-			newOrgID, err = db.NewOrgID()
-		}
-		return err
-	})
-	if err == nil && newOrgID != "" {
-		// Step 2: personal org + owner membership + audit, all under
-		// the new org's RLS context (WITH CHECK sees id = app.org_id).
-		err = db.BootstrapTx(r.Context(), s.Pool, newOrgID, func(btx db.Tx) error {
-			slug, err := tenants.UniqueOrgSlug(r.Context(), btx, tenants.Slugify(emailLocalPart(email)))
-			if err != nil {
-				return err
-			}
-			name := claims.Name
-			if name == "" {
-				name = emailLocalPart(email)
-			}
-			if _, err := tenants.CreateOrg(r.Context(), btx, newOrgID, slug, name+"'s org", userID); err != nil {
-				return err
-			}
-			meta, _ := json.Marshal(map[string]string{"org_id": newOrgID, "slug": slug})
-			return tenants.Audit(r.Context(), btx, "user", userID, "org.create", newOrgID, string(meta))
-		})
+	if claims.EmailVerified != nil && !*claims.EmailVerified {
+		writeErr(w, http.StatusForbidden, "email_unverified",
+			"verify your email with the identity provider, then sign in again")
+		return
+	}
+
+	userID, err := s.bootstrapLogin(r.Context(), claims.Sub, email, claims.Name)
+	if errors.Is(err, tenants.ErrEmailInUse) {
+		writeErr(w, http.StatusConflict, "email_in_use",
+			"this email is already linked to another sign-in method; sign in with that one")
+		return
 	}
 	if err != nil {
 		s.Log.Error("login bootstrap failed", slog.Any("error", err))
@@ -202,7 +180,7 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal", "could not create session")
 		return
 	}
-	maxAge := int((12 * time.Hour).Seconds())
+	maxAge := int(s.sessionTTL().Seconds())
 	http.SetCookie(w, s.sessionCookie(token, maxAge))
 	http.SetCookie(w, s.csrfCookie(csrf, maxAge))
 	target := "/"
@@ -229,4 +207,44 @@ func emailLocalPart(email string) string {
 		return email[:i]
 	}
 	return email
+}
+
+// bootstrapLogin upserts the signed-in user and, when they belong to
+// no org, creates their personal org, all in one transaction. If
+// anything fails nothing is kept, so the next sign-in retries the
+// whole bootstrap; a user left with no org (removed from every org,
+// or hit by an earlier failure) gets a personal org again. The tx is
+// pinned to the would-be org id up front (RLS lets the org, owner
+// membership and audit rows in) and to the user once known.
+func (s *Server) bootstrapLogin(ctx context.Context, sub, email, name string) (string, error) {
+	newOrgID, err := db.NewOrgID()
+	if err != nil {
+		return "", err
+	}
+	var userID string
+	err = db.BootstrapTx(ctx, s.Pool, newOrgID, func(tx db.Tx) error {
+		u, _, err := tenants.UpsertUser(ctx, tx, sub, email, name)
+		if err != nil {
+			return err
+		}
+		userID = u.ID
+		if err := db.PinUser(ctx, tx, userID); err != nil {
+			return err
+		}
+		n, err := tenants.CountMyMemberships(ctx, tx, userID)
+		if err != nil || n > 0 {
+			return err
+		}
+		display := name
+		if display == "" {
+			display = emailLocalPart(email)
+		}
+		org, err := tenants.CreateOrg(ctx, tx, newOrgID, tenants.Slugify(emailLocalPart(email)), display+"'s org", userID)
+		if err != nil {
+			return err
+		}
+		meta, _ := json.Marshal(map[string]string{"org_id": newOrgID, "slug": org.Slug})
+		return tenants.Audit(ctx, tx, "user", userID, "org.create", newOrgID, string(meta))
+	})
+	return userID, err
 }
