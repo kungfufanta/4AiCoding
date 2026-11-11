@@ -134,7 +134,7 @@ func TestScopeTable(t *testing.T) {
 	if !ValidScope(ScopeHealth) || ValidScope("bogus") {
 		t.Error("ValidScope")
 	}
-	if got := KnownScopes(); len(got) != 6 {
+	if got := KnownScopes(); len(got) != 7 {
 		t.Errorf("KnownScopes = %v", got)
 	}
 	if !ScopesAllow([]string{ScopeSandboxesExec}, "POST", "/v1/sandboxes/01ABC/exec") ||
@@ -142,6 +142,14 @@ func TestScopeTable(t *testing.T) {
 		!ScopesAllow([]string{ScopeSandboxesRead}, "GET", "/v1/sandboxes/01ABC") ||
 		ScopesAllow([]string{ScopeSandboxesRead}, "GET", "/v1/sandboxes/01ABC/logs") {
 		t.Error("sandbox scope patterns")
+	}
+	if !ScopesAllow([]string{ScopeSandboxesFiles}, "GET", "/v1/sandboxes/01ABC/files") ||
+		!ScopesAllow([]string{ScopeSandboxesFiles}, "GET", "/v1/sandboxes/01ABC/files/content") ||
+		!ScopesAllow([]string{ScopeSandboxesFiles}, "PUT", "/v1/sandboxes/01ABC/files/content") ||
+		!ScopesAllow([]string{ScopeSandboxesFiles}, "DELETE", "/v1/sandboxes/01ABC/files") ||
+		!ScopesAllow([]string{ScopeSandboxesFiles}, "POST", "/v1/sandboxes/01ABC/files/move") ||
+		ScopesAllow([]string{ScopeSandboxesFiles}, "POST", "/v1/sandboxes/01ABC/exec") {
+		t.Error("files scope patterns")
 	}
 }
 

@@ -12,7 +12,9 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/audit"
@@ -613,10 +615,113 @@ func (s *Server) v1RestartSandbox(w http.ResponseWriter, r *http.Request) {
 
 type v1ExecReq struct {
 	Cmd []string `json:"cmd"`
+	// --- exec v2 (AGENT_PLAN A0). Optional; presence of ANY v2 field
+	// switches the request to v2 semantics (defaults + validation).
+	// A bare {"cmd":…} request keeps the exact legacy behaviour.
+	Cwd            string            `json:"cwd"`
+	Env            map[string]string `json:"env"`
+	Stdin          string            `json:"stdin"`
+	TimeoutS       *int              `json:"timeout_s"`
+	MaxOutputBytes *int64            `json:"max_output_bytes"`
+}
+
+const (
+	execV2DefaultTimeoutS = 60              // timeout_s when a v2 request omits it
+	execV2DefaultOutputB  = 256 << 10       // max_output_bytes default (256 KiB)
+	execV2MaxOutputB      = 4 << 20         // max_output_bytes ceiling (4 MiB)
+	execV2MaxStdinB       = 1 << 20         // stdin ceiling (1 MiB)
+	execWorkdirRoot       = "/home/sandbox" // cwd must live under it
+	execV2NDJSONParam     = "ndjson"        // ?stream= value for ndjson streaming
+)
+
+// v2Exec reports whether the request opted into v2 semantics.
+func (r v1ExecReq) v2Exec() bool {
+	return r.Cwd != "" || len(r.Env) > 0 || r.Stdin != "" ||
+		r.TimeoutS != nil || r.MaxOutputBytes != nil
+}
+
+// validateExecV2 applies the A0 rules to a v2-mode request and returns the
+// internal execReq to run. Policy caps timeout_s at policy.exec.max_timeout_s.
+func (s *Server) validateExecV2(w http.ResponseWriter, r *http.Request, in v1ExecReq) (execReq, bool) {
+	out := execReq{Cmd: in.Cmd, Cwd: in.Cwd, Env: in.Env, Stdin: in.Stdin}
+
+	// cwd must stay under the workspace root inside the container.
+	if in.Cwd != "" {
+		clean := filepath.Clean(in.Cwd)
+		if clean != execWorkdirRoot && !strings.HasPrefix(clean, execWorkdirRoot+"/") {
+			writeV1Err(w, http.StatusBadRequest, "invalid_request",
+				"cwd must be under "+execWorkdirRoot)
+			return execReq{}, false
+		}
+		out.Cwd = clean
+	}
+
+	// env may not override the container's identity/runtime variables.
+	for k, v := range in.Env {
+		if k == "" || strings.ContainsAny(k, "=\x00") || strings.ContainsRune(v, '\x00') {
+			writeV1Err(w, http.StatusBadRequest, "invalid_request",
+				"invalid env entry "+strconv.Quote(k))
+			return execReq{}, false
+		}
+		if k == "PATH" || k == "HOME" || strings.HasPrefix(k, "LD_") {
+			writeV1Err(w, http.StatusBadRequest, "invalid_request",
+				"env may not override "+k)
+			return execReq{}, false
+		}
+	}
+
+	// timeout: default 60, hard ceiling from policy.exec.max_timeout_s (600).
+	maxTimeout := policy.DefaultExecMaxTimeoutSecs
+	if pol, err := s.policy(r.Context()); err != nil {
+		writeV1Err(w, http.StatusInternalServerError, "internal", err.Error())
+		return execReq{}, false
+	} else if pol.Exec.MaxTimeoutSecs > 0 {
+		maxTimeout = pol.Exec.MaxTimeoutSecs
+	}
+	timeout := execV2DefaultTimeoutS
+	if in.TimeoutS != nil {
+		timeout = *in.TimeoutS
+	}
+	if timeout <= 0 {
+		writeV1Err(w, http.StatusBadRequest, "invalid_request", "timeout_s must be positive")
+		return execReq{}, false
+	}
+	if timeout > maxTimeout {
+		writeV1Err(w, http.StatusBadRequest, "invalid_request",
+			strconv.Itoa(timeout)+" exceeds the "+strconv.Itoa(maxTimeout)+"s exec timeout limit")
+		return execReq{}, false
+	}
+	out.TimeoutS = timeout
+
+	// output bound: default 256 KiB, ceiling 4 MiB.
+	var maxOut int64 = execV2DefaultOutputB
+	if in.MaxOutputBytes != nil {
+		maxOut = *in.MaxOutputBytes
+	}
+	if maxOut <= 0 {
+		writeV1Err(w, http.StatusBadRequest, "invalid_request", "max_output_bytes must be positive")
+		return execReq{}, false
+	}
+	if maxOut > execV2MaxOutputB {
+		writeV1Err(w, http.StatusBadRequest, "invalid_request",
+			"max_output_bytes exceeds the 4 MiB limit")
+		return execReq{}, false
+	}
+	out.MaxOutputBytes = maxOut // int64
+
+	// stdin payload bound.
+	if len(in.Stdin) > execV2MaxStdinB {
+		writeV1Err(w, http.StatusBadRequest, "invalid_request", "stdin exceeds the 1 MiB limit")
+		return execReq{}, false
+	}
+	return out, true
 }
 
 // v1ExecSandbox runs a one-shot command in a running sandbox and returns
-// stdout, stderr and the exit code. A non-zero exit code is still a 200.
+// stdout, stderr and the exit code — plus timed_out/truncated/duration_ms
+// for exec v2 requests (AGENT_PLAN A0). `?stream=ndjson` streams the same
+// run as newline-delimited JSON instead of one buffered response.
+// A non-zero exit code is still a 200.
 func (s *Server) v1ExecSandbox(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	sb, ok := s.v1Lookup(w, r, id)
@@ -638,7 +743,32 @@ func (s *Server) v1ExecSandbox(w http.ResponseWriter, r *http.Request) {
 		writeV1Err(w, http.StatusBadRequest, "invalid_request", "cmd is required")
 		return
 	}
-	body, _ := json.Marshal(execReq{Cmd: req.Cmd})
+	var inner execReq
+	if req.v2Exec() {
+		inner, ok = s.validateExecV2(w, r, req)
+		if !ok {
+			return
+		}
+	} else {
+		inner = execReq{Cmd: req.Cmd}
+	}
+	if v := r.URL.Query().Get("stream"); v != "" && v != execV2NDJSONParam {
+		writeV1Err(w, http.StatusBadRequest, "invalid_request", "stream must be "+execV2NDJSONParam)
+		return
+	}
+	if r.URL.Query().Get("stream") == execV2NDJSONParam {
+		// Streaming response: hand the real ResponseWriter to the internal
+		// handler so ndjson lines flush as they arrive. remoteRoute has
+		// already forwarded remote sandboxes before we got here.
+		inner.NDJSON = true
+		body, _ := json.Marshal(inner)
+		sr := httptest.NewRequest(http.MethodPost, "/sandbox/"+id+"/exec", bytes.NewReader(body))
+		sr = sr.WithContext(r.Context())
+		sr.SetPathValue("id", id)
+		s.handleExec(w, sr)
+		return
+	}
+	body, _ := json.Marshal(inner)
 	code, out := s.delegate(r, s.handleExec, http.MethodPost, "/sandbox/"+id+"/exec",
 		map[string]string{"id": id}, body)
 	if code != http.StatusOK {

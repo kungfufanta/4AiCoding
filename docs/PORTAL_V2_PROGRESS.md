@@ -10,11 +10,27 @@ File theo dõi cho kế hoạch [`docs/PORTAL_PLAN_V2.md`](PORTAL_PLAN_V2.md). C
 | Kế hoạch V2 | `docs/PORTAL_PLAN_V2.md` | ✅ Xong | #33 | Docs-only, CI xanh |
 | P1 | Design system + app shell + migrate Login/Projects/Members/Audit + trang accept-invite + CSP + preview workflow | ✅ Xong | #36 | Merged 07:27 |
 | **P2** | API key + agent token (S2 + UI) | ✅ Xong | #37 + #38 | Merged; #38 là fix bảo mật của Claude |
-| P3 | Tag tenant + webhook ở sandboxd (S3a) | 🟨 Đang review | | Branch `portal-p3-sandboxd-tag-webhook` |
-| P4 | Gateway sandboxd + trang Sandboxes (S3 + UI) | ⬜ | | Cần P2 + P3 |
+| P3 | Tag tenant + webhook ở sandboxd (S3a) | ✅ Xong | #40 | Merged; CI 7/7 xanh |
+| P4 | Gateway sandboxd + trang Sandboxes (S3 + UI) | ⬜ | | Cần P2 + P3 — đã đủ điều kiện |
 | P5 | Quota + rate limit + trang Usage (S4 + UI) | ⬜ | | Cần P4 |
 | P6 | SDK + MCP + trang Quickstart (S5 + UI) | ⬜ | | Cần P4 |
 | Chat MVP | Trang Chat (stream SSE qua WebHub glm-4.6, chưa tool/sandbox) | 🟨 Đang review | | Claude làm; branch `claude/project-thread-rhrt1v`; A2/A3 sẽ gắn model connection + agent vào chính trang này |
+
+### Kế hoạch AGENT (`docs/AGENT_PLAN.md`, PR #39 — A0–A7 + T1–T3)
+
+| M | Nội dung | Trạng thái | PR | Ghi chú |
+|---|---|---|---|---|
+| A0 | sandboxd: exec v2 + files API (chỉ control-plane) | 🟨 Chờ review | #41 | Branch `agent-a0-exec-v2-files` — z.ai làm; exec v2 + files API + scope `sandboxes:files` + openapi + e2e |
+| A1 | Portal gateway cho exec v2 + files | ⬜ | | Cần P4 |
+| A2 | Model connections (Portal) | ⬜ | | Cần P2 (đủ); song song A0/A1 — WebHub free mặc định `glm-4.6` (§5.2.1); spike đầu A2: tool calling khi streaming |
+| A3 | Agent runtime + API | ⬜ | | Cần A0+A1+A2 |
+| A4 | UI Agent + Files | ⬜ | | Cần A3 |
+| A5 | Quota/usage/MCP cho agent | ⬜ | | Cần A3, P5, P6 |
+| A6 | Triển khai k3s + vận hành | ⬜ | | Cần A4 |
+| A7 | CLI agent trong sandbox | ⬜ | | Tuỳ chọn — để sau |
+| T1 | Thư viện template | ⬜ | | Cần P4; song song A2/A3 |
+| T2 | Wizard onboarding + hồ sơ khách | ⬜ | | Cần T1 |
+| T3 | Agent dùng brief + skill | ⬜ | | Cần A3 + T1 |
 
 ⬜ chưa bắt đầu · 🟨 đang làm/review · ✅ xong (đã merge) · ⏸ chờ gì đó
 
@@ -61,6 +77,15 @@ Việc còn mở (không chặn merge):
 | 2026-11-11 | P2 trên branch `portal-p2-api-keys` → PR #37 | Go tests + 8/8 Playwright pass local; fix bug SELECT cột không có trong RETURNS TABLE |
 | 2026-11-11 | Claude review #37, fix cache verify (PR #38) | Đã merge; lỗi: cache key theo key_id công khai → giả mạo secret pass 60s; giờ bind key id + sha256(secret), không cache lỗi DB, map bounded |
 | 2026-11-11 | P3/S3a trên branch `portal-p3-sandboxd-tag-webhook` | workspace_id + filter + require_external + webhook HMAC; go test ./... xanh, -race sạch; PR chờ CI |
+| 2026-11-11 | P3 (PR #40) merge vào main | CI 7/7 xanh |
+| 2026-11-11 | Claude mở PR #39: `docs/AGENT_PLAN.md` (A0–A7 + T1–T3) | Docs-only, chờ merge; Q8 (ai làm A0) → z.ai nhận |
+| 2026-11-11 | PR #39 cập nhật: WebHub là LLM free mặc định, model `glm-4.6` (mục 5.2.1) | Mỗi org 1 key `wh_` riêng (`key_mode=per_org`), không bao giờ dùng chung; `X-WebHub-User` = UUID (`u_<user_uuid>`, không gửi email); `agent_sessions.id` → `X-Session-Id`, `run_id:step` → `X-Request-Id`; memory tắt trong vòng lặp tool (`X-WebHub-Memory: 0`), chỉ lượt LLM đầu mỗi run bật; Portal tự ghi hồ sơ khách + `finish.summary` qua `POST /api/memory`; KHÔNG commit key nào vào repo (kể cả demo key) |
+| 2026-11-11 | Câu hỏi mở còn chờ | Q14 (anh/hub trả lời): hub có API tạo/thu hồi key `wh_` để Portal tự cấp khi tạo org không? Key cấp theo org hay theo project? |
+| 2026-11-11 | Spike đầu A2 (chưa kiểm chứng) | glm-4.6 qua hub có hỗ trợ `tools`/`tool_choice` và trả `tool_calls` delta khi `stream:true` không — nếu không phải có chế độ dự phòng (JSON trong text) |
+| 2026-11-11 | A0 trên branch `agent-a0-exec-v2-files` (z.ai) → PR #41 | exec v2 (`timeout_s`/`cwd`/`env`/`stdin`/`max_output_bytes`/`timed_out`/`truncated`/`duration_ms`, `?stream=ndjson`, policy `exec.max_timeout_s`); files API 5 route (list/read/write/delete/move) + scope `sandboxes:files`; path safety: safeJoin + realpathWithin + noSymlinkComponents, chặn `.ssh`; go test xanh + `-race` sạch; openapi + e2e cập nhật |
+| 2026-11-11 | preview.yml thêm retry 1 lần cho `playwright install --with-deps` | Preview job fail 2 lần liên tiếp vì DNS runner thoáng chốc khi apt (`Temporary failure resolving security.ubuntu.com`) — không phải code; thêm retry + fail hẳn nếu 2 lần đều lỗi |
+| 2026-11-11 | A0 fix CI lần 2 (commit fix `yes A` trên PR #41) | Sau khi timeout argv hết lỗi, e2e lộ bug thứ 2 TRONG SCRIPT e2e do A0 thêm vào: payload JSON chứa `\0` (escape không hợp lệ trong JSON) → sandboxd 400 `invalid_request` đúng chuẩn. Sửa thành `yes A | head -c 50000000` (không cần escape). Bài học: chuỗi shell nhúng JSON phải kiểm tra escape hai lớp (bash + JSON); preview-portal fail lần đó chỉ là DNS runner thoáng chốc, không phải code |
+| 2026-11-11 | A0 fix CI (commit `0dae9aa` trên PR #41) | lifecycle e2e fail exit 127: `timeout: failed to run command '--'` — GNU timeout ngừng parse option ở tham số vị trí đầu (duration), `--` sau duration bị coi là TÊN LỆNH. Bài học: không được đặt `--` sau duration của `timeout`; chuyển sang `timeout --kill-after=2 <n>` (TERM trước, SIGKILL 2s sau với tiến trình bỏ qua TERM, vẫn exit 124). go test ./... xanh local |
 
 | 2026-11-11 | Chat MVP (Claude) | Migration `0005_chat.sql` (hội thoại riêng theo user, RLS org+user), `internal/llm` (client OpenAI-compatible stream, header WebHub), BFF `/api/orgs/{id}/chats…` + SSE, trang `/orgs/:slug/chat`; env `PORTAL_DEFAULT_LLM_{BASE_URL,MODEL,FLAVOR,API_KEY}`, secret k3s `llm-api-key` từ GitHub secret `PORTAL_DEFAULT_LLM_API_KEY` |
 

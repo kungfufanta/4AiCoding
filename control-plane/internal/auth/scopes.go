@@ -15,6 +15,7 @@ const (
 	ScopeSandboxesExec   = "sandboxes:exec"   // exec + logs
 	ScopeSnapshots       = "snapshots"        // snapshot CRUD
 	ScopeSandboxesEgress = "sandboxes:egress" // read / change a sandbox's egress rules, watch its network activity
+	ScopeSandboxesFiles  = "sandboxes:files"  // workspace file list / read / write / delete / move (AGENT_PLAN A0)
 )
 
 // scopeRoutes is the single source of truth for what each scope permits, as
@@ -39,6 +40,11 @@ var scopeRoutes = map[string][]string{
 	ScopeSandboxesEgress: {
 		"GET /v1/sandboxes/*/network/egress", "PUT /v1/sandboxes/*/network/egress",
 		"GET /v1/sandboxes/*/network/activity",
+	},
+	ScopeSandboxesFiles: {
+		"GET /v1/sandboxes/*/files", "GET /v1/sandboxes/*/files/content",
+		"PUT /v1/sandboxes/*/files/content", "DELETE /v1/sandboxes/*/files",
+		"POST /v1/sandboxes/*/files/move",
 	},
 }
 
