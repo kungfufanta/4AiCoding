@@ -1024,7 +1024,12 @@ func (s *Server) execNDJSON(w http.ResponseWriter, r *http.Request, id string, r
 		}
 	}
 	enc := json.NewEncoder(w)
+	// stdout and stderr are pumped by two goroutines; the ResponseWriter
+	// and encoder are not safe for concurrent use, so serialize emits.
+	var mu sync.Mutex
 	emit := func(stream, data string) {
+		mu.Lock()
+		defer mu.Unlock()
 		_ = enc.Encode(map[string]string{"stream": stream, "data": data})
 		flush()
 	}

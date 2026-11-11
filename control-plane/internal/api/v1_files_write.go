@@ -141,9 +141,14 @@ func chownNewParents(mnt, parent string, uid, gid int) {
 		return
 	}
 	for p := parent; p != mnt && strings.HasPrefix(p, mnt+string(os.PathSeparator)); p = filepath.Dir(p) {
-		if fi, err := os.Stat(p); err == nil {
+		// Lstat + Lchown: never follow a symlink component — os.Chown on
+		// a tenant-planted link would chown the HOST target.
+		if fi, err := os.Lstat(p); err == nil {
+			if fi.Mode()&os.ModeSymlink != 0 {
+				continue
+			}
 			if st, ok := fi.Sys().(*syscall.Stat_t); ok && (int(st.Uid) != uid || int(st.Gid) != gid) {
-				_ = os.Chown(p, uid, gid)
+				_ = os.Lchown(p, uid, gid)
 			}
 		}
 	}
@@ -182,6 +187,15 @@ func (s *Server) v1PutFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxPutFileBytes)
+
+	// Refuse a symlinked component BEFORE anything touches the path: the
+	// if_match read, MkdirAll and CreateTemp below all follow symlinks, so
+	// a tenant-planted `a -> /etc` would otherwise let `a/x/y` create host
+	// directories and temp files outside the workspace (CWE-59).
+	if !noSymlinkComponents(mnt, full) {
+		writeV1Err(w, http.StatusBadRequest, "invalid_request", "path traverses a symlink")
+		return
+	}
 
 	// Optional optimistic-concurrency gate: if_match carries the sha256 of
 	// the content the caller last saw. A missing file or a different hash
@@ -361,8 +375,15 @@ func (s *Server) v1MoveFile(w http.ResponseWriter, r *http.Request) {
 		writeV1Err(w, http.StatusBadRequest, "invalid_request", "refusing to move a symlink")
 		return
 	}
-	// The destination's parent is created first (so noSymlinkComponents can
-	// verify every component), then the full source+destination walk.
+	// Verify both paths BEFORE MkdirAll/chown: both follow symlinks, so a
+	// planted `a -> /etc` with to="a/x" would create host directories and
+	// chown them (and /etc itself) to the sandbox user (CWE-59).
+	if !noSymlinkComponents(mnt, src) || !noSymlinkComponents(mnt, dst) {
+		writeV1Err(w, http.StatusBadRequest, "invalid_request", "path traverses a symlink")
+		return
+	}
+	// The destination's parent is created, then the full walk re-runs to
+	// narrow the race with a concurrent in-sandbox symlink swap.
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		writeV1Err(w, http.StatusInternalServerError, "internal", err.Error())
 		return

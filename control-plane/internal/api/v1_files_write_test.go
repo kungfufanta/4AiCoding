@@ -322,3 +322,32 @@ func TestMoveFileRules(t *testing.T) {
 		t.Errorf("move symlink: got %d, want 400", w.Code)
 	}
 }
+
+// TestFileMutationsNeverCreateOutsideViaSymlink: a write or move through a
+// planted `escape -> <outside>` symlink with a NEW subdirectory must not
+// create that subdirectory (or temp files) outside the workspace before the
+// symlink check refuses it (MkdirAll/CreateTemp follow symlinks).
+func TestFileMutationsNeverCreateOutsideViaSymlink(t *testing.T) {
+	s, id, mnt := filePutServer(t)
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(mnt, "escape")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mnt, "a.txt"), []byte("A"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if w := filePut(t, s, id, "?path=escape%2Fnewdir%2Ff", "PWNED"); w.Code != 400 {
+		t.Errorf("put through symlink: got %d, want 400", w.Code)
+	}
+	if w := fileMove(t, s, id, `{"from":"a.txt","to":"escape/movedir/x"}`); w.Code != 400 {
+		t.Errorf("move through symlink: got %d, want 400", w.Code)
+	}
+	ents, _ := os.ReadDir(outside)
+	if len(ents) != 0 {
+		names := []string{}
+		for _, e := range ents {
+			names = append(names, e.Name())
+		}
+		t.Fatalf("files created outside the workspace: %v", names)
+	}
+}
