@@ -11,6 +11,7 @@
   --warn-bg: #fff6e0;
   --term-bg: #10131a;
   --term-text: #d8dee9;
+  --chart-fill: rgba(27, 127, 59, 0.14);
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
@@ -25,6 +26,7 @@
     --ok: #4cc77a;
     --warn-bg: #3a3017;
     --term-bg: #0a0c10;
+    --chart-fill: rgba(76, 199, 122, 0.18);
     color-scheme: dark;
   }
 }
@@ -240,6 +242,25 @@ th {
   font-weight: 600;
   color: var(--muted);
 }
+/* button cells: keep the cell a real table cell (a flex <td> drops out of
+   the table layout and breaks the row borders); the flex row lives inside. */
+td.actions {
+  width: 1%;
+  white-space: nowrap;
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+.nowrap {
+  white-space: nowrap;
+}
+.wrap-id {
+  overflow-wrap: anywhere;
+  min-width: 120px;
+}
+.wrap-any {
+  overflow-wrap: anywhere;
+  min-width: 160px;
+}
 td.detail {
   max-width: 360px;
   overflow-wrap: anywhere;
@@ -340,9 +361,11 @@ nav.tabs {
   gap: 4px;
   margin-bottom: 16px;
   border-bottom: 1px solid var(--line);
+  overflow-x: auto;
 }
 nav.tabs a {
   padding: 8px 14px;
+  white-space: nowrap;
   color: var(--muted);
   border-bottom: 2px solid transparent;
 }
@@ -397,7 +420,14 @@ nav.tabs a:hover {
   }
   nav.top {
     padding: 10px 12px;
-    gap: 10px;
+    gap: 6px 12px;
+    flex-wrap: wrap;
+  }
+  nav.top .brand {
+    flex-basis: 100%;
+  }
+  nav.top .spacer {
+    display: none;
   }
   dl.grid {
     grid-template-columns: 1fr;
@@ -527,7 +557,7 @@ button.chip:hover:not(:disabled) {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  background: var(--bg);
+  background: var(--card);
 }
 .kpi b {
   font-size: 20px;
@@ -541,9 +571,12 @@ button.chip:hover:not(:disabled) {
 }
 .cols-2 {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(380px, 100%), 1fr));
   gap: 14px;
   align-items: start;
+}
+.cols-2 > * {
+  min-width: 0;
 }
 .area-chart {
   width: 100%;
@@ -556,25 +589,24 @@ button.chip:hover:not(:disabled) {
 .scroll-x {
   overflow-x: auto;
 }
-ul.feed {
+ul.activity {
   list-style: none;
-  margin: 8px 0 0;
-  padding: 8px 10px;
-  background: var(--term-bg);
-  color: var(--term-text);
-  border-radius: 6px;
-  max-height: 320px;
+  margin: 0;
+  padding: 0;
+  max-height: 360px;
   overflow: auto;
 }
-ul.feed li {
-  padding: 4px 0;
-  border-bottom: 1px solid transparent;
+ul.activity li {
+  padding: 7px 0;
+  border-bottom: 1px solid var(--line);
+  overflow-wrap: anywhere;
 }
-ul.feed li:last-child {
+ul.activity li:last-child {
   border-bottom: 0;
 }
-.feed .action {
-  color: var(--ok);
+.activity .action {
+  color: var(--accent);
+  font-weight: 600;
 }
 
 .dirty {

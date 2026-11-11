@@ -30,7 +30,7 @@ export function OverviewPage() {
 
       <div className="kpis">
         <Kpi label="sandboxes running" value={`${o.sandboxes.running} / ${o.sandboxes.total}`} tone="ok" />
-        <Kpi label="users" value={o.users.total} />
+        {o.users && <Kpi label="users" value={o.users.total} />}
         <Kpi label="open approvals" value={o.approvals_open} tone={o.approvals_open ? "warn" : undefined} />
         <Kpi label="requests blocked (24h)" value={`${o.net_events_24h.blocked} / ${o.net_events_24h.total}`} />
         <Kpi label="exposed ports" value={o.ports_exposed} />
@@ -45,44 +45,52 @@ export function OverviewPage() {
             </Link>
           }
         >
-          <table>
-            <thead>
-              <tr>
-                <th>ID</th>
-                <th>Status</th>
-                <th>Image</th>
-                <th>Network</th>
-                <th>Created</th>
-              </tr>
-            </thead>
-            <tbody>
-              {o.recent.length === 0 && (
+          <div className="scroll-x">
+            <table>
+              <thead>
                 <tr>
-                  <td colSpan={5} className="muted">
-                    No sandboxes yet.
-                  </td>
+                  <th>ID</th>
+                  <th>Status</th>
+                  <th>Image</th>
+                  <th>Network</th>
+                  <th>Created</th>
                 </tr>
-              )}
-              {o.recent.map((s) => (
-                <tr key={s.id}>
-                  <td>
-                    <Link to={`/sandboxes/${s.id}`}>{s.id}</Link>
-                  </td>
-                  <td>
-                    <StatusBadge status={s.status} />
-                  </td>
-                  <td className="mono">{s.image}</td>
-                  <td className="mono">{s.egress_mode}</td>
-                  <td className="muted">{fmtTime(s.created_at)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {o.recent.length === 0 && (
+                  <tr>
+                    <td colSpan={5} className="muted">
+                      No sandboxes yet.
+                    </td>
+                  </tr>
+                )}
+                {o.recent.map((s) => (
+                  <tr key={s.id}>
+                    <td className="wrap-id">
+                      <Link to={`/sandboxes/${s.id}`} className="mono">
+                        {s.id}
+                      </Link>
+                    </td>
+                    <td>
+                      <StatusBadge status={s.status} />
+                    </td>
+                    <td className="mono wrap-any">{s.image}</td>
+                    <td className="mono">{s.egress_mode ?? "—"}</td>
+                    <td className="muted small">{fmtTime(s.created_at)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </Section>
 
         <Section title="Recent activity">
-          {o.audit.length === 0 && <p className="muted">No audit entries yet.</p>}
-          <ul className="feed">
+          {!o.users ? (
+            <p className="muted">The audit log is visible to admins only.</p>
+          ) : (
+            o.audit.length === 0 && <p className="muted">No audit entries yet.</p>
+          )}
+          <ul className="activity">
             {o.audit.map((a, i) => (
               <li key={i}>
                 <span className="mono action">{a.action}</span>

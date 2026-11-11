@@ -1165,6 +1165,101 @@ paths:
         "404": { description: No such node }
         "403": { description: Caller is not an admin }
 
+  /v1/overview:
+    get:
+      operationId: getOverview
+      tags: [observability]
+      summary: Console overview — sandbox counts, open approvals, blocked egress (24h), recent sandboxes; user counts and audit tail for admins only
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sandboxes, ports_exposed, approvals_open, net_events_24h, recent, audit]
+                properties:
+                  sandboxes:
+                    type: object
+                    properties:
+                      total: { type: integer }
+                      running: { type: integer }
+                      stopped: { type: integer }
+                      creating: { type: integer }
+                      error: { type: integer }
+                  users:
+                    nullable: true
+                    description: null unless the caller is an admin
+                    type: object
+                    properties:
+                      total: { type: integer }
+                      admins: { type: integer }
+                      operators: { type: integer }
+                      viewers: { type: integer }
+                      disabled: { type: integer }
+                  ports_exposed: { type: integer }
+                  approvals_open: { type: integer }
+                  net_events_24h:
+                    type: object
+                    properties:
+                      total: { type: integer }
+                      blocked: { type: integer }
+                  recent:
+                    type: array
+                    items: { $ref: "#/components/schemas/Sandbox" }
+                  audit:
+                    type: array
+                    description: newest first; empty unless the caller is an admin
+                    items:
+                      type: object
+                      properties:
+                        at: { type: string, format: date-time }
+                        actor: { type: string }
+                        action: { type: string }
+                        target: { type: string }
+                        detail: { type: string }
+
+  /v1/monitoring:
+    get:
+      operationId: getMonitoring
+      tags: [observability]
+      summary: Fleet resource view — one stats sample per running local sandbox plus the fleet CPU/memory history (10s steps, last 8 min, recorded while this endpoint is polled)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [fleet, sandboxes, history]
+                properties:
+                  fleet:
+                    type: object
+                    properties:
+                      total: { type: integer }
+                      running: { type: integer }
+                      avg_cpu: { type: number }
+                      mem_used_mb: { type: integer }
+                      mem_limit_mb: { type: integer }
+                  sandboxes:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        cpu_percent: { type: number }
+                        mem_usage_bytes: { type: integer }
+                        mem_limit_bytes: { type: integer }
+                        pids: { type: integer }
+                  history:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        t: { type: string, format: date-time }
+                        cpu: { type: number }
+                        mem_mb: { type: integer }
+
   /v1/capacity:
     get:
       operationId: getFleetCapacity

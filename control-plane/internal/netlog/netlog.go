@@ -228,3 +228,23 @@ func addCapped(list []string, v string, max int) []string {
 	}
 	return append(list, v)
 }
+
+// CountSince counts the recorded requests (across every sandbox) at or after
+// since, and how many of them were blocked. The rings are bounded, so this is
+// a lower bound once a busy sandbox has wrapped its ring.
+func (r *Recorder) CountSince(since time.Time) (total, blocked int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, l := range r.logs {
+		for _, e := range l.events {
+			if e.Time.Before(since) {
+				continue
+			}
+			total++
+			if !e.Allowed {
+				blocked++
+			}
+		}
+	}
+	return total, blocked
+}

@@ -9,7 +9,6 @@ import { SandboxConfigPage } from "./pages/SandboxConfig";
 import { NetworkPage } from "./pages/Network";
 import { AdminPage } from "./pages/Admin";
 import { OverviewPage } from "./pages/Overview";
-import { PermissionsPage } from "./pages/Permissions";
 import { MonitoringPage } from "./pages/Monitoring";
 import { UsersPage } from "./pages/Users";
 import "./styles.css";
@@ -44,12 +43,19 @@ function App() {
   else if (path === "/sandboxes" || path === "/sandboxes/") page = <SandboxListPage />;
   else if (path === "/sandboxes/new") page = <SandboxConfigPage />;
   else if (path === "/monitoring") page = <MonitoringPage />;
-  else if (path === "/permissions") page = <PermissionsPage />;
   else if (path === "/users") page = <UsersPage />;
+  // pages/Permissions.tsx (R/W/X matrix) is not routed yet: the control plane
+  // has no per-sandbox grants to store or enforce, so the page would only
+  // render a 404. Wire it back once /v1/permissions exists.
   else if ((m = path.match(/^\/sandboxes\/([^/]+)\/network$/))) page = <NetworkPage id={m[1]} />;
   else if ((m = path.match(/^\/sandboxes\/([^/]+)$/))) page = <SandboxDetailPage id={m[1]} />;
   else if (path.startsWith("/admin")) page = <AdminPage tab={path.split("/")[2] || "policy"} />;
-  else page = <p>Not found. <Link to="/">Back to overview</Link></p>;
+  else
+    page = (
+      <p>
+        Not found. <Link to="/">Back to overview</Link>
+      </p>
+    );
 
   const logout = async () => {
     try {
@@ -64,13 +70,30 @@ function App() {
     <MeContext.Provider value={me}>
       <div className="shell">
         <nav className="top">
-          <Link to="/" className="brand">4AiCoding</Link>
-          <Link to="/" className={path.startsWith("/admin") || path.startsWith("/sandboxes") ? "" : "active"}>Overview</Link>
-          <Link to="/sandboxes" className={path.startsWith("/sandboxes") ? "active" : ""}>Sandboxes</Link>
-          {can(me, "operator") && <Link to="/monitoring" className={path.startsWith("/monitoring") ? "active" : ""}>Monitoring</Link>}
-          {can(me, "operator") && <Link to="/permissions" className={path.startsWith("/permissions") ? "active" : ""}>Permissions</Link>}
-          {can(me, "admin") && <Link to="/users" className={path.startsWith("/users") ? "active" : ""}>Users</Link>}
-          {can(me, "operator") && <Link to="/admin" className={path.startsWith("/admin") ? "active" : ""}>Admin</Link>}
+          <Link to="/" className="brand">
+            4AiCoding
+          </Link>
+          <Link to="/" className={path === "/" || path === "/overview" ? "active" : ""}>
+            Overview
+          </Link>
+          <Link to="/sandboxes" className={path.startsWith("/sandboxes") ? "active" : ""}>
+            Sandboxes
+          </Link>
+          {can(me, "operator") && (
+            <Link to="/monitoring" className={path.startsWith("/monitoring") ? "active" : ""}>
+              Monitoring
+            </Link>
+          )}
+          {can(me, "admin") && (
+            <Link to="/users" className={path.startsWith("/users") ? "active" : ""}>
+              Users
+            </Link>
+          )}
+          {can(me, "operator") && (
+            <Link to="/admin" className={path.startsWith("/admin") ? "active" : ""}>
+              Admin
+            </Link>
+          )}
           <span className="spacer" />
           <span className="muted">
             {me.user} · {me.role}

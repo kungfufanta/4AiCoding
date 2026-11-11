@@ -248,6 +248,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/nodes/{id}/undrain", s.observe("POST /v1/nodes/{id}/undrain", s.v1UndrainNode))
 	mux.HandleFunc("GET /v1/capacity", s.observe("GET /v1/capacity", s.v1FleetCapacity))
 
+	// Console dashboard aggregations (read-only; every role).
+	mux.HandleFunc("GET /v1/overview", s.observe("GET /v1/overview", s.v1Overview))
+	mux.HandleFunc("GET /v1/monitoring", s.observe("GET /v1/monitoring", s.v1Monitoring))
+
 	// M6 — internal worker fleet protocol. Reachable ONLY with a worker
 	// token (auth middleware answers 404 for anything else).
 	mux.HandleFunc("POST /internal/nodes/register", s.observe("POST /internal/nodes/register", s.internalNodeRegister))

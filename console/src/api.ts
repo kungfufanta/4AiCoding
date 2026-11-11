@@ -258,11 +258,13 @@ export function sse(path: string, onData: (line: string) => void, onEnd?: () => 
 
 export interface Overview {
   sandboxes: { total: number; running: number; stopped: number; creating: number; error: number };
-  users: { total: number; admins: number; operators: number; viewers: number; disabled: number };
+  /** null unless the caller is an admin */
+  users: { total: number; admins: number; operators: number; viewers: number; disabled: number } | null;
   ports_exposed: number;
   approvals_open: number;
   net_events_24h: { total: number; blocked: number };
   recent: Sandbox[];
+  /** newest first; empty unless the caller is an admin */
   audit: { at: string; actor: string; action: string; target?: string; detail?: string }[];
 }
 

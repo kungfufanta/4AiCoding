@@ -15,6 +15,8 @@ function Area({ points, max, unit }: { points: number[]; max: number; unit: stri
   const line = points.map((v, i) => `${i * step},${y(v)}`).join(" ");
   const area = `0,${h} ${line} ${w},${h}`;
   const peak = Math.max(...points, 0);
+  if (points.length < 2)
+    return <p className="muted">Collecting samples… the chart fills in while this page is open.</p>;
   return (
     <div>
       <svg viewBox={`0 0 ${w} ${h}`} className="area-chart" preserveAspectRatio="none" role="img" aria-label={unit}>
@@ -26,7 +28,9 @@ function Area({ points, max, unit }: { points: number[]; max: number; unit: stri
           peak {peak.toFixed(1)}
           {unit}
         </span>
-        <span>{unit} now: {points.at(-1)?.toFixed(1) ?? "—"}</span>
+        <span>
+          {unit} now: {points.at(-1)?.toFixed(1) ?? "—"}
+        </span>
       </div>
     </div>
   );
@@ -39,8 +43,17 @@ export function MonitoringPage() {
   const [follow, setFollow] = useState(true);
   const box = useRef<HTMLPreElement>(null);
 
+  // The server records the fleet history only while someone polls it, so
+  // keep polling while the page is open (matches its 10s sample step).
+  const reloadRef = useRef(reload);
+  reloadRef.current = reload;
+  useEffect(() => {
+    const t = setInterval(() => reloadRef.current(), 10_000);
+    return () => clearInterval(t);
+  }, []);
+
   const running = data?.sandboxes.map((s) => s.id) ?? [];
-  const streamId = pick && running.includes(pick) ? pick : running[0] ?? "";
+  const streamId = pick && running.includes(pick) ? pick : (running[0] ?? "");
 
   useEffect(() => {
     setLines([]);
@@ -122,19 +135,26 @@ export function MonitoringPage() {
         <Section
           title="Live logs"
           actions={
-            <>
-              <select value={streamId} onChange={(e) => setPick(e.target.value)}>
-                {running.map((id) => (
-                  <option key={id} value={id}>
-                    {id}
-                  </option>
-                ))}
-              </select>
-              <label className="row small">
-                <input type="checkbox" checked={follow} disabled={!streamId} onChange={(e) => setFollow(e.target.checked)} />{" "}
-                Follow
-              </label>
-            </>
+            running.length > 0 && (
+              <>
+                <select value={streamId} onChange={(e) => setPick(e.target.value)}>
+                  {running.map((id) => (
+                    <option key={id} value={id}>
+                      {id}
+                    </option>
+                  ))}
+                </select>
+                <label className="row small">
+                  <input
+                    type="checkbox"
+                    checked={follow}
+                    disabled={!streamId}
+                    onChange={(e) => setFollow(e.target.checked)}
+                  />{" "}
+                  Follow
+                </label>
+              </>
+            )
           }
         >
           {!streamId ? (
