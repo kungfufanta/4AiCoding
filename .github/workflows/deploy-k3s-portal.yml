@@ -1,0 +1,177 @@
+# Deploys the Portal (docs/PORTAL_PLAN.md) to the k3s-1 cluster, exposed
+# publicly at https://chat.devhub.io.vn through the k3s Traefik edge
+# (cert-manager issues the Let's Encrypt certificate). Mirror of
+# deploy-k3s-1.yml, which deploys the hardened worker with the same
+# kubeconfig secret.
+#
+# One-time setup — GitHub → Settings → Environments → k3s-1:
+#   K3S_4AICODING_KUBECONFIG_B64   scoped kubeconfig (already used by
+#                                  deploy-k3s-1.yml)
+#   PORTAL_DATABASE_URL            portal DSN, e.g.
+#                                  postgres://portal:<pw>@stag.postgres.devhub.io.vn:5432/portal
+#   PORTAL_OIDC_ISSUER             optional (S1 login); the login route
+#   PORTAL_OIDC_CLIENT_ID          stays disabled unless all three are set
+#   PORTAL_OIDC_CLIENT_SECRET
+#
+# DNS: chat.devhub.io.vn must point at the k3s-1 edge (same target as
+# 4aicoding.devhub.io.vn) so Traefik routes the host and cert-manager can
+# complete the challenge for the chat-devhub-io-vn-tls secret.
+
+name: deploy-k3s-portal
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "portal/**"
+      - "deploy/**"
+      - ".github/workflows/deploy-k3s-portal.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: deploy-k3s-portal
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/kungfufanta/4aicoding-portal
+  NAMESPACE: 4aicoding
+  RELEASE: 4aicoding-portal
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: portal
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.IMAGE }}:main
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: k3s-1
+    steps:
+      - uses: actions/checkout@v7
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
+      - name: Configure scoped kubeconfig
+        env:
+          KUBECONFIG_B64: ${{ secrets.K3S_4AICODING_KUBECONFIG_B64 }}
+        run: |
+          set -eu
+          test -n "$KUBECONFIG_B64"
+          echo "$KUBECONFIG_B64" | base64 --decode > "$RUNNER_TEMP/kubeconfig"
+          chmod 600 "$RUNNER_TEMP/kubeconfig"
+          echo "KUBECONFIG=$RUNNER_TEMP/kubeconfig" >> "$GITHUB_ENV"
+      - name: Check required secrets
+        env:
+          DATABASE_URL: ${{ secrets.PORTAL_DATABASE_URL }}
+        run: |
+          set -eu
+          if [ -z "$DATABASE_URL" ]; then
+            echo "PORTAL_DATABASE_URL is not set on the k3s-1 environment." >&2
+            echo "Add it under Settings → Environments → k3s-1, e.g." >&2
+            echo "  postgres://portal:<password>@stag.postgres.devhub.io.vn:5432/portal" >&2
+            echo "The portal applies its own migrations at boot and creates the" >&2
+            echo "portal_app RLS role (migration 0002_tenants_rls.sql), so the DSN" >&2
+            echo "user needs CREATE ROLE privilege on first boot." >&2
+            exit 1
+          fi
+      - name: Ensure namespace and database secret
+        env:
+          DATABASE_URL: ${{ secrets.PORTAL_DATABASE_URL }}
+        run: |
+          set -eu
+          kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
+          # Rotated on every deploy so a DSN change takes effect here,
+          # not by hand-editing a Secret in the cluster.
+          kubectl -n "$NAMESPACE" create secret generic portal-database \
+            --from-literal="database-url=$DATABASE_URL" \
+            --dry-run=client -o yaml | kubectl apply -f -
+      - name: Deploy portal (chat.devhub.io.vn)
+        env:
+          OIDC_ISSUER: ${{ secrets.PORTAL_OIDC_ISSUER }}
+          OIDC_CLIENT_ID: ${{ secrets.PORTAL_OIDC_CLIENT_ID }}
+          OIDC_CLIENT_SECRET: ${{ secrets.PORTAL_OIDC_CLIENT_SECRET }}
+        run: |
+          set -eu
+          oidc_args=()
+          if [ -n "$OIDC_ISSUER" ] && [ -n "$OIDC_CLIENT_ID" ] && [ -n "$OIDC_CLIENT_SECRET" ]; then
+            # Helm --set/--set-string mangle commas and special characters,
+            # so write the OIDC values to a file instead. jq -Rs produces a
+            # JSON string, which is valid YAML and escapes everything.
+            oidc_file="$RUNNER_TEMP/portal-oidc-values.yaml"
+            {
+              echo "oidc:"
+              echo "  issuer: $(printf '%s' "$OIDC_ISSUER" | jq -Rs .)"
+              echo "  clientID: $(printf '%s' "$OIDC_CLIENT_ID" | jq -Rs .)"
+              echo "  clientSecret: $(printf '%s' "$OIDC_CLIENT_SECRET" | jq -Rs .)"
+            } > "$oidc_file"
+            oidc_args=(--values "$oidc_file")
+            echo "OIDC login enabled (issuer: $OIDC_ISSUER)"
+          else
+            echo "PORTAL_OIDC_* not fully set on k3s-1 — deploying with the login route disabled"
+          fi
+          helm upgrade --install "$RELEASE" deploy/helm/portal \
+            --namespace "$NAMESPACE" \
+            --values deploy/k3s-1-portal-values.yaml \
+            --set image.repository="$IMAGE" \
+            --set image.tag="${{ github.sha }}" \
+            "${oidc_args[@]}" \
+            --wait --timeout 5m
+      - name: Verify applied pod hardening
+        run: |
+          set -eu
+          pod="$(kubectl -n "$NAMESPACE" get pods -l app.kubernetes.io/name=portal,app.kubernetes.io/instance="$RELEASE" -o jsonpath='{.items[0].metadata.name}')"
+          test -n "$pod"
+          kubectl -n "$NAMESPACE" get pod "$pod" -o jsonpath='{.spec.automountServiceAccountToken}' | grep -qx false
+          kubectl -n "$NAMESPACE" get pod "$pod" -o jsonpath='{.spec.containers[0].securityContext.readOnlyRootFilesystem}' | grep -qx true
+          kubectl -n "$NAMESPACE" get pod "$pod" -o jsonpath='{.spec.containers[0].securityContext.allowPrivilegeEscalation}' | grep -qx false
+          kubectl -n "$NAMESPACE" get pod "$pod" -o jsonpath='{.spec.containers[0].securityContext.capabilities.drop[0]}' | grep -qx ALL
+      - name: Verify public route (chat.devhub.io.vn)
+        run: |
+          set -eu
+          hosts="$(kubectl -n "$NAMESPACE" get ingress "$RELEASE" -o jsonpath='{.spec.rules[*].host}')"
+          echo "Ingress hosts: $hosts"
+          echo "$hosts" | grep -qw chat.devhub.io.vn
+          tls="$(kubectl -n "$NAMESPACE" get ingress "$RELEASE" -o jsonpath='{.spec.tls[0].secretName}')"
+          test "$tls" = "chat-devhub-io-vn-tls"
+      - name: Smoke test in-cluster health
+        run: |
+          set -eu
+          for attempt in $(seq 1 10); do
+            if kubectl -n "$NAMESPACE" run "portal-smoke-${GITHUB_SHA:0:12}" --rm -i --restart=Never \
+              --image=curlimages/curl:8.10.1 --command -- \
+              curl -fsS --max-time 5 "http://$RELEASE/healthz"; then
+              echo "portal healthy through the Service"
+              exit 0
+            fi
+            echo "attempt $attempt failed; retrying"
+            sleep 3
+          done
+          echo "portal /healthz did not answer through the Service" >&2
+          kubectl -n "$NAMESPACE" logs deploy/"$RELEASE" --tail=50 >&2 || true
+          exit 1
+      - name: Report certificate status
+        # Informational: certificate issuance needs chat.devhub.io.vn DNS
+        # to point at the edge first; a pending cert must not fail an
+        # otherwise-good deploy.
+        run: |
+          kubectl -n "$NAMESPACE" get certificate chat-devhub-io-vn-tls \
+            -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}{"\n"}' \
+            || echo "certificate chat-devhub-io-vn-tls not created yet (ingress-shim waits for the DNS)"

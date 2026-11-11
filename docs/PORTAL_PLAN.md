@@ -39,7 +39,7 @@ Các mục đánh dấu *(giả định)* là mặc định khi chưa có quyế
 | Cache / rate limit | Postgres trước; Redis chỉ thêm khi đo thấy cần |
 | Identity provider | Zitadel tự host *(giả định)*; mọi code chỉ phụ thuộc OIDC chuẩn để đổi sang Keycloak/Auth0/Clerk được |
 | Session web | Mô hình BFF: cookie `HttpOnly; Secure; SameSite=Lax`, token OIDC chỉ nằm ở server |
-| Domain | `app.<domain>` (dashboard) và `api.<domain>` (API cho agent) *(giả định)* |
+| Domain | Dashboard + API cùng origin tại `chat.devhub.io.vn` (đã quyết định, 2026-11-11). Edge: Traefik trên k3s-1 + cert-manager (Let's Encrypt), CI/CD `.github/workflows/deploy-k3s-portal.yml` + `deploy/k3s-1-portal-values.yaml`. Tách `api.<domain>` riêng chỉ khi cần |
 | Phạm vi ban đầu | Multi-tenant ngay từ đầu, nhưng billing (S6) chỉ làm khi mở cho khách ngoài |
 | Deploy | Helm chart `deploy/helm/portal`, cùng cluster với sandboxd |
 
@@ -224,4 +224,4 @@ Các câu dưới đây đã có giả định ở mục 2; trả lời khác th
 1. Portal chỉ phục vụ agent nội bộ, hay mở đăng ký cho khách ngoài? (ảnh hưởng S1 tự đăng ký và S6)
 2. Zitadel tự host hay IdP managed?
 3. `portal/` trong repo này hay repo riêng?
-4. Tên miền cụ thể cho `app.` và `api.`.
+4. Tên miền cụ thể cho `app.` và `api.`. — **Đã chọn `chat.devhub.io.vn`** (2026-11-11): dashboard và API công khai cùng origin qua BFF, chạy trên k3s-1 (workflow `deploy-k3s-portal.yml`). Nếu sau này cần tách `api.<domain>` riêng, cập nhật mục 2 rồi mới làm milestone liên quan.

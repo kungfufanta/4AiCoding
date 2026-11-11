@@ -7,6 +7,11 @@
 {{- define "portal.fullname" -}}
 {{- if .Values.fullnameOverride -}}
 {{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" -}}
+{{- else if contains .Chart.Name .Release.Name -}}
+{{/* Release "4aicoding-portal" already carries the chart name — use it
+     verbatim so objects are named 4aicoding-portal, matching the worker
+     chart's naming convention. */}}
+{{- .Release.Name | trunc 63 | trimSuffix "-" -}}
 {{- else -}}
 {{- printf "%s-%s" .Release.Name (include "portal.name" .) | trunc 63 | trimSuffix "-" -}}
 {{- end -}}

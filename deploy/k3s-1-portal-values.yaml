@@ -1,0 +1,93 @@
+# Portal (docs/PORTAL_PLAN.md) — production values for the k3s-1 cluster.
+#
+# Public edge: https://chat.devhub.io.vn — terminated by the k3s Traefik
+# (entrypoint websecure, same edge as 4aicoding.devhub.io.vn) with a
+# Let's Encrypt certificate issued by cert-manager through the
+# letsencrypt-production ClusterIssuer.
+#
+# Prerequisites (one-time, outside this repo):
+#
+#   DNS     chat.devhub.io.vn → k3s-1 edge IP (same target as the A/AAAA
+#           record of 4aicoding.devhub.io.vn).
+#
+#   Secret  GitHub environment k3s-1:
+#             PORTAL_DATABASE_URL   postgres://portal:<pw>@<host>:5432/portal
+#           optional (S1 login via Zitadel — deploy-k3s-portal.yml picks
+#           them up and enables the login route only when all three are
+#           set):
+#             PORTAL_OIDC_ISSUER
+#             PORTAL_OIDC_CLIENT_ID
+#             PORTAL_OIDC_CLIENT_SECRET
+#
+#   DB      The portal applies its own migrations at boot and creates the
+#           non-owner role `portal_app` for RLS (migration
+#           0002_tenants_rls.sql), so the DSN user needs CREATE ROLE
+#           privilege on first boot. Prefer a dedicated `portal` database
+#           and login over the cluster superuser.
+#
+# The workflow .github/workflows/deploy-k3s-portal.yml builds
+# ghcr.io/kungfufanta/4aicoding-portal:<sha> and installs this release
+# into namespace 4aicoding.
+
+replicaCount: 1
+
+image:
+  repository: ghcr.io/kungfufanta/4aicoding-portal
+  tag: ""            # set to the git SHA by deploy-k3s-portal.yml
+  pullPolicy: IfNotPresent
+
+database:
+  # Created/rotated by deploy-k3s-portal.yml from the PORTAL_DATABASE_URL
+  # environment secret — never put the DSN in this file.
+  existingSecret: portal-database
+  existingSecretKey: database-url
+
+# S1 cookies (Secure, SameSite=Lax) and the OIDC redirect URI derive
+# from this base URL.
+publicURL: "https://chat.devhub.io.vn"
+
+# Filled by deploy-k3s-portal.yml from the PORTAL_OIDC_* environment
+# secrets when present; empty leaves the login route disabled.
+oidc:
+  issuer: ""
+  clientID: ""
+  clientSecret: ""
+
+service:
+  type: ClusterIP
+  port: 80
+
+nodeSelector:
+  kubernetes.io/hostname: k3s-1
+
+resources:
+  requests:
+    cpu: 10m
+    memory: 64Mi
+  limits:
+    memory: 256Mi
+
+# The image runs as nonroot (distroless); keep the guardrails on.
+podSecurityContext: {}
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+
+ingress:
+  enabled: true
+  className: traefik
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    cert-manager.io/cluster-issuer: letsencrypt-production
+  hosts:
+    - host: chat.devhub.io.vn
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - hosts:
+        - chat.devhub.io.vn
+      secretName: chat-devhub-io-vn-tls
