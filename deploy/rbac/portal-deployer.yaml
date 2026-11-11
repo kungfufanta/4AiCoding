@@ -1,4 +1,5 @@
-# RBAC for the Portal deployer ServiceAccount (deploy-k3s-portal.yml), namespace 4aicoding only.
+# RBAC for the deployer ServiceAccount used by deploy-k3s-portal.yml and
+# deploy-k3s-zitadel.yml, namespace 4aicoding only.
 # Applied by .github/workflows/k3s-portal-rbac.yml over SSH (needs cluster admin).
 # Grants nothing cluster-scoped.
 apiVersion: rbac.authorization.k8s.io/v1
@@ -9,14 +10,25 @@ metadata:
 rules:
   # helm chart deploy/helm/portal: Deployment, Service, ServiceAccount, Secret, Ingress
   # (helm also stores release state in Secrets)
+  # (+ ConfigMaps for the Zitadel chart)
   - apiGroups: [""]
-    resources: [services, serviceaccounts, secrets]
+    resources: [services, serviceaccounts, secrets, configmaps]
     verbs: [get, list, watch, create, update, patch, delete]
   - apiGroups: [apps]
     resources: [deployments, replicasets]
     verbs: [get, list, watch, create, update, patch, delete]
   - apiGroups: [networking.k8s.io]
     resources: [ingresses]
+    verbs: [get, list, watch, create, update, patch, delete]
+  # Zitadel chart: init/setup Jobs (helm hooks), and the Role +
+  # RoleBinding that lets its setup Job store the machine key Secret.
+  # Kubernetes only lets this account grant rights it already holds
+  # (secrets, pods get), so this does not widen anything.
+  - apiGroups: [batch]
+    resources: [jobs]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [roles, rolebindings]
     verbs: [get, list, watch, create, update, patch, delete]
   # helm --wait, the pod-hardening check, the smoke pod, logs on failure
   - apiGroups: [""]
