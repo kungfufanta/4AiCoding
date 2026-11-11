@@ -51,6 +51,14 @@ spec:
                 secretKeyRef:
                   name: {{ default (include "portal.fullname" .) .Values.database.existingSecret }}
                   key: {{ default "database-url" .Values.database.existingSecretKey }}
+            # Bootstrap password login: on only when this key exists in
+            # the secret (no built-in default password).
+            - name: PORTAL_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ default (include "portal.fullname" .) .Values.database.existingSecret }}
+                  key: {{ .Values.adminLogin.passwordKey | default "admin-password" }}
+                  optional: true
             {{- if .Values.publicURL }}
             - name: PORTAL_PUBLIC_URL
               value: {{ .Values.publicURL | quote }}

@@ -45,7 +45,8 @@ services:
       PORTAL_ADDR: ":8080"
       PORTAL_DATABASE_URL: postgres://portal:portal@postgres:5432/portal
       PORTAL_DEBUG: ${PORTAL_DEBUG:-}
-      # Local password login (defaults admin/admin123; "-" disables).
+      # Local password login: off unless PORTAL_ADMIN_PASSWORD is set
+      # (min 12 chars). There is no default password.
       PORTAL_ADMIN_USERNAME: ${PORTAL_ADMIN_USERNAME:-}
       PORTAL_ADMIN_PASSWORD: ${PORTAL_ADMIN_PASSWORD:-}
       PORTAL_ADMIN_EMAIL: ${PORTAL_ADMIN_EMAIL:-}

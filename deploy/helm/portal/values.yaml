@@ -35,6 +35,12 @@ oidc:
   clientID: ""
   clientSecret: ""
 
+# Bootstrap password login (user "admin"). Off unless the database
+# Secret above carries this key (min 12 chars); there is no default
+# password.
+adminLogin:
+  passwordKey: admin-password
+
 service:
   type: ClusterIP
   port: 80

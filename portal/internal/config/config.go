@@ -47,10 +47,11 @@ type Config struct {
 	// admin so the dashboard is reachable without an IdP).
 	AdminUsername string // PORTAL_ADMIN_USERNAME, default "admin"
 	// AdminPassword is the password for the bootstrap login,
-	// PORTAL_ADMIN_PASSWORD (default "admin123"; the stored hash
-	// converges to this value on every boot — that is the rotation
-	// mechanism). "-" disables the password login entirely
-	// (SSO-only, PORTAL_PLAN 1.4).
+	// PORTAL_ADMIN_PASSWORD. There is no default: unset (or "-")
+	// disables the password login (SSO-only, PORTAL_PLAN 1.4). When
+	// set it must be at least MinAdminPasswordLen characters. The
+	// stored hash converges to this value on every boot; that is the
+	// rotation mechanism.
 	AdminPassword string
 	// AdminEmail is the admin user's directory email,
 	// PORTAL_ADMIN_EMAIL (default "admin@portal.local").
@@ -59,6 +60,9 @@ type Config struct {
 	// served. Derived from AdminPassword != "-".
 	PasswordLogin bool
 }
+
+// MinAdminPasswordLen is the shortest PORTAL_ADMIN_PASSWORD accepted.
+const MinAdminPasswordLen = 12
 
 // Parse reads the environment (from getenv, swapped in tests) and
 // returns the resolved config, validating what it can up front.
@@ -83,16 +87,18 @@ func Parse(getenv func(string) string) (Config, error) {
 	default:
 		cfg.DBRole = role
 	}
-	// Bootstrap password login. Same "-" convention as DBRole: the
-	// default enables admin/admin123; "-" turns the endpoint off.
+	// Bootstrap password login. Off unless PORTAL_ADMIN_PASSWORD is
+	// set: a built-in default password on a public deployment is an
+	// open door (it was admin/admin123 before P0).
 	cfg.AdminUsername = firstNonEmpty(strings.TrimSpace(getenv("PORTAL_ADMIN_USERNAME")), "admin")
 	cfg.AdminEmail = firstNonEmpty(strings.TrimSpace(getenv("PORTAL_ADMIN_EMAIL")), "admin@portal.local")
 	switch pw := getenv("PORTAL_ADMIN_PASSWORD"); pw {
-	case "":
-		cfg.AdminPassword, cfg.PasswordLogin = "admin123", true
-	case "-":
+	case "", "-":
 		cfg.AdminPassword, cfg.PasswordLogin = "", false
 	default:
+		if len(pw) < MinAdminPasswordLen {
+			return cfg, fmt.Errorf("PORTAL_ADMIN_PASSWORD must be at least %d characters (or unset to disable the password login)", MinAdminPasswordLen)
+		}
 		cfg.AdminPassword, cfg.PasswordLogin = pw, true
 	}
 	if v := getenv("PORTAL_SESSION_TTL"); v != "" {

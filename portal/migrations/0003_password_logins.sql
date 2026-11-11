@@ -7,7 +7,7 @@
 -- password path is the explicit fallback (no self-service signup,
 -- no MFA). The bootstrap user + hash are created by
 -- internal/passwordauth.EnsureBootstrap at boot (PORTAL_ADMIN_USERNAME
--- / _PASSWORD / _EMAIL, defaults admin / admin123).
+-- / _PASSWORD / _EMAIL; no default password since P0).
 --
 -- user-scoped like users / web_sessions (no org_id): NOT RLS-
 -- protected; access happens behind the authenticated BFF only.

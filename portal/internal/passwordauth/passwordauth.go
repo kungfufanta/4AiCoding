@@ -117,6 +117,22 @@ func EnsureBootstrap(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger, 
 				return err
 			}
 		}
+		// Rotation: when the configured password no longer matches the
+		// stored hash, sign out every session of this account, so a
+		// session opened with the old password does not outlive it.
+		var oldHash string
+		err = tx.QueryRow(ctx, `SELECT password_hash FROM password_logins WHERE username = $1`,
+			strings.TrimSpace(username)).Scan(&oldHash)
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+		case err != nil:
+			return fmt.Errorf("read password login: %w", err)
+		case !Verify(oldHash, password):
+			if _, err := tx.Exec(ctx, `DELETE FROM web_sessions WHERE user_id = $1::uuid`, u.ID); err != nil {
+				return fmt.Errorf("revoke sessions after rotation: %w", err)
+			}
+			log.Info("bootstrap admin password rotated; existing sessions revoked")
+		}
 		_, err = tx.Exec(ctx, `
 			INSERT INTO password_logins (user_id, username, password_hash)
 			VALUES ($1::uuid, $2, $3)
@@ -133,5 +149,36 @@ func EnsureBootstrap(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger, 
 		return err
 	}
 	log.Info("bootstrap password login ensured", "username", strings.TrimSpace(username))
+	return nil
+}
+
+// DisableAll removes every password login and signs out the sessions
+// of those accounts. Run at boot when PORTAL_ADMIN_PASSWORD is unset,
+// so a hash stored by an earlier boot (e.g. the old admin/admin123
+// default) cannot be used again if the endpoint is re-enabled, and so
+// sessions opened with it end now instead of after their TTL.
+func DisableAll(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger) error {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	sessions, err := tx.Exec(ctx, `
+		DELETE FROM web_sessions
+		WHERE user_id IN (SELECT user_id FROM password_logins)`)
+	if err != nil {
+		return fmt.Errorf("revoke password-login sessions: %w", err)
+	}
+	logins, err := tx.Exec(ctx, `DELETE FROM password_logins`)
+	if err != nil {
+		return fmt.Errorf("delete password logins: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	if n := logins.RowsAffected(); n > 0 {
+		log.Info("password login disabled; removed stored logins",
+			"logins", n, "sessions_revoked", sessions.RowsAffected())
+	}
 	return nil
 }

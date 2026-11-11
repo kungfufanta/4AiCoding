@@ -9,6 +9,9 @@
 #                                  deploy-k3s-1.yml)
 #   PORTAL_DATABASE_URL            portal DSN, e.g.
 #                                  postgres://portal:<pw>@stag.postgres.devhub.io.vn:5432/portal
+#   PORTAL_ADMIN_PASSWORD          optional, min 12 chars: enables the
+#                                  bootstrap password login as "admin".
+#                                  Unset = password login off (SSO only).
 #   PORTAL_OIDC_ISSUER             optional (S1 login); the login route
 #   PORTAL_OIDC_CLIENT_ID          stays disabled unless all three are set
 #   PORTAL_OIDC_CLIENT_SECRET
@@ -96,6 +99,7 @@ jobs:
       - name: Apply database secret
         env:
           DATABASE_URL: ${{ secrets.PORTAL_DATABASE_URL }}
+          ADMIN_PASSWORD: ${{ secrets.PORTAL_ADMIN_PASSWORD }}
         run: |
           set -eu
           # The namespace already exists (the deployer ServiceAccount lives
@@ -103,9 +107,23 @@ jobs:
           # workflow must not try to create or read Namespace objects.
           # Rotated on every deploy so a DSN change takes effect here,
           # not by hand-editing a Secret in the cluster.
-          kubectl -n "$NAMESPACE" create secret generic portal-database \
-            --from-literal="database-url=$DATABASE_URL" \
+          # admin-password is written only when PORTAL_ADMIN_PASSWORD is
+          # set; without it the portal turns the password login off and
+          # removes any stored password login at boot.
+          d="$RUNNER_TEMP/portal-secret"
+          mkdir -m 700 -p "$d"
+          printf '%s' "$DATABASE_URL" > "$d/database-url"
+          args=(--from-file=database-url="$d/database-url")
+          if [ -n "$ADMIN_PASSWORD" ]; then
+            printf '%s' "$ADMIN_PASSWORD" > "$d/admin-password"
+            args+=(--from-file=admin-password="$d/admin-password")
+            echo "bootstrap password login: enabled"
+          else
+            echo "bootstrap password login: disabled (PORTAL_ADMIN_PASSWORD not set)"
+          fi
+          kubectl -n "$NAMESPACE" create secret generic portal-database "${args[@]}" \
             --dry-run=client -o yaml | kubectl apply -f -
+          rm -rf "$d"
       - name: Deploy portal (chat.devhub.io.vn)
         env:
           OIDC_ISSUER: ${{ secrets.PORTAL_OIDC_ISSUER }}

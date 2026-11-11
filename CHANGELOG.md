@@ -6,6 +6,17 @@ All notable changes to 4AiCoding. The project started from
 
 ## Unreleased
 
+### Portal P0: no default admin password
+- The bootstrap password login no longer defaults to `admin/admin123`.
+  It is off unless `PORTAL_ADMIN_PASSWORD` is set (min 12 characters);
+  a shorter value fails at startup.
+- With the login off, the portal removes stored password logins and
+  their sessions at boot, so the old default cannot be used again.
+- Changing `PORTAL_ADMIN_PASSWORD` signs out the admin's existing
+  sessions.
+- k3s deploy: optional `PORTAL_ADMIN_PASSWORD` secret on the k3s-1
+  environment, passed to the pod through the `portal-database` Secret.
+
 ### Portal S1 fixes
 - Org slugs: creating an org whose slug another tenant already uses no
   longer fails with a 500. RLS hid the other org, so the "is it free"
