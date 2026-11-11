@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { APPROVAL_HEADER, del, get, post, sse, type Sandbox } from "../api";
+import { Sparkline } from "../sparkline";
 import {
   can,
   Curl,
@@ -157,10 +158,20 @@ export function SandboxDetailPage({ id }: { id: string }) {
 
 function MetricsCard({ id }: { id: string }) {
   const [m, setM] = useState<Metrics | null>(null);
+  /* rolling history for the gradient sparklines (≈2 min at a 2s interval) */
+  const [hist, setHist] = useState<{ cpu: number[]; mem: number[] }>({ cpu: [], mem: [] });
   useEffect(() => {
     return sse(`/v1/sandboxes/${id}/metrics/stream?interval=2`, (line) => {
       try {
-        setM(JSON.parse(line));
+        const frame: Metrics = JSON.parse(line);
+        setM(frame);
+        const s = frame.stats;
+        if (s && s.mem_limit_bytes > 0) {
+          setHist((h) => ({
+            cpu: [...h.cpu, s.cpu_percent].slice(-60),
+            mem: [...h.mem, (s.mem_usage_bytes / s.mem_limit_bytes) * 100].slice(-60),
+          }));
+        }
       } catch {
         /* ignore partial frames */
       }
@@ -172,20 +183,40 @@ function MetricsCard({ id }: { id: string }) {
       {!s ? (
         <p className="muted">Waiting for the first sample…</p>
       ) : (
-        <div className="stats">
-          <div>
-            <b>{s.cpu_percent.toFixed(1)}%</b>
-            <span>CPU</span>
+        <>
+          <div className="stats">
+            <div>
+              <b>{s.cpu_percent.toFixed(1)}%</b>
+              <span>CPU</span>
+            </div>
+            <div>
+              <b>{fmtBytes(s.mem_usage_bytes)}</b>
+              <span>of {fmtBytes(s.mem_limit_bytes)}</span>
+            </div>
+            <div>
+              <b>{s.pids}</b>
+              <span>processes</span>
+            </div>
           </div>
-          <div>
-            <b>{fmtBytes(s.mem_usage_bytes)}</b>
-            <span>of {fmtBytes(s.mem_limit_bytes)}</span>
-          </div>
-          <div>
-            <b>{s.pids}</b>
-            <span>processes</span>
-          </div>
-        </div>
+          {(hist.cpu.length > 1 || hist.mem.length > 1) && (
+            <div className="spark-row">
+              <figure className="spark-cpu">
+                <figcaption>
+                  <span>CPU %</span>
+                  <b>last {hist.cpu.length} samples</b>
+                </figcaption>
+                <Sparkline data={hist.cpu} />
+              </figure>
+              <figure className="spark-mem">
+                <figcaption>
+                  <span>Memory %</span>
+                  <b>last {hist.mem.length} samples</b>
+                </figcaption>
+                <Sparkline data={hist.mem} />
+              </figure>
+            </div>
+          )}
+        </>
       )}
     </Section>
   );
