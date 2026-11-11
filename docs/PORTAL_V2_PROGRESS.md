@@ -40,13 +40,16 @@ Việc còn mở (không chặn merge):
 | Ngày | Việc | Kết quả |
 |---|---|---|
 | 2026-11-11 | Kế hoạch V2 (P1–P6) viết trong PR #33 | CI xanh, chờ duyệt |
-| 2026-11-11 | P1 làm trên branch `portal-p1-ui` → PR #36 | `pnpm build` + `go test -race` xanh local; preview-portal chạy trên CI |
+| 2026-11-11 | P1 làm trên branch `portal-p1-ui` → PR #36 | `pnpm build` + `go test -race` xanh local |
+| 2026-11-11 | preview-portal fail 2 lần → tái hiện local (Postgres nhúng + portal binary) | 3 fix: `storageState` phải nằm trong `use` của project Playwright; Playwright ≥ 1.65 cho runner ubuntu 26.04; tên project/email dùng `Date.now()` tránh 409 khi rerun. **7/7 test pass local** |
 
 ## Ghi chú cho lần sau
 
 - CI `portal-console` dùng `pnpm install --frozen-lockfile` — khi thêm dependency phải chạy `pnpm add` để cập nhật `pnpm-lock.yaml`, không được dùng npm.
+- Playwright config: `storageState` bắt buộc nằm **trong** `use` của project (đặt ngang hàng thì bị bỏ qua im lặng — request ra không cookie). Runner GitHub hiện là ubuntu 26.04 → Playwright phải ≥ 1.65.
 - Mật khẩu admin (sau P0) tối thiểu 12 ký tự; compose dev + preview lấy từ env `PORTAL_ADMIN_PASSWORD`.
 - Invite URL có dạng `/invites/{orgID}?token=…` — route SPA tương ứng là `/invites/:orgId`.
 - Token GitHub của agent không merge được PR (404) — owner mới merge; sau khi CI xanh chỉ cần nhắc owner.
-- Chạy UI local: `cd portal/web && pnpm dev` (proxy API về `127.0.0.1:8080`, cần portal backend + postgres chạy bằng `docker compose -f docker-compose.portal.yml up postgres`).
-- Chạy browser test local: `docker compose -f docker-compose.portal.yml up --build -d postgres portal` rồi `cd portal/e2e && npm i && npx playwright test`.
+- Chạy UI local: `cd portal/web && pnpm dev` (proxy API về `127.0.0.1:8080`, cần portal backend + postgres).
+- Debug browser test local không cần Docker: Postgres nhúng (binaries zonky) + `go build ./cmd/portal` (nhớ copy `portal/web/dist/*` vào `portal/internal/webfs/dist/` trước khi build — Dockerfile làm sẵn bước này, local thì tự làm), rồi `BASE_URL=… PORTAL_ADMIN_PASSWORD=… npx playwright test`. Trace lỗi nằm ở `test-results/run/*/trace.zip`.
+- Chạy browser test như CI: `docker compose -f docker-compose.portal.yml up --build -d postgres portal` rồi `cd portal/e2e && npm i && npx playwright test`.
