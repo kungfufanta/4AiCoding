@@ -25,6 +25,7 @@ on:
     paths:
       - "portal/**"
       - "deploy/**"
+      - "!deploy/rbac/**"
       - ".github/workflows/deploy-k3s-portal.yml"
   workflow_dispatch:
 

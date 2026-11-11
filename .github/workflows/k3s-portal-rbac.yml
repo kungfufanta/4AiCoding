@@ -1,0 +1,75 @@
+# Grants the Portal deployer ServiceAccount the namespaced rights that
+# deploy-k3s-portal.yml needs (deploy/rbac/portal-deployer.yaml). That
+# account cannot grant itself rights, so this applies the Role with the
+# cluster's admin kubeconfig on the k3s VM, over SSH, then re-runs the
+# Portal deploy.
+#
+# Secrets (repository or the k3s-1 environment):
+#   K3S_VM_IP, K3S_VM_SSH_PORT, K3S_VM_USERNAME, K3S_VM_PASSWORD
+# The user must be root or have sudo.
+
+name: k3s-portal-rbac
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "deploy/rbac/**"
+      - ".github/workflows/k3s-portal-rbac.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write # dispatch deploy-k3s-portal afterwards
+
+concurrency:
+  group: k3s-portal-rbac
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    environment: k3s-1
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check required secrets
+        env:
+          HOST: ${{ secrets.K3S_VM_IP }}
+          USERNAME: ${{ secrets.K3S_VM_USERNAME }}
+          SSHPASS: ${{ secrets.K3S_VM_PASSWORD }}
+        run: |
+          set -eu
+          for v in HOST USERNAME SSHPASS; do
+            if [ -z "${!v}" ]; then
+              echo "missing secret for $v (K3S_VM_IP / K3S_VM_USERNAME / K3S_VM_PASSWORD)" >&2
+              exit 1
+            fi
+          done
+      - name: Apply RBAC on the k3s VM
+        env:
+          HOST: ${{ secrets.K3S_VM_IP }}
+          PORT: ${{ secrets.K3S_VM_SSH_PORT }}
+          USERNAME: ${{ secrets.K3S_VM_USERNAME }}
+          SSHPASS: ${{ secrets.K3S_VM_PASSWORD }}
+        run: |
+          set -eu
+          sudo apt-get install -y -qq sshpass >/dev/null
+          port="${PORT:-22}"
+          # No pinned host key is stored yet; accept-new trusts the key seen
+          # on this first connection only.
+          common=(-o StrictHostKeyChecking=accept-new -o PubkeyAuthentication=no
+                  -o ConnectTimeout=20)
+          sshpass -e scp "${common[@]}" -P "$port" deploy/rbac/portal-deployer.yaml \
+            "$USERNAME@$HOST:/tmp/portal-deployer-rbac.yaml"
+          # The password goes to sudo on stdin, never on a command line.
+          printf '%s\n' "$SSHPASS" | sshpass -e ssh "${common[@]}" -p "$port" "$USERNAME@$HOST" '
+            set -eu
+            if command -v k3s >/dev/null 2>&1; then kc="k3s kubectl"; else kc="kubectl"; fi
+            if [ "$(id -u)" -eq 0 ]; then run=""; else run="sudo -S -p \"\""; fi
+            eval "$run $kc apply -f /tmp/portal-deployer-rbac.yaml"
+            rm -f /tmp/portal-deployer-rbac.yaml
+          '
+      - name: Re-run the Portal deploy
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run deploy-k3s-portal.yml --ref main --repo "$GITHUB_REPOSITORY"
