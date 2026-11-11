@@ -1,0 +1,68 @@
+name: preview-portal
+
+# PR preview for the Portal (PORTAL_PLAN_V2 P1): build the compose
+# stack (postgres + portal), drive the dashboard in a real browser
+# (login, projects, invite, audit, dark mode, mobile) and attach a
+# screenshot of every screen to the run.
+on:
+  pull_request:
+    paths:
+      - "portal/**"
+      - "docker-compose.portal.yml"
+      - ".github/workflows/preview-portal.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: preview-portal-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # Since P0 there is no default admin password; the preview stack
+      # gets a fixed one just for the browser run (>= 12 chars).
+      PORTAL_ADMIN_USERNAME: admin
+      PORTAL_ADMIN_PASSWORD: preview-admin-password
+      PORTAL_ADMIN_EMAIL: admin@portal.local
+      PREVIEW_RUN_SUFFIX: pr-${{ github.event.pull_request.number || 'manual' }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: install browser test deps
+        working-directory: portal/e2e
+        run: npm install --no-audit --no-fund && npx playwright install --with-deps chromium
+
+      - name: compose stack up (postgres + portal)
+        run: docker compose -f docker-compose.portal.yml up -d --build postgres portal
+
+      - name: wait for portal health
+        run: |
+          for i in $(seq 1 60); do
+            curl -fsS http://localhost:8080/healthz && break
+            sleep 2
+          done
+          curl -fsS http://localhost:8080/healthz
+
+      - name: run portal browser tests
+        working-directory: portal/e2e
+        env:
+          BASE_URL: http://localhost:8080
+        run: npx playwright test
+
+      - name: screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: portal-preview-${{ github.event.pull_request.number || github.run_id }}
+          path: portal/e2e/test-results/preview/
+          if-no-files-found: ignore
+          retention-days: 14

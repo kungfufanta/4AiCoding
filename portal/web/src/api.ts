@@ -17,6 +17,7 @@ export type AuditEvent = {
 };
 
 export type AuthMethods = { sso: boolean; password: boolean };
+export type Me = { user: User; orgs: Org[] };
 
 export class ApiError extends Error {
   status: number;

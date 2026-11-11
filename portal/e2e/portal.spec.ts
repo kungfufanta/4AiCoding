@@ -1,0 +1,94 @@
+// One screenshot per screen lands in test-results/preview and the
+// preview-portal workflow uploads it as the run artifact.
+
+import { expect, test, type Page } from "@playwright/test";
+
+const SHOTS = "test-results/preview";
+const projectSuffix = process.env.PREVIEW_RUN_SUFFIX ?? "1";
+
+async function shot(page: Page, name: string) {
+  await page.screenshot({ path: `${SHOTS}/${name}.png`, fullPage: true });
+}
+
+// "/" redirects to the first org's projects; return the slug for the
+// org-scoped pages.
+async function gotoOrgBase(page: Page): Promise<string> {
+  await page.goto("/");
+  await expect(page).toHaveURL(/\/orgs\/([^/]+)\/projects/);
+  return page.url().match(/\/orgs\/([^/]+)\/projects/)![1];
+}
+
+test.describe.serial("portal preview", () => {
+  test("projects page and create-project dialog", async ({ page }) => {
+    const slug = await gotoOrgBase(page);
+    await expect(page.getByRole("heading", { name: "Projects" })).toBeVisible();
+    await shot(page, "01-projects");
+
+    await page.getByRole("button", { name: "New project" }).click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog.getByText("New project")).toBeVisible();
+    await dialog.getByPlaceholder("Agent evaluation").fill(`Preview e2e ${projectSuffix}`);
+    await page.getByRole("button", { name: "Create project", exact: true }).click();
+    await expect(page.getByText(`Preview e2e ${projectSuffix}`).first()).toBeVisible();
+    await shot(page, "02-project-created");
+  });
+
+  test("members page, invite dialog and once-shown link", async ({ page }) => {
+    const slug = await gotoOrgBase(page);
+    await page.goto(`/orgs/${slug}/members`);
+    await expect(page.getByRole("heading", { name: "Members" })).toBeVisible();
+    await expect(page.getByText("admin@portal.local")).toBeVisible();
+
+    await page.getByRole("button", { name: "Invite", exact: true }).click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog.getByText("Invite a member")).toBeVisible();
+    await dialog.getByPlaceholder("teammate@company.com").fill(`preview+${projectSuffix}@example.com`);
+    await page.getByRole("button", { name: "Send invite", exact: true }).click();
+    await expect(page.getByText("shown only once")).toBeVisible();
+    await shot(page, "03-invite-url");
+    await page.getByRole("button", { name: "Done", exact: true }).click();
+
+    await expect(page.getByRole("button", { name: "Invite", exact: true })).toBeVisible();
+    await shot(page, "04-members");
+  });
+
+  test("audit trail shows recorded events", async ({ page }) => {
+    const slug = await gotoOrgBase(page);
+    await page.goto(`/orgs/${slug}/audit`);
+    await expect(page.getByRole("heading", { name: "Audit trail" })).toBeVisible();
+    await expect(page.getByText("org.create").first()).toBeVisible();
+    await shot(page, "05-audit");
+  });
+
+  test("dark mode toggle", async ({ page }) => {
+    const slug = await gotoOrgBase(page);
+    await page.getByRole("button", { name: "Toggle dark mode" }).click();
+    await expect(page.locator("html")).toHaveClass(/dark/);
+    await shot(page, "06-dark-mode");
+    await page.getByRole("button", { name: "Toggle dark mode" }).click();
+    await expect(page.locator("html")).not.toHaveClass(/dark/);
+  });
+
+  test("mobile layout does not overflow", async ({ page }) => {
+    const slug = await gotoOrgBase(page);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(`/orgs/${slug}/members`);
+    await expect(page.getByRole("heading", { name: "Members" })).toBeVisible();
+    await shot(page, "07-mobile");
+
+    await page.getByRole("button", { name: "Open navigation" }).click();
+    await expect(page.getByRole("dialog", { includeHidden: false }).first()).toBeVisible();
+    await shot(page, "08-mobile-drawer");
+    await page.setViewportSize({ width: 1280, height: 800 });
+  });
+
+  test("invite page handles an unknown token", async ({ page }) => {
+    await page.goto("/invites/00000000-0000-0000-0000-000000000000?token=not-a-real-token");
+    await expect(page.getByText("Your invitation")).toBeVisible();
+    await page.getByRole("button", { name: "Accept invite", exact: true }).click();
+    await expect(
+      page.getByText("This invite is not valid anymore — it expired or was already used."),
+    ).toBeVisible();
+    await shot(page, "09-invite-invalid");
+  });
+});

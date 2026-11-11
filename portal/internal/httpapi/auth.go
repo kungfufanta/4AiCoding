@@ -98,7 +98,8 @@ func cookieValue(r *http.Request, name string) string {
 
 // handleLogin starts the OIDC redirect (Authorization Code + PKCE,
 // plan 3.1). Without an IdP configured it answers 503 so the SPA can
-// show a clear message.
+// show a clear message. An optional ?next= path (same-origin, P1
+// invite deep links) rides along and is honoured by the callback.
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if s.OIDC == nil {
 		writeErr(w, http.StatusServiceUnavailable, "sso_not_configured",
@@ -111,6 +112,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	nonce := oidcauth.RandomToken()
 	blob, err := json.Marshal(map[string]string{
 		"state": state, "verifier": verifier, "nonce": nonce,
+		"next": sanitizeNext(r.URL.Query().Get("next")),
 	})
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", "marshal login state")
@@ -118,6 +120,17 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	http.SetCookie(w, s.oidcCookie(base64.RawURLEncoding.EncodeToString(blob), 600))
 	http.Redirect(w, r, s.OIDC.AuthCodeURL(state, challenge, nonce), http.StatusFound)
+}
+
+// sanitizeNext restricts the ?next= deep link to same-origin paths:
+// it must start with a single "/" (never "//host", which browsers
+// treat as protocol-relative, and never a control character).
+func sanitizeNext(next string) string {
+	if strings.HasPrefix(next, "/") && !strings.HasPrefix(next, "//") &&
+		!strings.ContainsAny(next, "\r\n\\") {
+		return next
+	}
+	return ""
 }
 
 // handleCallback completes the login: verify state, exchange the
@@ -133,6 +146,7 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 		State    string `json:"state"`
 		Verifier string `json:"verifier"`
 		Nonce    string `json:"nonce"`
+		Next     string `json:"next"`
 	}
 	if blob, err := base64.RawURLEncoding.DecodeString(raw); err != nil ||
 		json.Unmarshal(blob, &flow) != nil || flow.State == "" || flow.Verifier == "" {
@@ -185,9 +199,12 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 	maxAge := int(s.sessionTTL().Seconds())
 	http.SetCookie(w, s.sessionCookie(token, maxAge))
 	http.SetCookie(w, s.csrfCookie(csrf, maxAge))
-	target := "/"
+	target := sanitizeNext(flow.Next)
+	if target == "" {
+		target = "/"
+	}
 	if s.PublicURL != "" {
-		target = s.PublicURL + "/"
+		target = s.PublicURL + target
 	}
 	http.Redirect(w, r, target, http.StatusFound)
 }

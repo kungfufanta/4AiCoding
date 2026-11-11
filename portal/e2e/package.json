@@ -1,0 +1,11 @@
+{
+  "name": "portal-e2e",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "@playwright/test": "1.56.1"
+  },
+  "scripts": {
+    "test": "playwright test"
+  }
+}
