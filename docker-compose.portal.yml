@@ -14,6 +14,18 @@
 #
 # It stores its data in the same postgres instance (database `zitadel`,
 # created by start-from-init with the postgres superuser).
+#
+# The sandbox backend (PORTAL_PLAN_V2 P4) is opt-in the same way — the
+# dashboard works without it and shows a "not connected" empty state:
+#
+#   docker compose -f docker-compose.portal.yml --profile sandboxes up \
+#     -e PORTAL_SANDBOXD_URL=http://sandboxd:9191
+#
+#   sandboxd :9191      real sandboxd (auth disabled — dev only) with the
+#                       host docker socket, so sandboxes run as siblings;
+#   sandbox-image       builds the tiny e2e sandbox base image (no net).
+# The sandboxd lifecycle webhook is pre-wired (dev secret) so the
+# Portal's index stays live without polling.
 
 name: portal
 
@@ -50,10 +62,58 @@ services:
       PORTAL_ADMIN_USERNAME: ${PORTAL_ADMIN_USERNAME:-}
       PORTAL_ADMIN_PASSWORD: ${PORTAL_ADMIN_PASSWORD:-}
       PORTAL_ADMIN_EMAIL: ${PORTAL_ADMIN_EMAIL:-}
+      # Sandbox gateway (P4): empty until the `sandboxes` profile is up
+      # (the preview workflow passes PORTAL_SANDBOXD_URL explicitly).
+      PORTAL_SANDBOXD_URL: ${PORTAL_SANDBOXD_URL:-}
+      PORTAL_SANDBOXD_API_KEY: ${PORTAL_SANDBOXD_API_KEY:-}
+      PORTAL_SANDBOXD_WEBHOOK_SECRET: ${PORTAL_SANDBOXD_WEBHOOK_SECRET:-}
     ports:
       - "8080:8080"
     read_only: true
     tmpfs: [/tmp]
+
+  # --- P4 sandbox backend (profile `sandboxes`) ------------------------
+
+  sandbox-image:
+    # Build-only helper: tags the tiny e2e base image so sandboxd's
+    # allowlist has something to point at. Exits immediately.
+    build: ./scripts/e2e
+    image: sandboxd-e2e:ci
+    command: ["true"]
+    restart: "no"
+    profiles: [sandboxes]
+
+  sandboxd:
+    build: ./control-plane
+    image: sandboxd:portal-dev
+    profiles: [sandboxes]
+    depends_on:
+      sandbox-image:
+        condition: service_completed_successfully
+    # Root on purpose (like production): sandboxd must delete workspace
+    # files written by the sandbox user (uid 1000).
+    environment:
+      SANDBOXD_ADDR: ":9191"
+      # Dev only: the dashboard's own auth protects the portal; sandboxd
+      # is never exposed past localhost here.
+      SANDBOXD_API_AUTH_DISABLED: "true"
+      SANDBOXD_IMAGE: sandboxd-e2e:ci
+      SANDBOXD_IMAGE_ALLOWLIST: sandboxd-e2e:ci
+      SANDBOXD_MAX_MEMORY_MB: "2048"
+      SANDBOXD_DATA_DIR: /data
+      SANDBOXD_LOG_DIR: /data/log
+      SANDBOXD_MIGRATIONS: /usr/local/share/sandboxd/migrations
+      SANDBOXD_DB: /data/sandboxd.db
+      SANDBOXD_USERNS: host
+      SANDBOXD_IDLE_THRESHOLD_SECONDS: "3600"
+      # Lifecycle webhook -> the Portal's receiver (P4): HMAC-signed.
+      SANDBOXD_WEBHOOK_URL: http://portal:8080/api/webhooks/sandboxd
+      SANDBOXD_WEBHOOK_SECRET: ${PORTAL_SANDBOXD_WEBHOOK_SECRET:-dev-webhook-secret}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - sandboxd_data:/data
+    ports:
+      - "127.0.0.1:9191:9191"
 
   zitadel:
     image: ghcr.io/zitadel/zitadel:latest
@@ -77,3 +137,4 @@ services:
 
 volumes:
   portal_pgdata:
+  sandboxd_data:

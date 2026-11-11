@@ -1,9 +1,10 @@
 name: preview-portal
 
-# PR preview for the Portal (PORTAL_PLAN_V2 P1): build the compose
-# stack (postgres + portal), drive the dashboard in a real browser
-# (login, projects, invite, audit, dark mode, mobile) and attach a
-# screenshot of every screen to the run.
+# PR preview for the Portal (PORTAL_PLAN_V2 P1/P4): build the compose
+# stack (postgres + portal + a dev sandboxd), drive the dashboard in a
+# real browser (login, projects, invite, audit, dark mode, mobile, and
+# from P4 the full sandbox flow: create → running → exec → delete) and
+# attach a screenshot of every screen to the run.
 on:
   pull_request:
     paths:
@@ -29,6 +30,12 @@ jobs:
       PORTAL_ADMIN_USERNAME: admin
       PORTAL_ADMIN_PASSWORD: preview-admin-password
       PORTAL_ADMIN_EMAIL: admin@portal.local
+      # P4 sandbox backend (profile `sandboxes`, dev auth disabled).
+      PORTAL_SANDBOXD_URL: http://sandboxd:9191
+      # The webhook secret must match sandboxd's SANDBOXD_WEBHOOK_SECRET
+      # (compose default below) — signed lifecycle events keep the index
+      # fresh while the browser test runs.
+      PORTAL_SANDBOXD_WEBHOOK_SECRET: dev-webhook-secret
     steps:
       - uses: actions/checkout@v7
 
@@ -40,8 +47,19 @@ jobs:
         working-directory: portal/e2e
         run: npm install --no-audit --no-fund && npx playwright install --with-deps chromium
 
+      - name: sandbox backend up (build sandboxd + e2e base image)
+        run: docker compose -f docker-compose.portal.yml --profile sandboxes up -d --build sandboxd
+
+      - name: wait for sandboxd health
+        run: |
+          for i in $(seq 1 60); do
+            curl -fsS http://127.0.0.1:9191/healthz && break
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:9191/healthz
+
       - name: compose stack up (postgres + portal)
-        run: docker compose -f docker-compose.portal.yml up -d --build postgres portal
+        run: docker compose -f docker-compose.portal.yml --profile sandboxes up -d --build postgres portal
 
       - name: wait for portal health
         run: |

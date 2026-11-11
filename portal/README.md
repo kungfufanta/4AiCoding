@@ -51,6 +51,13 @@ docker compose -f docker-compose.portal.yml up --build
 # with the identity provider (S1 login):
 docker compose -f docker-compose.portal.yml --profile idp up
 # zitadel → http://localhost:8081
+
+# with the sandbox backend (P4) so the Sandboxes pages can actually
+# create/run sandboxes (dev auth on sandboxd disabled, webhook pre-wired):
+PORTAL_SANDBOXD_URL=http://sandboxd:9191 \
+PORTAL_SANDBOXD_WEBHOOK_SECRET=dev-webhook-secret \
+  docker compose -f docker-compose.portal.yml --profile sandboxes up --build
+# sandboxd → http://localhost:9191 (never expose it as-is)
 ```
 
 Or without Docker: point `PORTAL_DATABASE_URL` at any Postgres 16+ and
@@ -70,6 +77,10 @@ Or without Docker: point `PORTAL_DATABASE_URL` at any Postgres 16+ and
 | `PORTAL_ADMIN_PASSWORD` | — (login off) | Local password-login password, min 12 characters. Unset or `-`: the password login is off, and stored password logins plus their sessions are removed at boot. When set, the stored bcrypt hash converges to this value on every boot (that is the rotation path), and a change signs out the account's existing sessions |
 | `PORTAL_ADMIN_EMAIL` | `admin@portal.local` | Directory email of the bootstrap admin (gets a personal org like any user) |
 | `PORTAL_DB_ROLE` | `portal_app` | Non-owner role for RLS; `-` disables the `SET ROLE` |
+| `PORTAL_SANDBOXD_URL` | — | sandboxd control plane the gateway proxies to (P4). Empty disables the whole sandbox surface: `/v1/sandboxes*` answers 503 and the dashboard shows "backend not connected" |
+| `PORTAL_SANDBOXD_API_KEY` | — | Bearer key the gateway presents to sandboxd. Production keys carry the `require_external` flag (P3a) + `sandbox:create/read/exec` scopes; a dev sandboxd without its auth store ignores it |
+| `PORTAL_SANDBOXD_WEBHOOK_SECRET` | — | HMAC secret verifying `X-Sandboxd-Signature` on `POST /api/webhooks/sandboxd` (must match sandboxd's `SANDBOXD_WEBHOOK_SECRET`). Empty disables the receiver |
+| `PORTAL_SANDBOXD_TIMEOUT` | `30s` | Per-call timeout to sandboxd (streaming proxies honor the request context instead) |
 
 ## Tests
 
