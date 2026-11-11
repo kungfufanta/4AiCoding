@@ -155,12 +155,15 @@ jobs:
           tls="$(kubectl -n "$NAMESPACE" get ingress "$RELEASE" -o jsonpath='{.spec.tls[0].secretName}')"
           test "$tls" = "chat-devhub-io-vn-tls"
       - name: Smoke test in-cluster health
+        # The namespace enforces PodSecurity "restricted", so the curl pod
+        # needs explicit security contexts (same overrides as
+        # deploy-k3s-zitadel.yml) or admission rejects it with Forbidden.
         run: |
           set -eu
           for attempt in $(seq 1 10); do
             if kubectl -n "$NAMESPACE" run "portal-smoke-${GITHUB_SHA:0:12}" --rm -i --restart=Never \
-              --image=curlimages/curl:8.10.1 --command -- \
-              curl -fsS --max-time 5 "http://$RELEASE/healthz"; then
+              --image=curlimages/curl:8.10.1 \
+              --overrides='{"spec":{"securityContext":{"runAsNonRoot":true,"runAsUser":100,"seccompProfile":{"type":"RuntimeDefault"}},"containers":[{"name":"portal-smoke-'"${GITHUB_SHA:0:12}"'","image":"curlimages/curl:8.10.1","command":["curl","-fsS","--max-time","5","http://'"$RELEASE"'/healthz"],"securityContext":{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]}}}]}}'; then
               echo "portal healthy through the Service"
               exit 0
             fi
