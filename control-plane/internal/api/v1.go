@@ -16,10 +16,12 @@ import (
 	"time"
 
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/audit"
+	"github.com/tastyeffectco/sandboxd/control-plane/internal/auth"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/events"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/policy"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/sandboxspec"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/store"
+	"github.com/tastyeffectco/sandboxd/control-plane/internal/webhook"
 )
 
 // effectiveMemoryMB is the hard memory limit a sandbox runs with.
@@ -44,6 +46,10 @@ type v1Preview struct {
 type v1External struct {
 	UserID    string `json:"user_id,omitempty"`
 	ProjectID string `json:"project_id,omitempty"`
+	// WorkspaceID (Portal S3a) tags the caller's tenant — the Portal maps
+	// its org id here so ownership checks and the ?external_workspace_id=
+	// filter stay org-scoped.
+	WorkspaceID string `json:"workspace_id,omitempty"`
 }
 
 type v1Sandbox struct {
@@ -213,8 +219,9 @@ func (s *Server) v1SandboxFromRow(_ *http.Request, sb *store.Sandbox) v1Sandbox 
 		p := s.v1PreviewView(sb.ID, sb.Status, webPortOf(sb))
 		out.Preview = &p
 	}
-	if sb.ExternalUserID.Valid || sb.ExternalProjectID.Valid {
-		out.External = &v1External{UserID: sb.ExternalUserID.String, ProjectID: sb.ExternalProjectID.String}
+	if sb.ExternalUserID.Valid || sb.ExternalProjectID.Valid || sb.ExternalWorkspaceID.Valid {
+		out.External = &v1External{UserID: sb.ExternalUserID.String, ProjectID: sb.ExternalProjectID.String,
+			WorkspaceID: sb.ExternalWorkspaceID.String}
 	}
 	if sb.ErrorMessage.Valid {
 		out.ErrorMessage = sb.ErrorMessage.String
@@ -262,15 +269,16 @@ func (s *Server) v1Lookup(w http.ResponseWriter, r *http.Request, id string) (*s
 // --- GET /v1/sandboxes ----------------------------------------------
 
 // v1ListSandboxes lists sandboxes, newest first, optionally filtered by
-// external identity (?external_user_id= / ?external_project_id=) and by
-// ?status=.
+// external identity (?external_user_id= / ?external_project_id= /
+// ?external_workspace_id=, Portal S3a) and by ?status=.
 func (s *Server) v1ListSandboxes(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	euid, epid, status := q.Get("external_user_id"), q.Get("external_project_id"), q.Get("status")
+	euid, epid, ewid := q.Get("external_user_id"), q.Get("external_project_id"), q.Get("external_workspace_id")
+	status := q.Get("status")
 	var rows []*store.Sandbox
 	var err error
-	if euid != "" || epid != "" {
-		rows, err = s.Store.ListFiltered(r.Context(), euid, epid)
+	if euid != "" || epid != "" || ewid != "" {
+		rows, err = s.Store.ListFiltered(r.Context(), euid, epid, ewid)
 	} else {
 		rows, err = s.Store.List(r.Context())
 	}
@@ -372,6 +380,14 @@ func (s *Server) v1CreateSandbox(w http.ResponseWriter, r *http.Request) {
 	if vis == "" {
 		vis = "private"
 	}
+	// Portal S3a — a key with the require_external flag must tag the org:
+	// refuse the create before placement (local OR worker) so an untagged
+	// sandbox can never be created with a Portal key.
+	if actor := auth.ActorFrom(r.Context()); actor.RequireExternal && req.External.WorkspaceID == "" {
+		writeV1Err(w, http.StatusBadRequest, "workspace_required",
+			"this API key requires external.workspace_id (the caller's tenant tag) on every sandbox create")
+		return
+	}
 	grant := ""
 	if vis == "public" {
 		pol, err := s.policy(r.Context())
@@ -404,7 +420,7 @@ func (s *Server) v1CreateSandbox(w http.ResponseWriter, r *http.Request) {
 		"ports":      req.Ports,
 		"visibility": vis,
 		"env":        req.Env,
-		"external":   map[string]string{"user_id": req.External.UserID, "project_id": req.External.ProjectID},
+		"external":   map[string]string{"user_id": req.External.UserID, "project_id": req.External.ProjectID, "workspace_id": req.External.WorkspaceID},
 		"image":      req.Image,
 		"command":    req.Command,
 	}
@@ -510,6 +526,12 @@ func (s *Server) v1StopSandbox(w http.ResponseWriter, r *http.Request) {
 // stopSandbox stops a running sandbox's container and records it. Writes the
 // v1 error and returns false on failure.
 func (s *Server) stopSandbox(w http.ResponseWriter, r *http.Request, id string) bool {
+	// Snapshot the row before the stop so the lifecycle webhook (Portal
+	// S3a) carries the sandbox's external tags + resources.
+	var pre *store.Sandbox
+	if sb, err := s.Store.Get(r.Context(), id); err == nil {
+		pre = sb
+	}
 	if err := s.Docker.Stop(r.Context(), "s-"+id, 10); err != nil {
 		writeV1Err(w, http.StatusInternalServerError, "internal", "docker stop: "+err.Error())
 		return false
@@ -520,6 +542,7 @@ func (s *Server) stopSandbox(w http.ResponseWriter, r *http.Request, id string) 
 	s.auditAction(r, audit.Entry{Action: "sandbox.stop", Target: id})
 	s.recordEvent(r, events.Event{Type: events.SandboxStopped, Severity: events.SeverityInfo,
 		Message: "Sandbox stopped", SandboxID: id})
+	s.emitLifecycle(r, webhook.EventStopped, id, pre)
 	return true
 }
 
@@ -560,6 +583,7 @@ func (s *Server) startAndRespond(w http.ResponseWriter, r *http.Request, id stri
 	s.auditAction(r, audit.Entry{Action: "sandbox.start", Target: id})
 	s.recordEvent(r, events.Event{Type: events.SandboxStarted, Severity: events.SeverityInfo,
 		Message: "Sandbox started", SandboxID: id})
+	s.emitLifecycle(r, webhook.EventStarted, id, sb)
 	writeJSON(w, http.StatusOK, s.v1SandboxFromRow(r, sb))
 }
 

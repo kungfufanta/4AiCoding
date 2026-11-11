@@ -12,6 +12,8 @@ import (
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/audit"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/docker"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/metrics"
+	"github.com/tastyeffectco/sandboxd/control-plane/internal/store"
+	"github.com/tastyeffectco/sandboxd/control-plane/internal/webhook"
 )
 
 // purgeOne is the irreversible per-sandbox teardown shared by all
@@ -111,11 +113,18 @@ func (s *Server) handlePurgeSandbox(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid sandbox id")
 		return
 	}
+	// Portal S3a — snapshot the row before the purge removes it, so the
+	// deleted webhook carries the sandbox's external tags + resources.
+	var pre *store.Sandbox
+	if sb, err := s.Store.Get(r.Context(), id); err == nil {
+		pre = sb
+	}
 	freed, externalUserID, err := s.purgeOne(r.Context(), id)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "purge: "+err.Error())
 		return
 	}
+	s.emitLifecycle(r, webhook.EventDeleted, id, pre)
 	s.auditAction(r, audit.Entry{
 		Action:         "sandbox.purge",
 		Target:         id,

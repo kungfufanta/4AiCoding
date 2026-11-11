@@ -30,6 +30,7 @@ import (
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/snapshot"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/store"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/wake"
+	"github.com/tastyeffectco/sandboxd/control-plane/internal/webhook"
 )
 
 // --- request / response payloads ------------------------------------
@@ -386,6 +387,14 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Portal S3a — the legacy create must not become a bypass for a
+	// require_external API key: the same tag duty the v1 surface enforces
+	// applies here. (Console sessions and env tokens have no flag.)
+	if actor := auth.ActorFrom(r.Context()); actor.RequireExternal && req.External.WorkspaceID == "" {
+		writeErr(w, http.StatusBadRequest,
+			"this API key requires external.workspace_id (the caller's tenant tag) on every sandbox create")
+		return
+	}
 	visibility := req.Visibility
 	if visibility == "" {
 		visibility = "public"
@@ -532,6 +541,11 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		s.recordEvent(r, events.Event{Type: events.SandboxCreateFailed, Severity: events.SeverityError,
 			Message: "Sandbox create failed", SandboxID: req.ID,
 			Payload: map[string]any{"reason": msg}})
+		// Portal S3a — the failure is a lifecycle transition too. Re-read
+		// the row so the webhook carries the stored external tags.
+		if fresh, gerr := s.Store.Get(r.Context(), req.ID); gerr == nil {
+			s.emitLifecycle(r, webhook.EventFailed, req.ID, fresh)
+		}
 	}
 
 	// 1. Loopback provision (idempotent; reuses any existing .img).
@@ -716,6 +730,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	})
 	s.recordEvent(r, events.Event{Type: events.SandboxStarted, Severity: events.SeverityInfo,
 		Message: "Sandbox started", SandboxID: req.ID})
+	s.emitLifecycle(r, webhook.EventCreated, req.ID, fresh)
 	writeJSON(w, http.StatusCreated, toRespRow(fresh))
 }
 
@@ -752,13 +767,15 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 	// Phase 8 — optional external-identity filters. When neither is
-	// supplied this is the unfiltered Phase 4 listing.
+	// supplied this is the unfiltered Phase 4 listing. (Portal S3a adds
+	// external_workspace_id, mirroring v1.)
 	euid := r.URL.Query().Get("external_user_id")
 	epid := r.URL.Query().Get("external_project_id")
+	ewid := r.URL.Query().Get("external_workspace_id")
 	var rows []*store.Sandbox
 	var err error
-	if euid != "" || epid != "" {
-		rows, err = s.Store.ListFiltered(r.Context(), euid, epid)
+	if euid != "" || epid != "" || ewid != "" {
+		rows, err = s.Store.ListFiltered(r.Context(), euid, epid, ewid)
 	} else {
 		rows, err = s.Store.List(r.Context())
 	}
@@ -841,6 +858,7 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	})
 	s.recordEvent(r, events.Event{Type: events.SandboxDeleted, Severity: events.SeverityInfo,
 		Message: "Sandbox deleted", SandboxID: id})
+	s.emitLifecycle(r, webhook.EventDeleted, id, sb)
 	w.WriteHeader(http.StatusNoContent)
 }
 

@@ -29,6 +29,7 @@ import (
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/snapshot"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/store"
 	"github.com/tastyeffectco/sandboxd/control-plane/internal/wake"
+	"github.com/tastyeffectco/sandboxd/control-plane/internal/webhook"
 )
 
 // Server bundles the collaborators the handlers need.
@@ -150,6 +151,11 @@ type Server struct {
 	Events              *events.Recorder // Phase 5 — durable app_events timeline
 	SnapshotsRoot       string           // per-sandbox purge of _snapshots/<id>/
 	ForwardAuthDenyMode string           // "redirect" (default) | "meta-refresh"
+
+	// Portal S3a — signed lifecycle webhooks (created/started/stopped/
+	// deleted/failed) to the Portal. nil-safe: nothing is sent when unset
+	// (see internal/webhook and SANDBOXD_WEBHOOK_URL in main.go).
+	Webhook *webhook.Dispatcher
 
 	// Phase 8A — static, safe instance metadata for GET /v1/settings.
 	// Populated in main; contains no secrets.

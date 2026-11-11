@@ -24,6 +24,9 @@ type APIKey struct {
 	ExpiresAt *time.Time
 	// SandboxID binds the key to one sandbox; "" = any.
 	SandboxID string
+	// RequireExternal (Portal S3a): sandboxes created with this key
+	// must carry external.workspace_id, else the create is a 400.
+	RequireExternal bool
 }
 
 // ── sessions ─────────────────────────────────────────────────────────
@@ -33,8 +36,8 @@ type APIKey struct {
 func (s *Store) CreateSession(ctx context.Context, tokenHash, owner, userID string, createdAt, lastUsed, expires int64) error {
 	return s.submit(ctx, func(db *sql.DB) error {
 		_, err := db.ExecContext(ctx, `
-			INSERT INTO console_session (token_hash, owner_token, user_id, created_at, last_used_at, expires_at)
-			VALUES (?,?,?,?,?,?)`, tokenHash, owner, userID, createdAt, lastUsed, expires)
+                        INSERT INTO console_session (token_hash, owner_token, user_id, created_at, last_used_at, expires_at)
+                        VALUES (?,?,?,?,?,?)`, tokenHash, owner, userID, createdAt, lastUsed, expires)
 		return err
 	})
 }
@@ -111,7 +114,7 @@ func (s *Store) DeleteAllSessions(ctx context.Context) error {
 
 // ── API keys ─────────────────────────────────────────────────────────
 
-const apiKeyMetaCols = `id, name, prefix, created_at, last_used_at, scopes, role, expires_at, sandbox_id`
+const apiKeyMetaCols = `id, name, prefix, created_at, last_used_at, scopes, role, expires_at, sandbox_id, require_external`
 
 // Scopes are stored comma-separated; ” round-trips to nil (full access).
 func joinScopes(scopes []string) string { return strings.Join(scopes, ",") }
@@ -130,9 +133,11 @@ func scanAPIKey(sc scanner) (*APIKey, error) {
 	var scopes string
 	var expires sql.NullInt64
 	var sandboxID sql.NullString
-	if err := sc.Scan(&k.ID, &k.Name, &k.Prefix, &created, &lastUsed, &scopes, &k.Role, &expires, &sandboxID); err != nil {
+	var requireExternal int
+	if err := sc.Scan(&k.ID, &k.Name, &k.Prefix, &created, &lastUsed, &scopes, &k.Role, &expires, &sandboxID, &requireExternal); err != nil {
 		return nil, err
 	}
+	k.RequireExternal = requireExternal != 0
 	if expires.Valid {
 		t := time.Unix(expires.Int64, 0).UTC()
 		k.ExpiresAt = &t
@@ -156,6 +161,7 @@ type NewAPIKey struct {
 	Role                      string
 	ExpiresAt                 int64
 	SandboxID                 string
+	RequireExternal           bool
 	CreatedAt                 int64
 }
 
@@ -166,10 +172,10 @@ func (s *Store) CreateAPIKey(ctx context.Context, k NewAPIKey) error {
 	}
 	return s.submit(ctx, func(db *sql.DB) error {
 		_, err := db.ExecContext(ctx, `
-			INSERT INTO api_key (id, name, key_hash, prefix, scopes, created_at, last_used_at, role, expires_at, sandbox_id)
-			VALUES (?,?,?,?,?,?,NULL,?,?,?)`, k.ID, k.Name, k.KeyHash, k.Prefix, joinScopes(k.Scopes), k.CreatedAt,
+                        INSERT INTO api_key (id, name, key_hash, prefix, scopes, created_at, last_used_at, role, expires_at, sandbox_id, require_external)
+                        VALUES (?,?,?,?,?,?,NULL,?,?,?,?)`, k.ID, k.Name, k.KeyHash, k.Prefix, joinScopes(k.Scopes), k.CreatedAt,
 			k.Role, sql.NullInt64{Int64: k.ExpiresAt, Valid: k.ExpiresAt > 0},
-			sql.NullString{String: k.SandboxID, Valid: k.SandboxID != ""})
+			sql.NullString{String: k.SandboxID, Valid: k.SandboxID != ""}, boolInt(k.RequireExternal))
 		if isUniqueViolation(err) {
 			return ErrConflict
 		}

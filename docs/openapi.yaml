@@ -208,6 +208,9 @@ paths:
                 role: { $ref: "#/components/schemas/Role" }
                 ttl_seconds: { type: integer }
                 sandbox_id: { type: string }
+                require_external:
+                  type: boolean
+                  description: "PORTAL S3a — every sandbox create with this key must carry external.workspace_id (400 workspace_required otherwise)."
       responses:
         "201":
           description: Created — plaintext key returned once
@@ -247,6 +250,7 @@ paths:
                         created_at: { type: string }
                         last_used_at: { type: string }
                         scopes: { type: array, items: { type: string }, description: empty = full access }
+                        require_external: { type: boolean, description: "PORTAL S3a — creates must tag external.workspace_id" }
         "403": { description: Requires a console login }
   /v1/api-keys/{id}:
     delete:
@@ -269,6 +273,7 @@ paths:
         - { name: status, in: query, schema: { type: string, enum: [creating, running, stopped, error] } }
         - { name: external_user_id, in: query, schema: { type: string } }
         - { name: external_project_id, in: query, schema: { type: string } }
+        - { name: external_workspace_id, in: query, schema: { type: string }, description: "Only sandboxes tagged with this workspace (the caller's tenant, PORTAL S3a)." }
       responses:
         "200":
           description: OK
@@ -1445,6 +1450,9 @@ components:
           properties:
             user_id: { type: string }
             project_id: { type: string }
+            workspace_id:
+              type: string
+              description: "Caller's tenant tag (PORTAL S3a). The Portal maps its org id here. Required on every create by keys minted with require_external."
         error_message: { type: string }
         last_active_at: { type: string, format: date-time }
         keepalive_until: { type: string, format: date-time }
@@ -1481,7 +1489,9 @@ components:
           properties:
             user_id: { type: string }
             project_id: { type: string }
-        from_snapshot: { type: string, description: "Clone the workspace from a snapshot you own." }
+            workspace_id:
+              type: string
+              description: "Caller's tenant tag (PORTAL S3a). Required by keys minted with require_external — a create without it is 400 workspace_required."
         workspace:
           type: object
           description: Clone a public git repository into the workspace.

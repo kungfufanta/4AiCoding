@@ -42,5 +42,5 @@ func (r storeResolver) ResolveAPIKey(ctx context.Context, presented string) (aut
 	}
 	_ = r.st.TouchAPIKey(ctx, k.ID, time.Now().Unix())
 	return auth.Principal{Owner: store.DefaultTenant, User: k.Name, Role: k.Role,
-		Scopes: k.Scopes, SandboxID: k.SandboxID}, true
+		Scopes: k.Scopes, SandboxID: k.SandboxID, RequireExternal: k.RequireExternal}, true
 }
