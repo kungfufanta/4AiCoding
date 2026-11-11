@@ -28,6 +28,9 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "portal.serviceAccountName" . }}
+      # The portal never talks to the Kubernetes API — do not mount the
+      # ServiceAccount token (same hardening the worker chart applies).
+      automountServiceAccountToken: false
       {{- with .Values.podSecurityContext }}
       securityContext:
         {{- toYaml . | nindent 8 }}
