@@ -8,40 +8,44 @@ File theo dõi cho kế hoạch [`docs/PORTAL_PLAN_V2.md`](PORTAL_PLAN_V2.md). C
 |---|---|---|---|---|
 | P0 | Xiết chặt đăng nhập (bỏ mật khẩu mặc định) | ✅ Xong | #34 | Claude khác làm (main `1bda85c`) |
 | Kế hoạch V2 | `docs/PORTAL_PLAN_V2.md` | ✅ Xong | #33 | Docs-only, CI xanh |
-| **P1** | Design system + app shell + migrate Login/Projects/Members/Audit + trang accept-invite + CSP + preview workflow | 🟨 Đang review | #36 | Branch `portal-p1-ui` |
-| P2 | API key + agent token (S2 + UI) | ⬜ | | Cần P1 merge |
-| P3 | Tag tenant + webhook ở sandboxd (S3a) | ⬜ | | Độc lập, có thể song song với P2 |
+| P1 | Design system + app shell + migrate Login/Projects/Members/Audit + trang accept-invite + CSP + preview workflow | ✅ Xong | #36 | Merged 07:27 |
+| **P2** | API key + agent token (S2 + UI) | 🟨 Đang review | #37 | Branch `portal-p2-api-keys` |
+| P3 | Tag tenant + webhook ở sandboxd (S3a) | ⬜ | | Độc lập — làm tiếp |
 | P4 | Gateway sandboxd + trang Sandboxes (S3 + UI) | ⬜ | | Cần P2 + P3 |
 | P5 | Quota + rate limit + trang Usage (S4 + UI) | ⬜ | | Cần P4 |
 | P6 | SDK + MCP + trang Quickstart (S5 + UI) | ⬜ | | Cần P4 |
 
 ⬜ chưa bắt đầu · 🟨 đang làm/review · ✅ xong (đã merge) · ⏸ chờ gì đó
 
-## Chi tiết P1 (PR đang mở)
+## Chi tiết P2 (PR đang mở)
 
-- [x] Tailwind CSS 4 + token thiết kế (`@theme inline`, dark/light qua class + `prefers-color-scheme`)
-- [x] Bộ component `ui/`: button, input/field, select (Radix), dropdown (Radix), dialog (Radix) + ConfirmProvider, toast, table, badge, card, skeleton/empty-state, copy-field
-- [x] react-router (v8, library mode): `/login`, `/invites/:orgId`, `/orgs/:orgSlug/{projects,members,audit}` — webfs đã có SPA fallback
-- [x] TanStack Query 5; không còn `prompt()`/`alert()`; destructive → ConfirmDialog
-- [x] AppShell: sidebar (drawer < lg) + topbar (org switcher, user menu, theme toggle)
-- [x] Trang accept-invite (vá thiếu sót S1: API có, UI không có) — route `/invites/{orgID}?token=…`
-- [x] SSO deep-link: `GET /auth/login?next=…` (sanitize same-origin, test `TestSanitizeNext`)
-- [x] CSP: `style-src 'self' 'unsafe-inline'` (Radix đặt style attribute; script-src giữ `'self'`)
-- [x] Bundle 139.8 KB gzip (< mục tiêu 250 KB); `pnpm build` xanh; `go test -race ./...` xanh
-- [x] Playwright: `portal/e2e` (login + projects + invite + audit + dark + mobile 390px, chụp 9 ảnh) + workflow `preview-portal.yml` (paths-filter portal/**)
+- [x] Migration `0004_api_keys.sql`: bảng api_keys + RLS + function `api_key_verify()` SECURITY DEFINER (verify qua pgcrypto digest, touch last_used_at cùng statement, REVOKE FROM PUBLIC)
+- [x] `internal/apikeys`: format `sbx_live_<keyid12>_<secret43>`, sha256 + so sánh constant-time, cache 60s (negative cache chống dội DB), `Invalidate` khi revoke
+- [x] `internal/agenttoken`: EdDSA/JWT qua golang-jwt v5, `kid` = sha256(pub)[:16], TTL mặc định 15m / max 60m / min 1m, jti; verify từ chối HS256/none/kid lạ
+- [x] BFF: GET/POST/DELETE `/api/orgs/{id}/api-keys` (list = member, create/revoke = admin; audit `apikey.create`/`apikey.revoke`); POST `/v1/tokens` (Bearer key → token, scope subset else 403 `scope_exceeded`, audit `agenttoken.issue`)
+- [x] UI: trang "API keys" (bảng + dialog tạo với scopes checkbox/project/expiry + dialog secret-shown-once + Revoke confirm + quickstart curl có nút copy) + sidebar item
+- [x] Tests Go: format/parse hostile table, scope subset, mint/verify/tamper/alg-confusion/expired, BFF flow (create→list→token→revoke→401 sau TTL cache), org isolation (404 chéo org, member không tạo được key), validation 400
+- [x] Playwright: test api-keys (create → secret 1 lần → reload biến mất → revoke) — **8/8 pass local**
+- [x] Bundle 141.8 KB gzip; `go test -race` + `pnpm build` xanh
+
+Bug đã gặp (ghi để lần sau tránh):
+
+- SELECT cột không tồn tại trong RETURNS TABLE của function SQL → lỗi runtime chỉ thấy qua test DB-gated (unit thuần không bắt được).
+- Mutant "hostile" trong test parse phải chia 2 nhóm: thật sự malformed vs. well-formed-but-weird.
 
 Việc còn mở (không chặn merge):
 
-- [ ] HSTS ở ingress k3s (annotation cert-manager) — thuộc hạ tầng, làm cùng P2
-- [ ] Phân trang audit (cần cursor phía BFF) — làm cùng P2 backend
+- [ ] HSTS ở ingress k3s (annotation cert-manager) — thuộc hạ tầng, làm cùng P3
+- [ ] Phân trang audit (cần cursor phía BFF) — làm cùng P3
+- [ ] `ip_allowlist` đã có cột nhưng chưa enforce (enforce ở S3 middleware)
 
 ## Nhật ký
 
 | Ngày | Việc | Kết quả |
 |---|---|---|
-| 2026-11-11 | Kế hoạch V2 (P1–P6) viết trong PR #33 | CI xanh, chờ duyệt |
-| 2026-11-11 | P1 làm trên branch `portal-p1-ui` → PR #36 | `pnpm build` + `go test -race` xanh local |
-| 2026-11-11 | preview-portal fail 2 lần → tái hiện local (Postgres nhúng + portal binary) | 3 fix: `storageState` phải nằm trong `use` của project Playwright; Playwright ≥ 1.65 cho runner ubuntu 26.04; tên project/email dùng `Date.now()` tránh 409 khi rerun. **7/7 test pass local** |
+| 2026-11-11 | Kế hoạch V2 (P1–P6) viết trong PR #33 | CI xanh, đã merge |
+| 2026-11-11 | P1 trên branch `portal-p1-ui` → PR #36 | Merged; preview-portal xanh sau 3 fix (storageState trong `use`, Playwright 1.65, tên duy nhất) |
+| 2026-11-11 | P2 trên branch `portal-p2-api-keys` → PR #37 | Go tests + 8/8 Playwright pass local; fix bug SELECT cột không có trong RETURNS TABLE |
 
 ## Ghi chú cho lần sau
 

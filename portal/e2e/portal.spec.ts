@@ -47,6 +47,7 @@ test.describe.serial("portal preview", () => {
     await dialog.getByPlaceholder("teammate@company.com").fill(`preview+${runStamp}@example.com`);
     await page.getByRole("button", { name: "Send invite", exact: true }).click();
     await expect(page.getByText("shown only once")).toBeVisible();
+    await page.waitForTimeout(250); // let the dialog fade-in settle
     await shot(page, "03-invite-url");
     await page.getByRole("button", { name: "Done", exact: true }).click();
 
@@ -85,6 +86,44 @@ test.describe.serial("portal preview", () => {
     await expect(page.getByRole("dialog", { includeHidden: false }).first()).toBeVisible();
     await shot(page, "08-mobile-drawer");
     await page.setViewportSize({ width: 1280, height: 800 });
+  });
+
+  test("api keys — create, secret shown once, revoke", async ({ page }) => {
+    const slug = await gotoOrgBase(page);
+    await page.goto(`/orgs/${slug}/api-keys`);
+    await expect(page.getByRole("heading", { name: "API keys" })).toBeVisible();
+    await shot(page, "10-api-keys");
+
+    await page.getByRole("button", { name: "Create key", exact: true }).click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog.getByText("Create API key")).toBeVisible();
+    await dialog.getByPlaceholder("CI pipeline").fill(`Preview key ${runStamp}`);
+    await dialog.getByRole("checkbox", { name: "sandbox:exec" }).check();
+    await page.getByRole("button", { name: "Create key", exact: true }).click();
+
+    // The secret is shown exactly once, in a copyable field.
+    await expect(page.getByText("Save your API key now")).toBeVisible();
+    const secret = (await page.getByRole("dialog").locator("code").textContent()) ?? "";
+    expect(secret).toContain("sbx_live_");
+    await page.waitForTimeout(250); // let the dialog fade-in settle
+    await shot(page, "11-api-key-secret");
+    await page.getByRole("button", { name: "I saved it", exact: true }).click();
+
+    await expect(page.getByText(`Preview key ${runStamp}`)).toBeVisible();
+
+    // After a reload the secret is gone for good.
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "API keys" })).toBeVisible();
+    expect(await page.content()).not.toContain(secret);
+
+    // Revoke goes through a confirm dialog.
+    const row = page.getByRole("row", { name: new RegExp(`Preview key ${runStamp}`) });
+    await row.getByRole("button", { name: "Revoke" }).click();
+    const confirmDialog = page.getByRole("dialog");
+    await expect(confirmDialog.getByText("lose access within 60 seconds")).toBeVisible();
+    await confirmDialog.getByRole("button", { name: "Revoke key", exact: true }).click();
+    await expect(page.getByText("revoked").first()).toBeVisible();
+    await shot(page, "12-api-keys-revoked");
   });
 
   test("invite page handles an unknown token", async ({ page }) => {

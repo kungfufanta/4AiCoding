@@ -53,9 +53,11 @@ export function DialogContent({
   );
 }
 
-export function DialogTitle({ children }: { children: ReactNode }) {
+export function DialogTitle({ children, className }: { children: ReactNode; className?: string }) {
   return (
-    <DialogPrimitive.Title className="text-base font-semibold text-fg">{children}</DialogPrimitive.Title>
+    <DialogPrimitive.Title className={cn("text-base font-semibold text-fg", className)}>
+      {children}
+    </DialogPrimitive.Title>
   );
 }
 

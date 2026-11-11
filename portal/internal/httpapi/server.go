@@ -13,6 +13,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/tastyeffectco/sandboxd/portal/internal/agenttoken"
+	"github.com/tastyeffectco/sandboxd/portal/internal/apikeys"
 	"github.com/tastyeffectco/sandboxd/portal/internal/oidcauth"
 	"github.com/tastyeffectco/sandboxd/portal/internal/session"
 )
@@ -39,6 +41,12 @@ type Server struct {
 	// bootstrap admin is created at boot by passwordauth when set
 	// (cmd/portal main).
 	PasswordLogin bool
+
+	// Keys verifies Bearer API keys (POST /v1/tokens) and caches
+	// results for 60 s (PORTAL_PLAN 3.2). Tokens mints the agent
+	// tokens. Both are wired in main; nil disables /v1/tokens.
+	Keys   *apikeys.Verifier
+	Tokens *agenttoken.Signer
 
 	PublicURL     string // e.g. https://app.example.com (no trailing slash)
 	SecureCookies bool   // derived in main from PublicURL's scheme
@@ -82,8 +90,15 @@ func (s *Server) Handler() *http.ServeMux {
 	mux.Handle("POST /api/orgs/{orgID}/invites", s.withSession(http.HandlerFunc(s.handleCreateInvite)))
 	mux.Handle("POST /api/orgs/{orgID}/invites/accept", s.withSession(http.HandlerFunc(s.handleAcceptInvite)))
 	mux.Handle("GET /api/orgs/{orgID}/audit", s.withSession(http.HandlerFunc(s.handleListAudit)))
+	// API keys (PORTAL_PLAN 6/S2): dashboard management.
+	mux.Handle("GET /api/orgs/{orgID}/api-keys", s.withSession(http.HandlerFunc(s.handleListApiKeys)))
+	mux.Handle("POST /api/orgs/{orgID}/api-keys", s.withSession(http.HandlerFunc(s.handleCreateApiKey)))
+	mux.Handle("DELETE /api/orgs/{orgID}/api-keys/{keyID}", s.withSession(http.HandlerFunc(s.handleRevokeApiKey)))
+	// Public API surface (S2: token exchange; S3 grows here).
+	mux.Handle("POST /v1/tokens", http.HandlerFunc(s.handleAgentToken))
 	mux.HandleFunc("/api/", NotFound)
 	mux.HandleFunc("/auth/", NotFound)
+	mux.HandleFunc("/v1/", NotFound)
 	return mux
 }
 

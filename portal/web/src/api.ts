@@ -19,6 +19,26 @@ export type AuditEvent = {
 export type AuthMethods = { sso: boolean; password: boolean };
 export type Me = { user: User; orgs: Org[] };
 
+// API keys (PORTAL_PLAN 3.2): the stored view never carries the
+// secret — only the create response does, exactly once.
+export type ApiKey = {
+  id: string;
+  key_id: string;
+  name: string;
+  scopes: string[];
+  project_id: string | null;
+  expires_at: string | null;
+  last_used_at: string | null;
+  revoked_at: string | null;
+  created_at: string;
+};
+export type ApiKeyCreateBody = {
+  name: string;
+  scopes: string[];
+  project_id?: string;
+  expires_in_days?: number;
+};
+
 export class ApiError extends Error {
   status: number;
   code: string;
@@ -77,5 +97,10 @@ export const api = {
   acceptInvite: (orgID: string, token: string) =>
     call<{ org_id: string; role: string }>("POST", `/api/orgs/${orgID}/invites/accept`, { token }),
   audit: (orgID: string) => call<AuditEvent[]>("GET", `/api/orgs/${orgID}/audit`),
+  listApiKeys: (orgID: string) => call<ApiKey[]>("GET", `/api/orgs/${orgID}/api-keys`),
+  createApiKey: (orgID: string, body: ApiKeyCreateBody) =>
+    call<{ key: ApiKey; secret: string }>("POST", `/api/orgs/${orgID}/api-keys`, body),
+  revokeApiKey: (orgID: string, keyID: string) =>
+    call<{ key_id: string; status: string }>("DELETE", `/api/orgs/${orgID}/api-keys/${encodeURIComponent(keyID)}`),
   logout: () => call<void>("POST", "/auth/logout"),
 };

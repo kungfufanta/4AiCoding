@@ -6,6 +6,28 @@ All notable changes to 4AiCoding. The project started from
 
 ## Unreleased
 
+### Portal P2 — API keys and agent tokens (docs/PORTAL_PLAN_V2.md)
+- API keys (`sbx_live_<keyid>_<secret>`, migration `0004`): the
+  dashboard can create, list and revoke scoped keys
+  (`sandbox:create|read|exec`, `usage:read`), optionally scoped to a
+  project with an expiry. The secret is returned exactly once at
+  creation and only its sha256 is stored.
+- Bearer verification runs through the new SECURITY DEFINER
+  `api_key_verify()` (no second DB role: RLS stays intact everywhere
+  else), backed by a 60-second cache so a revoked key is refused
+  within the plan's ≤ 60 s budget; revocation also evicts the cache
+  immediately.
+- `POST /v1/tokens` exchanges an API key for a short-lived agent
+  token (EdDSA/JWT, default 15 min, capped at 60 min, `kid` header
+  for rotation). Requested scopes must be a subset of the key's, or
+  the request answers `403 scope_exceeded`; hostile or unknown
+  bearers answer `401` without leaking which part failed.
+- Dashboard: new "API keys" page (create dialog with scopes/project/
+  expiry, once-shown secret dialog, revoke confirm, quickstart curl
+  snippet) and a sidebar entry.
+- `preview-portal` grows an API-keys browser test: create → secret
+  shown once → reload → secret gone → revoke → row shows revoked.
+
 ### Portal P1 — modern dashboard UI (docs/PORTAL_PLAN_V2.md)
 - The dashboard is rebuilt on Tailwind CSS 4 + Radix primitives with an
   app shell: sidebar navigation, org switcher, user menu and dark/light
