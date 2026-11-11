@@ -14,7 +14,7 @@ File theo dõi cho kế hoạch [`docs/PORTAL_PLAN_V2.md`](PORTAL_PLAN_V2.md). C
 | P4 | Gateway sandboxd + trang Sandboxes (S3 + UI) | 🟨 Đang review | #46 | Branch `portal-p4-gateway-sandboxes` (z.ai) — gateway /v1 + webhook + UI list/detail + preview có sandboxd thật |
 | P5 | Quota + rate limit + trang Usage (S4 + UI) | ⬜ | | Cần P4 |
 | P6 | SDK + MCP + trang Quickstart (S5 + UI) | ⬜ | | Cần P4 |
-| Chat MVP | Trang Chat (stream SSE qua WebHub glm-4.6, chưa tool/sandbox) | 🟨 Đang review | | Claude làm; branch `claude/project-thread-rhrt1v`; A2/A3 sẽ gắn model connection + agent vào chính trang này |
+| Chat MVP | Trang Chat (stream SSE qua WebHub glm-4.6, chưa tool/sandbox) | ✅ Xong | #45 | Merged; A2/A3 sẽ gắn model connection + agent vào chính trang này |
 
 ⬜ chưa bắt đầu · 🟨 đang làm/review · ✅ xong (đã merge) · ⏸ chờ gì đó
 
@@ -54,7 +54,7 @@ Việc còn mở (không chặn merge):
 
 ## Chi tiết P4 (S3 + UI — đang PR #46)
 
-- [x] Migration `0005_sandboxes.sql`: bảng `sandboxes` (pkey = sandbox id của sandboxd, RLS theo org, index org_recent + project), `idempotency_keys` (24h, prune lười khi insert), `webhook_events` (dedupe, prune 25h)
+- [x] Migration `0006_sandboxes.sql` (đổi số từ 0005 — `0005_chat.sql` của Chat MVP merge trước): bảng `sandboxes` (pkey = sandbox id của sandboxd, RLS theo org, index org_recent + project), `idempotency_keys` (24h, prune lười khi insert), `webhook_events` (dedupe, prune 25h)
 - [x] `internal/sandboxd`: client gateway — timeout mỗi call (`PORTAL_SANDBOXD_TIMEOUT` 30s), retry 1 lần CHỈ cho GET (502/503/504 + transport error; mutation không bao giờ retry — Idempotency-Key phía Portal mới là lớp retry an toàn), error envelope sandboxd giữ nguyên status/code, 5xx → 502 không lộ nội bộ; exec gửi đúng `{cmd}` tới khi A0 merge (sandboxd hiện DisallowUnknownFields)
 - [x] `/v1/sandboxes*` (Bearer API key, scope map đúng bảng mục 5: create/read/exec + start/stop/delete dùng `sandbox:create`): chéo org → **404** (qua bảng sandboxes, không lộ tồn tại); `Idempotency-Key` bắt buộc hỗ trợ trên create + exec (replay cùng body → response lưu sẵn; khác body → 422 `idempotency_key_reuse`; đang chạy → 409 `idempotency_in_progress`; claim fail → giải phóng); key pin project chỉ thấy/tạo đúng project đó
 - [x] Webhook receiver `POST /api/webhooks/sandboxd` (chỉ đăng ký khi có secret; KHÔNG qua withSession): HMAC-SHA256 constant-time → 401; occurred_at lệch ±5m → 400 `stale_event`; event id trùng → 200 `duplicate`; `deleted` xoá dòng index; event lạ → ghi nhận không phá; không map được workspace_id → `ignored` (2xx để sandboxd ngừng retry); apply 500 → sandboxd retry, dedupe chống double-apply
@@ -76,6 +76,7 @@ Việc còn mở (không chặn merge):
 | 2026-11-11 | P3/S3a trên branch `portal-p3-sandboxd-tag-webhook` | workspace_id + filter + require_external + webhook HMAC; go test ./... xanh, -race sạch; PR chờ CI |
 | 2026-11-11 | P3 (PR #40) merge vào main | CI 7/7 xanh |
 | 2026-11-11 | P4 trên branch `portal-p4-gateway-sandboxes` (z.ai) → PR #46 | Gateway S3 + UI Sandboxes; chi tiết ở mục "Chi tiết P4"; go test -race + pnpm build xanh |
+| 2026-11-11 | P4 rebase lên main sau Chat MVP (#45) | Xung đột 9 file resolve giữ cả hai; migration đổi thành `0006_sandboxes.sql`; go test ./... + tsc + vite build + helm lint xanh sau rebase |
 
 | 2026-11-11 | Chat MVP (Claude) | Migration `0005_chat.sql` (hội thoại riêng theo user, RLS org+user), `internal/llm` (client OpenAI-compatible stream, header WebHub), BFF `/api/orgs/{id}/chats…` + SSE, trang `/orgs/:slug/chat`; env `PORTAL_DEFAULT_LLM_{BASE_URL,MODEL,FLAVOR,API_KEY}`, secret k3s `llm-api-key` từ GitHub secret `PORTAL_DEFAULT_LLM_API_KEY` |
 
