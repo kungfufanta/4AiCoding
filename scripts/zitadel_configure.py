@@ -188,13 +188,6 @@ def find_or_create_project(mgmt):
 
 
 def find_or_create_app(mgmt, pid):
-    r = mgmt.call("POST", f"/management/v1/projects/{pid}/apps/_search", {})
-    for a in r.get("result", []):
-        if a.get("name") == APP_NAME:
-            app_id = a["id"]
-            print(f"  app '{APP_NAME}' exists (id {app_id}) — regenerating client secret")
-            sec = mgmt.call("POST", f"/management/v1/projects/{pid}/apps/{app_id}/secret/regenerate", {})
-            return sec["clientId"], sec["clientSecret"]
     body = {
         "name": APP_NAME,
         "redirectUris": [REDIRECT_URI],
@@ -207,6 +200,15 @@ def find_or_create_app(mgmt, pid):
         "accessTokenType": "OIDC_TOKEN_TYPE_BEARER",
         "idTokenUserinfoAssertion": True,
     }
+    r = mgmt.call("POST", f"/management/v1/projects/{pid}/apps/_search", {})
+    for a in r.get("result", []):
+        if a.get("name") == APP_NAME:
+            # No reliable regenerate endpoint on this build — delete and
+            # recreate so every run ends with a fresh client secret that
+            # is stored below.
+            app_id = a["id"]
+            print(f"  app '{APP_NAME}' exists (id {app_id}) — recreating it")
+            mgmt.call("DELETE", f"/management/v1/projects/{pid}/apps/{app_id}")
     r = mgmt.call("POST", f"/management/v1/projects/{pid}/apps/oidc", body)
     print(f"  created OIDC app '{APP_NAME}' (id {r.get('appId')})")
     return r["clientId"], r["clientSecret"]
