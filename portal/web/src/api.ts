@@ -51,6 +51,52 @@ export type ChatStreamHandlers = {
   onError: (code: string, message: string) => void;
 };
 
+// Sandboxes (PORTAL_PLAN_V2 P4): the live view comes from sandboxd via
+// the BFF gateway; project_id is the Portal-side pointer.
+export type SandboxResources = { cpus: number; memory_mb: number };
+export type SandboxPreview = { url: string; port: number; status: string };
+export type Sandbox = {
+  id: string;
+  status: string;
+  image: string;
+  command?: string[];
+  resources: SandboxResources;
+  egress: string[];
+  egress_mode: string;
+  egress_deny?: string[];
+  ports: number[];
+  preview?: SandboxPreview;
+  node?: string;
+  error_message?: string;
+  last_active_at?: string;
+  created_at: string;
+  updated_at?: string;
+  project_id?: string;
+};
+export type SandboxList = {
+  configured: boolean;
+  sandboxes: Sandbox[];
+  unreachable_nodes?: string[];
+};
+export type SandboxCreateBody = {
+  image: string;
+  project_id?: string;
+  command?: string[];
+  env?: Record<string, string>;
+  resources?: { cpus: number; memory_mb: number };
+  ports?: number[];
+  egress?: { mode: string; allow?: string[] };
+  workspace?: { repo_url: string; branch?: string };
+};
+export type ExecResult = {
+  stdout: string;
+  stderr: string;
+  exit_code: number;
+  timed_out?: boolean;
+  truncated?: boolean;
+  duration_ms?: number;
+};
+
 export class ApiError extends Error {
   status: number;
   code: string;
@@ -114,6 +160,26 @@ export const api = {
     call<{ key: ApiKey; secret: string }>("POST", `/api/orgs/${orgID}/api-keys`, body),
   revokeApiKey: (orgID: string, keyID: string) =>
     call<{ key_id: string; status: string }>("DELETE", `/api/orgs/${orgID}/api-keys/${encodeURIComponent(keyID)}`),
+  // Sandboxes (P4). Streams (logs follow, metrics) are consumed with
+  // native EventSource against the same URLs — cookies ride along.
+  listSandboxes: (orgID: string, projectID?: string) =>
+    call<SandboxList>("GET", `/api/orgs/${orgID}/sandboxes${projectID ? `?project_id=${encodeURIComponent(projectID)}` : ""}`),
+  createSandbox: (orgID: string, body: SandboxCreateBody) =>
+    call<Sandbox>("POST", `/api/orgs/${orgID}/sandboxes`, body),
+  getSandbox: (orgID: string, id: string) =>
+    call<Sandbox>("GET", `/api/orgs/${orgID}/sandboxes/${encodeURIComponent(id)}`),
+  execSandbox: (orgID: string, id: string, cmd: string) =>
+    call<ExecResult>("POST", `/api/orgs/${orgID}/sandboxes/${encodeURIComponent(id)}/exec`, { cmd }),
+  startSandbox: (orgID: string, id: string) =>
+    call<void>("POST", `/api/orgs/${orgID}/sandboxes/${encodeURIComponent(id)}/start`),
+  stopSandbox: (orgID: string, id: string) =>
+    call<void>("POST", `/api/orgs/${orgID}/sandboxes/${encodeURIComponent(id)}/stop`),
+  deleteSandbox: (orgID: string, id: string) =>
+    call<void>("DELETE", `/api/orgs/${orgID}/sandboxes/${encodeURIComponent(id)}`),
+  sandboxLogsUrl: (orgID: string, id: string, opts?: { tail?: number; follow?: boolean }) =>
+    `/api/orgs/${orgID}/sandboxes/${encodeURIComponent(id)}/logs?tail=${opts?.tail ?? 500}${opts?.follow ? "&follow=true" : ""}`,
+  sandboxMetricsStreamUrl: (orgID: string, id: string) =>
+    `/api/orgs/${orgID}/sandboxes/${encodeURIComponent(id)}/metrics/stream?interval=2`,
   logout: () => call<void>("POST", "/auth/logout"),
   chatStatus: () => call<ChatStatus>("GET", "/api/chat/status"),
   listChats: (orgID: string) => call<ChatConversation[]>("GET", `/api/orgs/${orgID}/chats`),
