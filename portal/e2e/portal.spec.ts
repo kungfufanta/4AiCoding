@@ -4,7 +4,9 @@
 import { expect, test, type Page } from "@playwright/test";
 
 const SHOTS = "test-results/preview";
-const projectSuffix = process.env.PREVIEW_RUN_SUFFIX ?? "1";
+// Unique per run so reruns against a persisted compose volume never
+// hit slug/email conflicts (409).
+const runStamp = String(Date.now());
 
 async function shot(page: Page, name: string) {
   await page.screenshot({ path: `${SHOTS}/${name}.png`, fullPage: true });
@@ -27,9 +29,9 @@ test.describe.serial("portal preview", () => {
     await page.getByRole("button", { name: "New project" }).click();
     const dialog = page.getByRole("dialog");
     await expect(dialog.getByText("New project")).toBeVisible();
-    await dialog.getByPlaceholder("Agent evaluation").fill(`Preview e2e ${projectSuffix}`);
+    await dialog.getByPlaceholder("Agent evaluation").fill(`Preview e2e ${runStamp}`);
     await page.getByRole("button", { name: "Create project", exact: true }).click();
-    await expect(page.getByText(`Preview e2e ${projectSuffix}`).first()).toBeVisible();
+    await expect(page.getByText(`Preview e2e ${runStamp}`).first()).toBeVisible();
     await shot(page, "02-project-created");
   });
 
@@ -37,12 +39,12 @@ test.describe.serial("portal preview", () => {
     const slug = await gotoOrgBase(page);
     await page.goto(`/orgs/${slug}/members`);
     await expect(page.getByRole("heading", { name: "Members" })).toBeVisible();
-    await expect(page.getByText("admin@portal.local")).toBeVisible();
+    await expect(page.getByRole("cell", { name: "admin@portal.local" })).toBeVisible();
 
     await page.getByRole("button", { name: "Invite", exact: true }).click();
     const dialog = page.getByRole("dialog");
     await expect(dialog.getByText("Invite a member")).toBeVisible();
-    await dialog.getByPlaceholder("teammate@company.com").fill(`preview+${projectSuffix}@example.com`);
+    await dialog.getByPlaceholder("teammate@company.com").fill(`preview+${runStamp}@example.com`);
     await page.getByRole("button", { name: "Send invite", exact: true }).click();
     await expect(page.getByText("shown only once")).toBeVisible();
     await shot(page, "03-invite-url");
@@ -64,6 +66,9 @@ test.describe.serial("portal preview", () => {
     const slug = await gotoOrgBase(page);
     await page.getByRole("button", { name: "Toggle dark mode" }).click();
     await expect(page.locator("html")).toHaveClass(/dark/);
+    // Let the 150ms color transition settle so the screenshot shows
+    // the final palette, not a mid-fade frame.
+    await page.waitForTimeout(300);
     await shot(page, "06-dark-mode");
     await page.getByRole("button", { name: "Toggle dark mode" }).click();
     await expect(page.locator("html")).not.toHaveClass(/dark/);

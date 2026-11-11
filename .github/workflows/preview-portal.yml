@@ -29,7 +29,6 @@ jobs:
       PORTAL_ADMIN_USERNAME: admin
       PORTAL_ADMIN_PASSWORD: preview-admin-password
       PORTAL_ADMIN_EMAIL: admin@portal.local
-      PREVIEW_RUN_SUFFIX: pr-${{ github.event.pull_request.number || 'manual' }}
     steps:
       - uses: actions/checkout@v7
 

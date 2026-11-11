@@ -27,9 +27,14 @@ export default defineConfig({
     {
       name: "portal",
       testMatch: /portal\.spec\.ts/,
-      use: { ...devices["Desktop Chrome"] },
+      use: {
+        ...devices["Desktop Chrome"],
+        // storageState lives INSIDE use — a sibling key is silently
+        // ignored and every request goes out cookieless (the bug this
+        // file's git history fixes).
+        storageState: "playwright/.auth/admin.json",
+      },
       dependencies: ["setup"],
-      storageState: "playwright/.auth/admin.json",
     },
   ],
 });
