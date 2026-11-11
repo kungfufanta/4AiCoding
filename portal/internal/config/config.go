@@ -42,6 +42,22 @@ type Config struct {
 	// owner. PORTAL_DB_ROLE, default "portal_app"; set to "-" (or
 	// "") to disable.
 	DBRole string
+
+	// Bootstrap password login (owner decision 2026-11-11: local
+	// admin so the dashboard is reachable without an IdP).
+	AdminUsername string // PORTAL_ADMIN_USERNAME, default "admin"
+	// AdminPassword is the password for the bootstrap login,
+	// PORTAL_ADMIN_PASSWORD (default "admin123"; the stored hash
+	// converges to this value on every boot — that is the rotation
+	// mechanism). "-" disables the password login entirely
+	// (SSO-only, PORTAL_PLAN 1.4).
+	AdminPassword string
+	// AdminEmail is the admin user's directory email,
+	// PORTAL_ADMIN_EMAIL (default "admin@portal.local").
+	AdminEmail string
+	// PasswordLogin reports whether the local login endpoint is
+	// served. Derived from AdminPassword != "-".
+	PasswordLogin bool
 }
 
 // Parse reads the environment (from getenv, swapped in tests) and
@@ -66,6 +82,18 @@ func Parse(getenv func(string) string) (Config, error) {
 		cfg.DBRole = ""
 	default:
 		cfg.DBRole = role
+	}
+	// Bootstrap password login. Same "-" convention as DBRole: the
+	// default enables admin/admin123; "-" turns the endpoint off.
+	cfg.AdminUsername = firstNonEmpty(strings.TrimSpace(getenv("PORTAL_ADMIN_USERNAME")), "admin")
+	cfg.AdminEmail = firstNonEmpty(strings.TrimSpace(getenv("PORTAL_ADMIN_EMAIL")), "admin@portal.local")
+	switch pw := getenv("PORTAL_ADMIN_PASSWORD"); pw {
+	case "":
+		cfg.AdminPassword, cfg.PasswordLogin = "admin123", true
+	case "-":
+		cfg.AdminPassword, cfg.PasswordLogin = "", false
+	default:
+		cfg.AdminPassword, cfg.PasswordLogin = pw, true
 	}
 	if v := getenv("PORTAL_SESSION_TTL"); v != "" {
 		d, err := time.ParseDuration(v)

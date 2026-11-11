@@ -16,6 +16,8 @@ export type AuditEvent = {
   occurred_at: string;
 };
 
+export type AuthMethods = { sso: boolean; password: boolean };
+
 export class ApiError extends Error {
   status: number;
   code: string;
@@ -52,6 +54,15 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
 }
 
 export const api = {
+  // Which sign-in surfaces the server offers right now (SSO needs an
+  // OIDC provider; password is the local bootstrap admin).
+  authMethods: async (): Promise<AuthMethods> => {
+    const res = await fetch("/auth/methods");
+    if (!res.ok) throw new ApiError(res.status, "unknown", res.statusText);
+    return (await res.json()) as AuthMethods;
+  },
+  passwordLogin: (username: string, password: string) =>
+    call<{ ok: boolean }>("POST", "/auth/login", { username, password }),
   me: () => call<{ user: User; orgs: Org[] }>("GET", "/api/me"),
   createOrg: (name: string) => call<Org>("POST", "/api/orgs", { name }),
   listProjects: (orgID: string) => call<Project[]>("GET", `/api/orgs/${orgID}/projects`),

@@ -22,6 +22,7 @@ import (
 	"github.com/tastyeffectco/sandboxd/portal/internal/httpapi"
 	"github.com/tastyeffectco/sandboxd/portal/internal/logging"
 	"github.com/tastyeffectco/sandboxd/portal/internal/oidcauth"
+	"github.com/tastyeffectco/sandboxd/portal/internal/passwordauth"
 	"github.com/tastyeffectco/sandboxd/portal/internal/session"
 	"github.com/tastyeffectco/sandboxd/portal/internal/webfs"
 )
@@ -53,6 +54,16 @@ func run() error {
 	if err := db.Migrate(ctx, adminPool, log); err != nil {
 		adminPool.Close()
 		return fmt.Errorf("migrate: %w", err)
+	}
+	// Bootstrap password login (owner decision 2026-11-11): the
+	// local admin is ensured with the configured password on every
+	// boot, so PORTAL_ADMIN_PASSWORD rotation is just a redeploy.
+	if cfg.PasswordLogin {
+		if err := passwordauth.EnsureBootstrap(ctx, adminPool, log,
+			cfg.AdminUsername, cfg.AdminPassword, cfg.AdminEmail); err != nil {
+			adminPool.Close()
+			return fmt.Errorf("bootstrap password login: %w", err)
+		}
 	}
 	adminPool.Close()
 
@@ -86,6 +97,7 @@ func run() error {
 		Pool:          pool,
 		Sessions:      session.New(pool, cfg.SessionTTL),
 		OIDC:          provider,
+		PasswordLogin: cfg.PasswordLogin,
 		PublicURL:     cfg.PublicURL,
 		SecureCookies: strings.HasPrefix(cfg.PublicURL, "https://"),
 		SessionTTL:    cfg.SessionTTL,

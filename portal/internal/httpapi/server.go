@@ -34,6 +34,11 @@ type Server struct {
 	// OIDC is nil until SSO is configured; /auth/login then answers
 	// 503 sso_not_configured.
 	OIDC *oidcauth.Provider
+	// PasswordLogin enables the local username/password sign-in
+	// (POST /auth/login) and surfaces it on GET /auth/methods. The
+	// bootstrap admin is created at boot by passwordauth when set
+	// (cmd/portal main).
+	PasswordLogin bool
 
 	PublicURL     string // e.g. https://app.example.com (no trailing slash)
 	SecureCookies bool   // derived in main from PublicURL's scheme
@@ -57,8 +62,12 @@ func (s *Server) Handler() *http.ServeMux {
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("GET /readyz", s.handleReadyz)
 
-	// Auth flow (browser redirects, no session yet).
+	// Auth flow (browser redirects, no session yet). GET /auth/login
+	// is the SSO redirect; POST /auth/login is the local
+	// username/password sign-in (both exist side by side).
 	mux.Handle("GET /auth/login", http.HandlerFunc(s.handleLogin))
+	mux.Handle("POST /auth/login", http.HandlerFunc(s.handlePasswordLogin))
+	mux.Handle("GET /auth/methods", http.HandlerFunc(s.handleAuthMethods))
 	mux.Handle("GET /auth/callback", http.HandlerFunc(s.handleCallback))
 	mux.Handle("POST /auth/logout", s.withSession(s.handleLogout))
 
