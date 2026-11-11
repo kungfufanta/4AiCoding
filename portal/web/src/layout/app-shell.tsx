@@ -15,6 +15,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Check,
   ChevronDown,
+  Box,
   FolderKanban,
   KeyRound,
   LayoutGrid,
@@ -155,6 +156,7 @@ function SidebarContent({ org }: { org: Org }) {
   const items = [
     { to: `${base}/chat`, label: "Chat", icon: MessageSquare },
     { to: `${base}/projects`, label: "Projects", icon: FolderKanban },
+    { to: `${base}/sandboxes`, label: "Sandboxes", icon: Box },
     { to: `${base}/members`, label: "Members", icon: Users },
     { to: `${base}/api-keys`, label: "API keys", icon: KeyRound },
     { to: `${base}/audit`, label: "Audit", icon: ScrollText },

@@ -126,6 +126,46 @@ test.describe.serial("portal preview", () => {
     await shot(page, "12-api-keys-revoked");
   });
 
+  test("sandboxes — create, exec output, delete with confirm (P4)", async ({ page }) => {
+    const slug = await gotoOrgBase(page);
+    await page.goto(`/orgs/${slug}/sandboxes`);
+    await expect(page.getByRole("heading", { name: "Sandboxes" })).toBeVisible();
+    await shot(page, "13-sandboxes");
+
+    // Create a sandbox on the profile's allowlisted e2e image.
+    await page.getByRole("button", { name: "New sandbox" }).first().click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog.getByText("New sandbox")).toBeVisible();
+    await dialog.getByPlaceholder("ubuntu:24.04").fill("sandboxd-e2e:ci");
+    await dialog.getByRole("button", { name: "Create sandbox", exact: true }).click();
+
+    // The dialog navigates to the detail page; the ULID id heads it and
+    // the status pill settles on running.
+    await expect(page.getByRole("heading", { name: /0[0-9A-Z]{10,}/ })).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(page.getByText("running").first()).toBeVisible({ timeout: 30_000 });
+    await page.waitForTimeout(300);
+    await shot(page, "14-sandbox-detail");
+
+    // Exec tab: run a command, expect its output plus the exit badge.
+    await page.getByRole("tab", { name: "Exec" }).click();
+    await page.getByLabel("Command").fill("echo preview-e2e-ok");
+    await page.getByRole("button", { name: "Run", exact: true }).click();
+    await expect(page.getByText("preview-e2e-ok")).toBeVisible({ timeout: 60_000 });
+    await expect(page.getByText("exit 0")).toBeVisible();
+    await shot(page, "15-sandbox-exec");
+
+    // Delete goes through a confirm dialog that spells out the blast
+    // radius, then lands back on the list.
+    await page.getByRole("button", { name: "Delete", exact: true }).click();
+    const confirmDialog = page.getByRole("dialog");
+    await expect(confirmDialog.getByText("Delete this sandbox?")).toBeVisible();
+    await confirmDialog.getByRole("button", { name: "Delete sandbox", exact: true }).click();
+    await expect(page).toHaveURL(new RegExp(`/orgs/${slug}/sandboxes$`), { timeout: 30_000 });
+    await shot(page, "16-sandbox-list-after-delete");
+  });
+
   test("invite page handles an unknown token", async ({ page }) => {
     await page.goto("/invites/00000000-0000-0000-0000-000000000000?token=not-a-real-token");
     await expect(page.getByText("Your invitation")).toBeVisible();

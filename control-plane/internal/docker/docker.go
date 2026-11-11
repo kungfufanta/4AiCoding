@@ -20,6 +20,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // ErrNotFound is returned when `docker inspect` reports the target
@@ -322,6 +323,231 @@ func (c *Client) Exec(ctx context.Context, name string, cmd []string) (ExecResul
 		return res, nil
 	}
 	return res, err
+}
+
+// --- exec v2 (AGENT_PLAN A0) -----------------------------------------
+
+// ExecV2Request is the extended exec call: working directory, extra env,
+// stdin, a hard timeout (enforced INSIDE the container by the coreutils
+// `timeout` wrapper: at expiry the child's whole process group gets TERM,
+// a TERM-ignoring command escalates to SIGKILL after kill-after, and the
+// wrapper exits 124 — timed_out in the result), and a bounded output
+// buffer (head + tail kept, middle dropped — the control plane never
+// buffers unbounded output in RAM).
+type ExecV2Request struct {
+	Cmd []string
+	// WorkDir is passed as docker exec -w. "" = container default.
+	WorkDir string
+	// Env entries passed as docker exec -e K=V. The API layer validates
+	// them (no PATH/HOME/LD_* overrides); this layer only encodes.
+	Env []string
+	// Stdin (optional) is fed to `docker exec -i`. nil = no stdin.
+	Stdin []byte
+	// TimeoutS > 0 wraps the command in `timeout --kill-after=2 <n>` so
+	// expiry signals the child's whole process group inside the container
+	// (TERM, then SIGKILL for a TERM-ignoring command) and the wrapper
+	// exits 124 — the TimedOut marker.
+	TimeoutS int
+	// MaxOutputBytes > 0 bounds stdout+stderr independently: over the
+	// limit the head and tail of the stream are kept (75%/25%) and
+	// Truncated reports it. 0 = unbounded (legacy behaviour).
+	MaxOutputBytes int64
+}
+
+// ExecV2Result adds timeout/truncation/duration to ExecResult.
+type ExecV2Result struct {
+	Stdout     string
+	Stderr     string
+	ExitCode   int
+	TimedOut   bool // the in-container timeout wrapper fired (exit 124)
+	Truncated  bool // output exceeded MaxOutputBytes (head+tail kept)
+	DurationMs int64
+}
+
+// execTimeoutExit is GNU timeout's "command timed out" exit code.
+const execTimeoutExit = 124
+
+// ExecV2 runs a non-interactive command with the v2 semantics above. The
+// argv without any v2 fields is identical to Exec's, so a plain
+// {cmd} request behaves byte-for-byte like the legacy path.
+func (c *Client) ExecV2(ctx context.Context, name string, req ExecV2Request) (ExecV2Result, error) {
+	args := []string{"exec"}
+	if req.Stdin != nil {
+		args = append(args, "-i")
+	}
+	if req.WorkDir != "" {
+		args = append(args, "-w", req.WorkDir)
+	}
+	for _, e := range req.Env {
+		args = append(args, "-e", e)
+	}
+	args = append(args, name)
+	inner := req.Cmd
+	if req.TimeoutS > 0 {
+		// `timeout DURATION CMD…` stops option parsing at the first
+		// non-option argument (the duration); everything after it is the
+		// command. At expiry the child's process group gets TERM, a
+		// TERM-ignorer escalates to SIGKILL 2s later, exit 124.
+		args = append(args, "timeout", "--kill-after=2", strconv.Itoa(req.TimeoutS))
+	}
+	args = append(args, inner...)
+	started := time.Now()
+	cmdEx := exec.CommandContext(ctx, c.Bin, args...)
+	cmdEx.Stdin = stdinOrEmpty(req.Stdin)
+	var stdout, stderr bytes.Buffer
+	var outTrunc, errTrunc bool
+	var outW, errW *headTailWriter
+	if req.MaxOutputBytes > 0 {
+		outW = newHeadTailWriter(&stdout, req.MaxOutputBytes, &outTrunc)
+		errW = newHeadTailWriter(&stderr, req.MaxOutputBytes, &errTrunc)
+		cmdEx.Stdout = outW
+		cmdEx.Stderr = errW
+	} else {
+		cmdEx.Stdout = &stdout
+		cmdEx.Stderr = &stderr
+	}
+	err := cmdEx.Run()
+	if outW != nil {
+		outW.flushTail()
+	}
+	if errW != nil {
+		errW.flushTail()
+	}
+	res := ExecV2Result{
+		Stdout:     stdout.String(),
+		Stderr:     stderr.String(),
+		ExitCode:   0,
+		Truncated:  outTrunc || errTrunc,
+		DurationMs: time.Since(started).Milliseconds(),
+	}
+	if err == nil {
+		return res, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		res.ExitCode = exitErr.ExitCode()
+		res.TimedOut = req.TimeoutS > 0 && res.ExitCode == execTimeoutExit
+		return res, nil
+	}
+	return res, err
+}
+
+// stdinOrEmpty returns a reader for the exec stdin. With -i, docker always
+// reads stdin; an empty non-nil reader closes it immediately.
+func stdinOrEmpty(in []byte) io.Reader {
+	if in == nil {
+		return bytes.NewReader(nil)
+	}
+	return bytes.NewReader(in)
+}
+
+// ExecV2Stream is the streaming form of ExecV2 for `?stream=ndjson`:
+// stdout/stderr arrive as live readers (no control-plane buffering) and
+// wait() collects the exit status after both readers hit EOF. The timeout
+// wrapper and env/workdir/stdin handling are identical to ExecV2.
+// MaxOutputBytes is ignored here — streaming IS the unbounded-output
+// escape hatch; the API layer frames the bytes as ndjson lines.
+func (c *Client) ExecV2Stream(ctx context.Context, name string, req ExecV2Request) (
+	stdout, stderr io.ReadCloser, wait func() (ExecV2Result, error), err error,
+) {
+	args := []string{"exec"}
+	if req.Stdin != nil {
+		args = append(args, "-i")
+	}
+	if req.WorkDir != "" {
+		args = append(args, "-w", req.WorkDir)
+	}
+	for _, e := range req.Env {
+		args = append(args, "-e", e)
+	}
+	args = append(args, name)
+	if req.TimeoutS > 0 {
+		args = append(args, "timeout", "--kill-after=2", strconv.Itoa(req.TimeoutS))
+	}
+	args = append(args, req.Cmd...)
+	cmdEx := exec.CommandContext(ctx, c.Bin, args...)
+	cmdEx.Stdin = stdinOrEmpty(req.Stdin)
+	stdout, err = cmdEx.StdoutPipe()
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	stderr, err = cmdEx.StderrPipe()
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	started := time.Now()
+	if err := cmdEx.Start(); err != nil {
+		return nil, nil, nil, err
+	}
+	wait = func() (ExecV2Result, error) {
+		res := ExecV2Result{ExitCode: 0, DurationMs: time.Since(started).Milliseconds()}
+		err := cmdEx.Wait()
+		if err == nil {
+			return res, nil
+		}
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			res.ExitCode = exitErr.ExitCode()
+			res.TimedOut = req.TimeoutS > 0 && res.ExitCode == execTimeoutExit
+			return res, nil
+		}
+		return res, err
+	}
+	return stdout, stderr, wait, nil
+}
+
+// headTailWriter keeps at most `max` bytes: the FIRST max bytes of the
+// stream (the head) and, once the limit is exceeded, the trailing max/4
+// bytes (the tail, flushed after a marker when the process exits). RAM
+// per stream is bounded by max + max/4 regardless of output size.
+type headTailWriter struct {
+	dst       *bytes.Buffer
+	max       int64
+	headLen   int64 // bytes currently kept in dst (the head)
+	written   int64 // total bytes seen
+	truncated *bool
+	tail      []byte
+}
+
+func newHeadTailWriter(dst *bytes.Buffer, max int64, truncated *bool) *headTailWriter {
+	return &headTailWriter{dst: dst, max: max, truncated: truncated}
+}
+
+func (w *headTailWriter) Write(p []byte) (int, error) {
+	n := len(p)
+	w.written += int64(n)
+	if room := w.max - w.headLen; room > 0 {
+		take := int64(len(p))
+		if take > room {
+			take = room
+		}
+		w.dst.Write(p[:take])
+		w.headLen += take
+		p = p[take:]
+	}
+	if len(p) > 0 {
+		*w.truncated = true
+		keep := w.max / 4
+		if keep <= 0 {
+			keep = 1
+		}
+		w.tail = append(w.tail, p...)
+		if int64(len(w.tail)) > keep {
+			w.tail = w.tail[int64(len(w.tail))-keep:]
+		}
+	}
+	return n, nil
+}
+
+// flushTail appends the kept tail after a marker. Call exactly once after
+// the process exits.
+func (w *headTailWriter) flushTail() {
+	if !*w.truncated {
+		return
+	}
+	w.dst.WriteString("\n-- output truncated --\n")
+	w.dst.Write(w.tail)
+	w.tail = nil
 }
 
 // Logs streams the container's stdout+stderr (`docker logs`), merged in the

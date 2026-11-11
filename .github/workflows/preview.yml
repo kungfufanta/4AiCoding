@@ -29,7 +29,19 @@ jobs:
 
       - name: install browser smoke deps
         working-directory: scripts/preview
-        run: npm install --no-audit --no-fund && npx playwright install --with-deps chromium
+        # --with-deps apt-installs browser libraries; the runner's DNS
+        # occasionally fails mid-apt (seen 2026-11-11 twice), so retry
+        # the whole install once before failing the job.
+        run: |
+          ok=""
+          for i in 1 2; do
+            if npm install --no-audit --no-fund && npx playwright install --with-deps chromium; then
+              ok=1; break
+            fi
+            [ "$i" = 1 ] && echo "install failed — retrying once" && sleep 10
+          done
+          [ -n "$ok" ] || { echo "browser deps install failed twice"; exit 1; }
+          npx playwright --version
 
       - name: build e2e sandbox image
         run: docker build -t sandboxd-e2e:ci scripts/e2e

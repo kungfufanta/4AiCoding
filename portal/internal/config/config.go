@@ -68,6 +68,25 @@ type Config struct {
 	LLMModel   string // PORTAL_DEFAULT_LLM_MODEL, default glm-4.6
 	LLMFlavor  string // PORTAL_DEFAULT_LLM_FLAVOR: webhub | generic
 	LLMAPIKey  string // PORTAL_DEFAULT_LLM_API_KEY (secret; never logged)
+	// SandboxdURL is the base URL of the sandboxd control plane the
+	// gateway proxies to (PORTAL_SANDBOXD_URL, e.g.
+	// http://sandboxd:9191). Empty (with SandboxdAPIKey) disables the
+	// whole S3 surface: /v1/sandboxes* answers 503 and the dashboard
+	// Sandboxes page reports "not connected" instead of listing.
+	SandboxdURL string
+	// SandboxdAPIKey is the sandboxd API key the gateway calls with
+	// (PORTAL_SANDBOXD_API_KEY). In production this key carries the
+	// require_external flag (P3a) so an untagged create is impossible;
+	// a dev sandboxd built without its auth store ignores the header.
+	SandboxdAPIKey string
+	// SandboxdWebhookSecret verifies X-Sandboxd-Signature on the
+	// lifecycle webhook (PORTAL_SANDBOXD_WEBHOOK_SECRET). Empty
+	// disables the webhook receiver (404).
+	SandboxdWebhookSecret string
+	// SandboxdTimeout bounds one gateway call to sandboxd,
+	// PORTAL_SANDBOXD_TIMEOUT (default 30s; the streaming proxies and
+	// long execs are exempt — they honor the request context).
+	SandboxdTimeout time.Duration
 }
 
 // DefaultLLMBaseURL is the WebHub endpoint chosen as the free default
@@ -137,6 +156,17 @@ func Parse(getenv func(string) string) (Config, error) {
 			return cfg, fmt.Errorf("PORTAL_SESSION_TTL: invalid duration %q", v)
 		}
 		cfg.SessionTTL = d
+	}
+	cfg.SandboxdURL = strings.TrimRight(strings.TrimSpace(getenv("PORTAL_SANDBOXD_URL")), "/")
+	cfg.SandboxdAPIKey = strings.TrimSpace(getenv("PORTAL_SANDBOXD_API_KEY"))
+	cfg.SandboxdWebhookSecret = getenv("PORTAL_SANDBOXD_WEBHOOK_SECRET")
+	cfg.SandboxdTimeout = 30 * time.Second
+	if v := getenv("PORTAL_SANDBOXD_TIMEOUT"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d <= 0 {
+			return cfg, fmt.Errorf("PORTAL_SANDBOXD_TIMEOUT: invalid duration %q", v)
+		}
+		cfg.SandboxdTimeout = d
 	}
 	if cfg.DatabaseURL == "" {
 		return cfg, errors.New("PORTAL_DATABASE_URL is required (postgres://user:pass@host:5432/db)")

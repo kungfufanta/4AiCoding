@@ -11,7 +11,9 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/oklog/ulid/v2"
@@ -176,12 +178,33 @@ type getResp struct {
 type execReq struct {
 	Cmd    []string `json:"cmd"`
 	Stream bool     `json:"stream,omitempty"`
+	// --- exec v2 (AGENT_PLAN A0) — all optional -----------------------
+	// Cwd/Env/Stdin/TimeoutS/MaxOutputBytes mirror the v1 body; NDJSON is
+	// set by the v1 layer for ?stream=ndjson. An internal request with
+	// only Cmd keeps the exact legacy docker-exec behaviour (no timeout
+	// wrapper, unbounded buffers).
+	Cwd            string            `json:"cwd,omitempty"`
+	Env            map[string]string `json:"env,omitempty"`
+	Stdin          string            `json:"stdin,omitempty"`
+	TimeoutS       int               `json:"timeout_s,omitempty"`
+	MaxOutputBytes int64             `json:"max_output_bytes,omitempty"`
+	NDJSON         bool              `json:"ndjson,omitempty"`
 }
 
 type execResp struct {
 	Stdout   string `json:"stdout"`
 	Stderr   string `json:"stderr"`
 	ExitCode int    `json:"exit_code"`
+	// exec v2 additions (always present; false/0 for legacy requests).
+	TimedOut   bool  `json:"timed_out"`
+	Truncated  bool  `json:"truncated"`
+	DurationMs int64 `json:"duration_ms"`
+}
+
+// hasV2Fields reports whether the request opted into v2 semantics.
+func (r execReq) hasV2Fields() bool {
+	return r.Cwd != "" || len(r.Env) > 0 || r.Stdin != "" ||
+		r.TimeoutS > 0 || r.MaxOutputBytes > 0 || r.NDJSON
 }
 
 func toRespRow(sb *store.Sandbox) sandboxResp {
@@ -924,15 +947,134 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	if req.NDJSON {
+		s.execNDJSON(w, r, id, req)
+		return
+	}
 	startExec := time.Now()
+	v2 := docker.ExecV2Request{
+		Cmd:            req.Cmd,
+		WorkDir:        req.Cwd,
+		Env:            envEntries(req.Env),
+		Stdin:          stdinBytes(req.Stdin),
+		TimeoutS:       req.TimeoutS,
+		MaxOutputBytes: req.MaxOutputBytes,
+	}
+	var res docker.ExecV2Result
 	var execErr error
-	res, execErr := s.Docker.Exec(r.Context(), "s-"+id, req.Cmd)
+	if req.hasV2Fields() {
+		res, execErr = s.Docker.ExecV2(r.Context(), "s-"+id, v2)
+	} else {
+		// Legacy request: identical argv and buffers as before v2 existed.
+		legacy, lerr := s.Docker.Exec(r.Context(), "s-"+id, req.Cmd)
+		res = docker.ExecV2Result{Stdout: legacy.Stdout, Stderr: legacy.Stderr, ExitCode: legacy.ExitCode}
+		execErr = lerr
+	}
 	metrics.ObserveDocker("exec", startExec, &execErr)
 	if execErr != nil {
 		writeErr(w, http.StatusInternalServerError, "docker exec: "+execErr.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, execResp{Stdout: res.Stdout, Stderr: res.Stderr, ExitCode: res.ExitCode})
+	writeJSON(w, http.StatusOK, execResp{
+		Stdout: res.Stdout, Stderr: res.Stderr, ExitCode: res.ExitCode,
+		TimedOut: res.TimedOut, Truncated: res.Truncated, DurationMs: res.DurationMs,
+	})
+}
+
+// envEntries flattens the env map into K=V entries for docker exec -e.
+func envEntries(env map[string]string) []string {
+	if len(env) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make([]string, 0, len(env))
+	for _, k := range keys {
+		out = append(out, k+"="+env[k])
+	}
+	return out
+}
+
+// stdinBytes converts the JSON stdin string into the exec stdin bytes.
+// An absent (or empty) stdin stays nil, so docker exec gets no -i flag —
+// matching the legacy behaviour for requests without stdin.
+func stdinBytes(in string) []byte {
+	if in == "" {
+		return nil
+	}
+	return []byte(in)
+}
+
+// execNDJSON streams a v2 exec as newline-delimited JSON: one
+// {"stream":"stdout"|"stderr","data":"…"} line per chunk and a final
+// {"exit_code":…,"timed_out":…,"duration_ms":…} line. Output is never
+// buffered in the control plane — chunks are flushed as they arrive.
+func (s *Server) execNDJSON(w http.ResponseWriter, r *http.Request, id string, req execReq) {
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	flusher, _ := w.(http.Flusher)
+	flush := func() {
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+	enc := json.NewEncoder(w)
+	// stdout and stderr are pumped by two goroutines; the ResponseWriter
+	// and encoder are not safe for concurrent use, so serialize emits.
+	var mu sync.Mutex
+	emit := func(stream, data string) {
+		mu.Lock()
+		defer mu.Unlock()
+		_ = enc.Encode(map[string]string{"stream": stream, "data": data})
+		flush()
+	}
+	stdout, stderr, wait, err := s.Docker.ExecV2Stream(r.Context(), "s-"+id, docker.ExecV2Request{
+		Cmd:      req.Cmd,
+		WorkDir:  req.Cwd,
+		Env:      envEntries(req.Env),
+		Stdin:    stdinBytes(req.Stdin),
+		TimeoutS: req.TimeoutS,
+	})
+	if err != nil {
+		_ = enc.Encode(map[string]any{"error": "docker exec: " + err.Error()})
+		_ = enc.Encode(map[string]any{"exit_code": -1})
+		flush()
+		return
+	}
+	defer stdout.Close()
+	defer stderr.Close()
+	var wg sync.WaitGroup
+	pump := func(rc io.ReadCloser, name string) {
+		defer wg.Done()
+		buf := make([]byte, 32*1024)
+		for {
+			n, err := rc.Read(buf)
+			if n > 0 {
+				emit(name, string(buf[:n]))
+			}
+			if err != nil {
+				return
+			}
+		}
+	}
+	wg.Add(2)
+	go pump(stdout, "stdout")
+	go pump(stderr, "stderr")
+	wg.Wait()
+	res, werr := wait()
+	if werr != nil {
+		_ = enc.Encode(map[string]any{"error": werr.Error()})
+	}
+	_ = enc.Encode(map[string]any{
+		"exit_code": res.ExitCode, "timed_out": res.TimedOut,
+		"duration_ms": res.DurationMs,
+	})
+	flush()
 }
 
 // --- POST /sandbox/{id}/keepalive -----------------------------------
