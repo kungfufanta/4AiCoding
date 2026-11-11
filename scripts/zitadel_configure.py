@@ -231,71 +231,83 @@ def search_user(mgmt, user_name):
 
 def create_human_user(mgmt, username, first_name, last_name, email,
                       password):
-    """Try the endpoints this Zitadel build may expose for creating a
-    human user, in order."""
-    bodies = [
-        # v2 API "AddHumanUser"
-        (f"{ISSUER}/v2/users/human", {
-            "username": username,
-            "organization": {},
-            "profile": {"givenName": first_name, "familyName": last_name},
-            "email": {"email": email, "isEmailVerified": True},
-            "password": {"password": password, "changeRequired": False},
-        }),
-        # older management v1 import
-        (f"{ISSUER}/management/v1/users/_import", {
-            "userName": username,
-            "profile": {"firstName": first_name, "lastName": last_name,
-                        "displayName": f"{first_name} {last_name}",
-                        "preferredLanguage": "en"},
-            "email": {"email": email, "isEmailVerified": True},
-            "password": password,
-            "passwordChangeRequired": False,
-        }),
-        # older management v1 human create
-        (f"{ISSUER}/management/v1/users/human", {
-            "userName": username,
-            "profile": {"firstName": first_name, "lastName": last_name},
-            "email": {"email": email, "isEmailVerified": True},
-            "password": password,
-            "passwordChangeRequired": False,
-        }),
+    """Create a human user with a verified email via the v2 API, falling
+    back to older endpoint shapes. Returns the user id."""
+    base = {
+        "username": username,
+        "profile": {"givenName": first_name, "familyName": last_name},
+        "password": {"password": password, "changeRequired": False},
+    }
+    attempts = [
+        dict(base, organization={}, email={"email": email, "isVerified": True}),
+        dict(base, organization={}, email={"email": email, "isEmailVerified": True}),
+        dict(base, organization={}, email={"email": email}),
     ]
     last_err = None
-    for url, body in bodies:
+    for body in attempts:
         try:
-            r = api("POST", url, body=body, token=mgmt.token)
-            return r.get("userId") or r.get("id", "")
+            r = api("POST", f"{ISSUER}/v2/users/human", body=body, token=mgmt.token)
+            uid = r.get("userId") or r.get("id", "")
+            ensure_email_verified(mgmt, uid, email)
+            return uid
         except RuntimeError as e:
             last_err = e
-            print(f"  create user via {url.split('.vn')[1]} failed: {str(e)[:110]}")
+            print(f"  create user attempt failed: {str(e)[:130]}")
     raise RuntimeError(f"could not create human user {username}: {last_err}")
 
 
-def set_password(mgmt, uid, password):
+def user_email_verified(mgmt, uid):
+    """True when the user's email reads back verified."""
+    try:
+        r = mgmt.call("GET", f"/v2/users/{uid}")
+        human = ((r.get("user") or {}).get("human") or {})
+        email = human.get("email") or {}
+        return bool(email.get("isVerified"))
+    except RuntimeError:
+        return True  # can't read it — don't block on our own check
+
+
+def ensure_email_verified(mgmt, uid, email):
+    if user_email_verified(mgmt, uid):
+        return
+    print("  email not verified — setting it explicitly")
     for path, body in (
-        (f"/v2/users/{uid}/password",
-         {"password": password, "changeRequired": False}),
-        (f"/management/v1/users/{uid}/password",
-         {"password": password, "noVerification": True}),
+        (f"/v2/users/{uid}/email", {"email": email, "isVerified": True}),
+        (f"/v2/users/{uid}/email", {"email": email, "isEmailVerified": True}),
+        (f"/management/v1/users/{uid}/email", {"email": email, "isVerified": True}),
     ):
         try:
             mgmt.call("POST", path, body)
+            if user_email_verified(mgmt, uid):
+                print("  email verified OK")
+                return
+        except RuntimeError as e:
+            print(f"  set email via {path} failed: {str(e)[:110]}")
+    print("  WARNING: could not verify the email — login may ask for a "
+          "verification code that cannot be delivered (no SMTP)")
+
+
+def delete_user(mgmt, uid):
+    for path in (f"/management/v1/users/{uid}", f"/v2/users/{uid}"):
+        try:
+            mgmt.call("DELETE", path)
             return True
         except RuntimeError as e:
-            print(f"  set password via {path} failed: {str(e)[:110]}")
+            print(f"  delete user via {path} failed: {str(e)[:110]}")
     return False
 
 
 def ensure_demo_user(mgmt):
     uid = search_user(mgmt, DEMO_USER)
     if uid:
-        print(f"  demo user '{DEMO_USER}' exists (id {uid}) — resetting password")
-        if set_password(mgmt, uid, DEMO_PASSWORD):
-            print("  demo user password reset OK")
-        else:
-            print("  demo user password NOT reset (continuing)")
-        return
+        # The v2 password-reset endpoint answers 2xx but stores a hash the
+        # given password does not verify against, so never use it: delete
+        # and recreate through the creation path (which is known good).
+        print(f"  demo user '{DEMO_USER}' exists (id {uid}) — deleting and recreating")
+        if not delete_user(mgmt, uid):
+            print("  WARNING: could not delete the existing demo user; "
+                  "its password may be stale")
+            return
     uid = create_human_user(mgmt, DEMO_USER, "Portal", "Demo", DEMO_EMAIL,
                             DEMO_PASSWORD)
     print(f"  created demo user '{DEMO_USER}' (id {uid})")
