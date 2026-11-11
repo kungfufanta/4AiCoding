@@ -19,7 +19,7 @@ File theo dõi cho kế hoạch [`docs/PORTAL_PLAN_V2.md`](PORTAL_PLAN_V2.md). C
 
 | M | Nội dung | Trạng thái | PR | Ghi chú |
 |---|---|---|---|---|
-| A0 | sandboxd: exec v2 + files API (chỉ control-plane) | 🟨 Chờ review | (PR này) | Branch `agent-a0-exec-v2-files` — z.ai làm; exec v2 + files API + scope `sandboxes:files` + openapi + e2e |
+| A0 | sandboxd: exec v2 + files API (chỉ control-plane) | 🟨 Chờ review | #41 | Branch `agent-a0-exec-v2-files` — z.ai làm; exec v2 + files API + scope `sandboxes:files` + openapi + e2e |
 | A1 | Portal gateway cho exec v2 + files | ⬜ | | Cần P4 |
 | A2 | Model connections (Portal) | ⬜ | | Cần P2 (đủ); song song A0/A1 — WebHub free mặc định `glm-4.6` (§5.2.1); spike đầu A2: tool calling khi streaming |
 | A3 | Agent runtime + API | ⬜ | | Cần A0+A1+A2 |
@@ -81,7 +81,7 @@ Việc còn mở (không chặn merge):
 | 2026-11-11 | PR #39 cập nhật: WebHub là LLM free mặc định, model `glm-4.6` (mục 5.2.1) | Mỗi org 1 key `wh_` riêng (`key_mode=per_org`), không bao giờ dùng chung; `X-WebHub-User` = UUID (`u_<user_uuid>`, không gửi email); `agent_sessions.id` → `X-Session-Id`, `run_id:step` → `X-Request-Id`; memory tắt trong vòng lặp tool (`X-WebHub-Memory: 0`), chỉ lượt LLM đầu mỗi run bật; Portal tự ghi hồ sơ khách + `finish.summary` qua `POST /api/memory`; KHÔNG commit key nào vào repo (kể cả demo key) |
 | 2026-11-11 | Câu hỏi mở còn chờ | Q14 (anh/hub trả lời): hub có API tạo/thu hồi key `wh_` để Portal tự cấp khi tạo org không? Key cấp theo org hay theo project? |
 | 2026-11-11 | Spike đầu A2 (chưa kiểm chứng) | glm-4.6 qua hub có hỗ trợ `tools`/`tool_choice` và trả `tool_calls` delta khi `stream:true` không — nếu không phải có chế độ dự phòng (JSON trong text) |
-| 2026-11-11 | A0 trên branch `agent-a0-exec-v2-files` (z.ai) | exec v2 (`timeout_s`/`cwd`/`env`/`stdin`/`max_output_bytes`/`timed_out`/`truncated`/`duration_ms`, `?stream=ndjson`, policy `exec.max_timeout_s`); files API 5 route (list/read/write/delete/move) + scope `sandboxes:files`; path safety: safeJoin + realpathWithin + noSymlinkComponents, chặn `.ssh`; go test xanh + `-race` sạch; openapi + e2e cập nhật |
+| 2026-11-11 | A0 trên branch `agent-a0-exec-v2-files` (z.ai) → PR #41 | exec v2 (`timeout_s`/`cwd`/`env`/`stdin`/`max_output_bytes`/`timed_out`/`truncated`/`duration_ms`, `?stream=ndjson`, policy `exec.max_timeout_s`); files API 5 route (list/read/write/delete/move) + scope `sandboxes:files`; path safety: safeJoin + realpathWithin + noSymlinkComponents, chặn `.ssh`; go test xanh + `-race` sạch; openapi + e2e cập nhật |
 
 ## Ghi chú cho lần sau
 
