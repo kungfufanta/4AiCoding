@@ -1,0 +1,48 @@
+# RBAC for the Portal deployer ServiceAccount (deploy-k3s-portal.yml), namespace 4aicoding only.
+# Applied by .github/workflows/k3s-portal-rbac.yml over SSH (needs cluster admin).
+# Grants nothing cluster-scoped.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: 4aicoding-portal-deployer
+  namespace: 4aicoding
+rules:
+  # helm chart deploy/helm/portal: Deployment, Service, ServiceAccount, Secret, Ingress
+  # (helm also stores release state in Secrets)
+  - apiGroups: [""]
+    resources: [services, serviceaccounts, secrets]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [apps]
+    resources: [deployments, replicasets]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [networking.k8s.io]
+    resources: [ingresses]
+    verbs: [get, list, watch, create, update, patch, delete]
+  # helm --wait, the pod-hardening check, the smoke pod, logs on failure
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch, create, delete]
+  - apiGroups: [""]
+    resources: [pods/log, pods/attach]
+    verbs: [get, create]
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [get, list, watch]
+  # the TLS certificate check (cert-manager)
+  - apiGroups: [cert-manager.io]
+    resources: [certificates]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: 4aicoding-portal-deployer
+  namespace: 4aicoding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: 4aicoding-portal-deployer
+subjects:
+  - kind: ServiceAccount
+    name: 4aicoding-github-deployer
+    namespace: 4aicoding
