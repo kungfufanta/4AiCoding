@@ -29,15 +29,7 @@ export function LoginPage({ setupNeeded, onLogin }: { setupNeeded: boolean; onLo
   return (
     <div className="login">
       <form className="card" onSubmit={submit}>
-        <div className="login-brand">
-          <span className="brand-mark" aria-hidden="true">▣</span>
-          <div>
-            <h1>4AiCoding</h1>
-            <p className="muted" style={{ margin: 0 }}>
-              Sandbox Console
-            </p>
-          </div>
-        </div>
+        <h1>4AiCoding</h1>
         <p className="muted">
           {setupNeeded ? "No users yet. Create the first admin account." : "Sign in to the sandbox console."}
         </p>
