@@ -150,6 +150,15 @@ func (s *Server) Handler() *http.ServeMux {
 	mux.Handle("GET /v1/usage", http.HandlerFunc(s.handleV1Usage))
 	// P5: Usage page BFF (dashboard cookie + CSRF, member role).
 	mux.Handle("GET /api/orgs/{orgID}/usage", s.withSession(http.HandlerFunc(s.handleBFFUsage)))
+	// A1: workspace files gateway (PORTAL_PLAN 5; AGENT_PLAN A0/A1).
+	// Each route checks keyOwnsSandbox (org + project for pinned keys)
+	// and the Portal scope `sandboxes:files`, then proxies to sandboxd
+	// byte-for-byte. Path safety is enforced at sandboxd (A0 review #47).
+	mux.Handle("GET /v1/sandboxes/{id}/files", http.HandlerFunc(s.handleV1ListFiles))
+	mux.Handle("GET /v1/sandboxes/{id}/files/content", http.HandlerFunc(s.handleV1FileContent))
+	mux.Handle("PUT /v1/sandboxes/{id}/files/content", http.HandlerFunc(s.handleV1PutFile))
+	mux.Handle("DELETE /v1/sandboxes/{id}/files", http.HandlerFunc(s.handleV1DeleteFile))
+	mux.Handle("POST /v1/sandboxes/{id}/files/move", http.HandlerFunc(s.handleV1MoveFile))
 	// Lifecycle webhook (PORTAL_PLAN 4.4): signature-authed, so it does
 	// NOT sit behind withSession. Registered only with a secret.
 	if s.WebhookSecret != "" {

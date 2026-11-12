@@ -242,7 +242,9 @@ func (s *Server) handleV1GetSandbox(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleV1ExecSandbox — POST /v1/sandboxes/{id}/exec.
+// handleV1ExecSandbox — POST /v1/sandboxes/{id}/exec. A1 extends the
+// P4 body with the v2 exec fields (timeout_s, cwd, env, stdin,
+// max_output_bytes); ?stream=ndjson relays the NDJSON stream.
 func (s *Server) handleV1ExecSandbox(w http.ResponseWriter, r *http.Request) {
 	s.withAPIKey(w, r, "sandbox:exec", func(w http.ResponseWriter, r *http.Request, key apikeys.Key) {
 		if !s.requireSandboxd(w) {
@@ -253,25 +255,118 @@ func (s *Server) handleV1ExecSandbox(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusNotFound, "not_found", "sandbox not found")
 			return
 		}
-		r.Body = http.MaxBytesReader(w, r.Body, 65536)
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MiB cap (stdin ≤ 1 MiB)
 		raw, err := io.ReadAll(r.Body)
 		if err != nil {
 			writeErr(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
 			return
 		}
+		// Validate the cmd array; the v2 fields are forwarded to
+		// sandboxd, which re-validates them (policy.exec.max_timeout_s,
+		// env overrides, cwd under /home/sandbox…).
 		var body struct {
-			Cmd []string `json:"cmd"`
+			Cmd            []string          `json:"cmd"`
+			Cwd            string            `json:"cwd,omitempty"`
+			Env            map[string]string `json:"env,omitempty"`
+			Stdin          string            `json:"stdin,omitempty"`
+			TimeoutS       *int              `json:"timeout_s,omitempty"`
+			MaxOutputBytes *int64            `json:"max_output_bytes,omitempty"`
 		}
 		if err := json.Unmarshal(raw, &body); err != nil || !validArgv(body.Cmd) {
-			writeErr(w, http.StatusBadRequest, "bad_request", `body must be {"cmd": ["…", …]} (1..64 non-empty argv entries)`)
+			writeErr(w, http.StatusBadRequest, "bad_request",
+				`body must be {"cmd": ["…", …]} (1..64 non-empty argv entries) plus optional v2 fields`)
 			return
 		}
+		in := sandboxd.ExecInput{
+			Cmd:   body.Cmd,
+			Cwd:   body.Cwd,
+			Env:   body.Env,
+			Stdin: []byte(body.Stdin),
+		}
+		if body.TimeoutS != nil {
+			in.TimeoutS = *body.TimeoutS
+		}
+		if body.MaxOutputBytes != nil {
+			in.MaxOutputBytes = *body.MaxOutputBytes
+		}
+		// Gateway cap: clamp timeout_s to the same 120s the context
+		// already allows, regardless of the caller's request. sandboxd
+		// also clamps against policy.exec.max_timeout_s.
+		if in.TimeoutS > maxExecSeconds {
+			in.TimeoutS = maxExecSeconds
+		}
+		// Cap max_output_bytes at 4 MiB (sandboxd's execV2MaxOutputB).
+		const maxOutputBytesCap int64 = 4 << 20
+		if in.MaxOutputBytes > maxOutputBytesCap {
+			in.MaxOutputBytes = maxOutputBytesCap
+		}
 		idem := requestHash(http.MethodPost, "/v1/sandboxes/"+id+"/exec", raw)
+		// ?stream=ndjson: relay the NDJSON stream from sandboxd's exec
+		// v2 surface. The idempotency store cannot cache a stream, so
+		// the replay contract is "the first delivery wins; replays
+		// get the same 422/409 as a buffered exec".
+		if r.URL.Query().Get("stream") == "ndjson" {
+			// Idempotency-Key: refuse a conflicting replay before
+			// opening the stream (otherwise two concurrent streams
+			// would both run).
+			_, _, err := s.idempotent(r.Context(), key.OrgID, r.Header.Get("Idempotency-Key"), idem,
+				func() (int, []byte, error) {
+					// The closure runs only once per Idempotency-Key;
+					// the actual streaming happens below.
+					return http.StatusOK, []byte(`{}`), nil
+				})
+			if errors.Is(err, errKeyReuse) {
+				writeErr(w, http.StatusUnprocessableEntity, "idempotency_key_reuse",
+					"this Idempotency-Key was already used with a different request body")
+				return
+			}
+			if errors.Is(err, errIDConflict) {
+				writeErr(w, http.StatusConflict, "idempotency_in_progress",
+					"an identical request with this Idempotency-Key is still in progress")
+				return
+			}
+			if err != nil {
+				s.writeSandboxdErr(w, err)
+				return
+			}
+			// Open the stream from sandboxd and relay lines.
+			ctx, cancel := context.WithTimeout(r.Context(), (maxExecSeconds+10)*time.Second)
+			defer cancel()
+			res, err := s.Sandboxd.ExecStream(ctx, id, in)
+			if err != nil {
+				s.writeSandboxdErr(w, err)
+				return
+			}
+			defer res.Body.Close()
+			w.Header().Set("Content-Type", "application/x-ndjson")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("X-Accel-Buffering", "no")
+			w.WriteHeader(http.StatusOK)
+			flusher, _ := w.(http.Flusher)
+			if flusher != nil {
+				flusher.Flush()
+			}
+			buf := make([]byte, 32*1024)
+			for {
+				n, err := res.Body.Read(buf)
+				if n > 0 {
+					if _, werr := w.Write(buf[:n]); werr != nil {
+						return
+					}
+					if flusher != nil {
+						flusher.Flush()
+					}
+				}
+				if err != nil {
+					return
+				}
+			}
+		}
 		status, payload, err := s.idempotent(r.Context(), key.OrgID, r.Header.Get("Idempotency-Key"), idem,
 			func() (int, []byte, error) {
 				ctx, cancel := context.WithTimeout(r.Context(), maxExecSeconds*time.Second)
 				defer cancel()
-				out, err := s.Sandboxd.Exec(ctx, id, sandboxd.ExecInput{Cmd: body.Cmd})
+				out, err := s.Sandboxd.Exec(ctx, id, in)
 				if err != nil {
 					return 0, nil, err
 				}
