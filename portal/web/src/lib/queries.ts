@@ -54,8 +54,13 @@ export function useApiKeys(orgID: string) {
   });
 }
 
-export function useChatStatus() {
-  return useQuery({ queryKey: ["chat-status"], queryFn: api.chatStatus, staleTime: 60_000 });
+export function useChatStatus(orgID: string) {
+  return useQuery({
+    queryKey: ["chat-status", orgID],
+    queryFn: () => api.chatStatus(orgID),
+    enabled: orgID !== "",
+    staleTime: 60_000,
+  });
 }
 
 export function useChats(orgID: string) {

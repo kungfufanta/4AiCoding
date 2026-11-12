@@ -34,7 +34,7 @@ export function ChatPage() {
   const toast = useToast();
   const confirm = useConfirm();
 
-  const status = useChatStatus();
+  const status = useChatStatus(org.id);
   const chats = useChats(org.id);
   const messages = useChatMessages(org.id, chatId);
 

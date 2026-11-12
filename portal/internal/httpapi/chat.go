@@ -59,8 +59,19 @@ type chatMessageJSON struct {
 // handleChatStatus tells the SPA whether chat is wired, which model
 // answers by default and which models the picker may offer (A2).
 // Resolution order: org default → platform default → env fallback.
+//
+// The route is org-scoped (GET /api/orgs/{orgID}/chat/status) so the
+// resolver can see DB-configured org + platform connections; the
+// previous org-less /api/chat/status path left orgID empty and the
+// resolver answered "empty org id" — which made the chat textarea
+// appear disabled even after the admin added a platform connection.
+// Membership is checked first so a foreign org id answers 404 (no
+// existence leak).
 func (s *Server) handleChatStatus(w http.ResponseWriter, r *http.Request) {
 	orgID := pathOrgID(r)
+	if _, ok := s.requireMember(w, r, orgID); !ok {
+		return
+	}
 	model := ""
 	models := []string{}
 	if k, err := llmconfig.ResolveEffective(r.Context(), s.Pool, orgID); err == nil {

@@ -175,4 +175,65 @@ test.describe.serial("portal preview", () => {
     ).toBeVisible();
     await shot(page, "09-invite-invalid");
   });
+
+  // A2 phase 3 follow-up: the bug fix for "chat portal chưa chat được".
+  // The chat status route is org-scoped so a DB-configured platform
+  // connection makes chat usable without PORTAL_DEFAULT_LLM_API_KEY.
+  // The Playwright stack has no PORTAL_DEFAULT_LLM_API_KEY set, so
+  // before this fix the chat textarea was always disabled.
+  test("admin LLM connection wires up chat (A2 phase 3)", async ({ page }) => {
+    const slug = await gotoOrgBase(page);
+
+    // 1. Chat is initially disabled (no env LLM, no DB connection yet).
+    await page.goto(`/orgs/${slug}/chat`);
+    await expect(page.getByText("Chat is not configured yet")).toBeVisible();
+    await shot(page, "20-chat-disabled");
+
+    // 2. Admin adds a platform connection pointing at the public WebHub
+    //    demo endpoint. The demo key is rate-limited but fine for one
+    //    probe + one chat reply.
+    await page.goto(`/orgs/${slug}/admin/llm`);
+    await expect(page.getByRole("heading", { name: "LLM connections" })).toBeVisible();
+    await shot(page, "21-admin-llm-empty");
+
+    await page.getByRole("button", { name: "New connection" }).click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog.getByText("New LLM connection")).toBeVisible();
+    await dialog.getByLabel("Name").fill("webhub-demo");
+    // Flavor = WebHub so the tenant headers (X-WebHub-User etc.) ride
+    // along — this is what the production default would use.
+    await dialog.getByLabel("Flavor").click();
+    await page.getByRole("option", { name: "WebHub" }).click();
+    await dialog.getByPlaceholder("https://h11hp9dd1y90-d.space-z.ai/v1").fill(
+      "https://h11hp9dd1y90-d.space-z.ai/v1",
+    );
+    await dialog.getByPlaceholder("glm-4.6").fill("glm-4.6");
+    await dialog.getByPlaceholder("wh_… or sk_…").fill("wh_demo_key_local");
+    await dialog.getByRole("checkbox", { name: "Set as default" }).check();
+    await page.getByRole("button", { name: "Save connection" }).click();
+    await expect(page.getByText("webhub-demo")).toBeVisible({ timeout: 10_000 });
+    await shot(page, "22-admin-llm-created");
+
+    // 3. Test the connection — a tiny probe. The toast announces
+    //    success with the model + latency.
+    await page.getByRole("row", { name: /webhub-demo/ }).getByRole("button", { name: "Test" }).click();
+    await expect(page.getByText(/Test OK/).first()).toBeVisible({ timeout: 30_000 });
+    await shot(page, "23-admin-llm-test-ok");
+
+    // 4. Chat is now wired. The textarea is enabled and the empty
+    //    state offers the suggestion buttons.
+    await page.goto(`/orgs/${slug}/chat`);
+    await expect(page.getByPlaceholder(/Nhắn tin/)).toBeEnabled();
+    await expect(page.getByText("Hôm nay bạn muốn làm gì?")).toBeVisible();
+    await shot(page, "24-chat-enabled");
+
+    // 5. Send a message and wait for the streamed reply to land. The
+    //    WebHub demo endpoint streams "Pong" (or similar) within a
+    //    few seconds; the assistant bubble appears once the first
+    //    delta arrives.
+    await page.getByPlaceholder(/Nhắn tin/).fill("Say pong");
+    await page.getByRole("button", { name: "Send" }).click();
+    await expect(page.getByText(/pong/i).first()).toBeVisible({ timeout: 30_000 });
+    await shot(page, "25-chat-reply");
+  });
 });

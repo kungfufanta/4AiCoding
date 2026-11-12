@@ -119,7 +119,7 @@ func TestChatFlow(t *testing.T) {
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("send without LLM = %d", rec.Code)
 	}
-	rec = do(t, srv, http.MethodGet, "/api/chat/status", "", alice, aliceCSRF)
+	rec = do(t, srv, http.MethodGet, "/api/orgs/"+orgID+"/chat/status", "", alice, aliceCSRF)
 	if !strings.Contains(rec.Body.String(), `"enabled":false`) {
 		t.Fatalf("status = %s", rec.Body.String())
 	}

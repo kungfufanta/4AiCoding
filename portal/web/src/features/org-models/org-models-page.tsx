@@ -53,8 +53,8 @@ export function OrgModelsPage() {
     mutationFn: (cid: string) => api.testLLMConnection(org.id, cid),
     onSuccess: (res, cid) => {
       setTestResult((prev) => ({ ...prev, [cid]: res }));
-      if (res.ok) toast("error", `Test OK — ${res.model ?? "?"} in ${res.latency_ms ?? "?"} ms`);
-      else toast("success", res.error ?? "Test failed");
+      if (res.ok) toast("success", `Test OK — ${res.model ?? "?"} in ${res.latency_ms ?? "?"} ms`);
+      else toast("error", res.error ?? "Test failed");
     },
     onError: (e) => toast("error", e.message),
   });
