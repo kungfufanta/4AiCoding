@@ -42,7 +42,10 @@ export function SandboxDetailPage({ id }: { id: string }) {
   const remove = async () => {
     if (!confirm(`Delete sandbox ${id}? Its workspace is removed too.`)) return;
     const h: Record<string, string> = approval ? { [APPROVAL_HEADER]: approval } : {};
-    const r = await run(() => del(`/v1/sandboxes/${id}`, h));
+    // DELETE answers 204 with no body, which del() returns as undefined —
+    // the same value run() uses for "failed". Map success to a marker so
+    // a completed delete still navigates away.
+    const r = await run(async () => (await del<unknown>(`/v1/sandboxes/${id}`, h)) ?? { deleted: true });
     if (r === undefined) return; // error already shown
     if (typeof r === "object" && r !== null && "approval_id" in r) return; // parked for approval
     navigate("/");
