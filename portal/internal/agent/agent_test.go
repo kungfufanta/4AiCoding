@@ -486,6 +486,61 @@ func TestCancelWithin5s(t *testing.T) {
 	}
 }
 
+// TestCancelDuringPrep — a cancel landing while the run is still in
+// sandbox prep (Get/keep-alive/probe in flight) must end cancelled,
+// not failed(sandbox_unavailable): the classification follows runCtx,
+// not the exec error the cancellation wore (plan §7: done
+// {status:cancelled} within the 5 s budget). The hook holds the probe
+// exec for 1.2 s so RequestCancel (notify + the 200 ms poll) lands
+// mid-probe with certainty.
+func TestCancelDuringPrep(t *testing.T) {
+	handle := setupDB(t)
+	st := NewStore(handle.Pool)
+	orgID, _, sandboxID := seedOrg(t, st, "cancel-prep")
+
+	fake := newSlowLLM(t, makeChunks(30, "đoạn "), 200*time.Millisecond)
+	notify := NewNotifier(context.Background(), testLogger(), handle.URL)
+	w, sbx := newWorker(t, st, fixedSource{fake.client()}, notify)
+	sbx.Hook = func(rec sandboxtest.ExecRecord) (map[string]any, bool) {
+		if len(rec.Cmd) == 3 && strings.Contains(rec.Cmd[2], "command -v git") {
+			time.Sleep(1200 * time.Millisecond) // hold the probe exec
+		}
+		return nil, false
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	w.Start(ctx)
+	defer func() { cancel(); w.Shutdown(0); w.Wait() }()
+
+	run, _, err := st.CreateRun(ctx, CreateIn{
+		OrgID: orgID, SandboxID: sandboxID, Prompt: "viết dài", Model: "glm-4.6", MaxSteps: 30,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Cancel as soon as the run is claimed-running (prep in flight).
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		r, _ := st.GetRun(ctx, orgID, run.ID)
+		if r.Status == StatusRunning {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	start := time.Now()
+	if _, err := st.RequestCancel(ctx, orgID, run.ID); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	fin := waitForStatus(t, st, orgID, run.ID, 6*time.Second)
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("cancel took %s, want <= 5s", elapsed)
+	}
+	if fin.Status != StatusCancelled {
+		t.Fatalf("status = %s (%s), want cancelled", fin.Status, fin.ErrorCode)
+	}
+}
+
 // TestWorkerLostSwept — criterion 4: a worker that dies mid-run
 // (claim without ever renewing) is reaped failed/worker_lost within
 // the sweep budget, with its done event.

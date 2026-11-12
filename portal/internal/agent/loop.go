@@ -285,6 +285,16 @@ func (w *Worker) loop(runCtx context.Context, claimed ClaimedRun) executeRunResu
 	}
 
 	fail := func(code string, err error) executeRunResult {
+		// A cancel landing during prep (Get/Start/keep-alive/probe)
+		// surfaces as an exec error, but it must still end cancelled —
+		// plan §7: done{status:cancelled} within the 5 s budget. The
+		// run context is the truth; the error is just the symptom
+		// (same guard as the step loop below). Shutdown keeps its
+		// failed(shutdown) semantics via cancelledResult.
+		if runCtx.Err() != nil && errors.Is(runCtx.Err(), context.Canceled) {
+			w.Log.Warn("agent run cancelled during prep", "run_id", run.ID, "was_going_to_fail", code, "error", err.Error())
+			return w.attachFilesChanged(pctx, run, w.cancelledResult(steps, llm.Usage{}))
+		}
 		w.Log.Warn("agent run failed", "run_id", run.ID, "error_code", code, "error", err.Error())
 		res := executeRunResult{Status: StatusFailed, ErrorCode: code, Err: err, Steps: steps}
 		return w.attachFilesChanged(pctx, run, res)
