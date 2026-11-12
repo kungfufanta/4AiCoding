@@ -50,6 +50,13 @@ sandboxd:
   webhookSecret: ""
   timeout: 30s
 
+# Agent workers (A3.1): goroutines in the portal process that claim
+# runs from Postgres. Default 2 (the code default); 0 disables them
+# (e.g. the dedicated `portal agent-worker` Deployment owns the
+# queue).
+portal:
+  agentWorkers: 2
+
 # Bootstrap password login (user "admin"). Off unless the database
 # Secret above carries this key (min 12 chars); there is no default
 # password.

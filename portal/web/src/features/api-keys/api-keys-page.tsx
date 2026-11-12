@@ -23,7 +23,14 @@ import { EmptyState, SkeletonRows } from "../../ui/skeleton";
 import { TBody, TD, TH, THead, TR, Table } from "../../ui/table";
 import { useToast } from "../../ui/toast";
 
-const SCOPES = ["sandbox:create", "sandbox:read", "sandbox:exec", "usage:read"] as const;
+const SCOPES = [
+  "sandbox:create",
+  "sandbox:read",
+  "sandbox:exec",
+  "usage:read",
+  "agent:run",
+  "agent:read",
+] as const;
 
 const EXPIRY_OPTIONS = [
   { value: "0", label: "Never expires" },

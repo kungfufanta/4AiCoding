@@ -118,6 +118,17 @@ func (c *Client) sendStreamOptions() bool {
 	return c.Flavor != "webhub"
 }
 
+// hubActor prefixes the hub tenant id: user ids arrive bare (the
+// Portal user UUID) and become "u_<id>", while agent runs created
+// through /v1 already carry their "k_<key_id>" prefix (AGENT_PLAN_A3
+// §5) and pass through unchanged.
+func hubActor(userID string) string {
+	if strings.HasPrefix(userID, "k_") {
+		return userID
+	}
+	return "u_" + userID
+}
+
 // Stream sends req and calls onDelta for every content fragment as it
 // arrives. It returns the whole reply. onDelta returning an error
 // aborts the stream (client went away).
@@ -128,7 +139,7 @@ func (c *Client) Stream(ctx context.Context, req Request, onDelta func(string) e
 		"stream":   true,
 	}
 	if c.Flavor != "webhub" && req.UserID != "" {
-		body["user"] = "u_" + req.UserID
+		body["user"] = hubActor(req.UserID)
 	}
 	raw, err := json.Marshal(body)
 	if err != nil {
@@ -146,7 +157,7 @@ func (c *Client) Stream(ctx context.Context, req Request, onDelta func(string) e
 	}
 	if c.Flavor == "webhub" {
 		if req.UserID != "" {
-			hreq.Header.Set("X-WebHub-User", "u_"+req.UserID)
+			hreq.Header.Set("X-WebHub-User", hubActor(req.UserID))
 		}
 		if req.SessionID != "" {
 			hreq.Header.Set("X-Session-Id", "s_"+req.SessionID)
@@ -651,7 +662,7 @@ func toolRequestBody(c *Client, req ToolRequest) ([]byte, error) {
 		body["tool_choice"] = "auto"
 	}
 	if c.Flavor != "webhub" && req.UserID != "" {
-		body["user"] = "u_" + req.UserID
+		body["user"] = hubActor(req.UserID)
 	}
 	return json.Marshal(body)
 }
@@ -727,7 +738,7 @@ func (c *Client) attemptStreamTools(ctx context.Context, req ToolRequest, raw []
 		hreq.Header.Set("Authorization", "Bearer "+c.APIKey)
 	}
 	if req.UserID != "" && c.Flavor == "webhub" {
-		hreq.Header.Set("X-WebHub-User", "u_"+req.UserID)
+		hreq.Header.Set("X-WebHub-User", hubActor(req.UserID))
 	}
 	if req.SessionID != "" && c.Flavor == "webhub" {
 		hreq.Header.Set("X-Session-Id", "s_"+req.SessionID)

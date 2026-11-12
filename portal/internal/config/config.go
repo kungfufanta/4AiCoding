@@ -88,6 +88,11 @@ type Config struct {
 	// PORTAL_SANDBOXD_TIMEOUT (default 30s; the streaming proxies and
 	// long execs are exempt — they honor the request context).
 	SandboxdTimeout time.Duration
+	// AgentWorkers is the number of in-process agent workers
+	// (PORTAL_AGENT_WORKERS, default 2; "0" disables them entirely —
+	// the `portal agent-worker` subcommand runs them instead, A6 will
+	// move them to a separate Deployment). AGENT_PLAN_A3 decision §2-4.
+	AgentWorkers int
 }
 
 // DefaultLLMBaseURL is the WebHub endpoint chosen as the free default
@@ -174,6 +179,15 @@ func Parse(getenv func(string) string) (Config, error) {
 			return cfg, fmt.Errorf("PORTAL_SANDBOXD_TIMEOUT: invalid duration %q", v)
 		}
 		cfg.SandboxdTimeout = d
+	}
+	// Agent workers: default 2, "0" turns them off (decision §2-4).
+	cfg.AgentWorkers = 2
+	if v := strings.TrimSpace(getenv("PORTAL_AGENT_WORKERS")); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			return cfg, fmt.Errorf("PORTAL_AGENT_WORKERS: want a non-negative integer, got %q", v)
+		}
+		cfg.AgentWorkers = n
 	}
 	if cfg.DatabaseURL == "" {
 		return cfg, errors.New("PORTAL_DATABASE_URL is required (postgres://user:pass@host:5432/db)")

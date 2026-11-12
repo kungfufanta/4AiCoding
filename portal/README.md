@@ -81,6 +81,7 @@ Or without Docker: point `PORTAL_DATABASE_URL` at any Postgres 16+ and
 | `PORTAL_SANDBOXD_API_KEY` | — | Bearer key the gateway presents to sandboxd. Production keys carry the `require_external` flag (P3a) + `sandbox:create/read/exec` + `sandboxes:files` scopes (A1 needs `sandboxes:files` or the gateway's files proxy gets 403 from sandboxd); a dev sandboxd without its auth store ignores it |
 | `PORTAL_SANDBOXD_WEBHOOK_SECRET` | — | HMAC secret verifying `X-Sandboxd-Signature` on `POST /api/webhooks/sandboxd` (must match sandboxd's `SANDBOXD_WEBHOOK_SECRET`). Empty disables the receiver |
 | `PORTAL_SANDBOXD_TIMEOUT` | `30s` | Per-call timeout to sandboxd (streaming proxies honor the request context instead) |
+| `PORTAL_AGENT_WORKERS` | `2` | In-process agent workers (A3.1). `0` disables them (e.g. when the dedicated `portal agent-worker` process owns the queue instead — same binary, no HTTP listener) |
 
 ## Tests
 

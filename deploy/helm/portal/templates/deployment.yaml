@@ -121,6 +121,10 @@ spec:
             - name: PORTAL_SANDBOXD_TIMEOUT
               value: {{ .Values.sandboxd.timeout | quote }}
             {{- end }}
+            {{- if hasKey .Values.portal "agentWorkers" }}
+            - name: PORTAL_AGENT_WORKERS
+              value: {{ .Values.portal.agentWorkers | quote }}
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
