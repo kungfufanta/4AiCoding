@@ -31,7 +31,7 @@
 
 Chưa có: tool calling trong `llm`, bảng agent, worker, checkpoint, API run, UI Agent.
 
-## 2. Quyết định cho 8 câu hỏi của z.ai (đề xuất, Doan chốt)
+## 2. Quyết định cho 8 câu hỏi của z.ai (đã chốt 2026-11-12)
 
 | # | Câu hỏi | Đề xuất |
 |---|---|---|
@@ -44,7 +44,7 @@ Chưa có: tool calling trong `llm`, bảng agent, worker, checkpoint, API run, 
 | 7 | Detect build | `package.json` (script `build`), `go.mod`, `Cargo.toml`, `pyproject.toml`, `requirements.txt`. Ưu tiên lệnh khai báo trong `AGENTS.md` (khối `build:`). Không detect được → `build_status: skipped` |
 | 8 | SSE: LISTEN/NOTIFY hay polling | **LISTEN/NOTIFY** trên một connection riêng (không lấy từ pool RLS), kênh chung `agent_events` với payload `run_id:seq`. Fallback poll 1 s khi LISTEN lỗi. Replay luôn đọc từ bảng, NOTIFY chỉ để đánh thức |
 
-Câu hỏi còn mở ở mục 11.
+Các quyết định thêm ở mục 13.
 
 ## 3. Kiến trúc A3
 
@@ -167,7 +167,7 @@ func (c *Client) StreamTools(ctx context.Context, req ToolRequest, onText func(s
 
 ## 6. Tool registry (`portal/internal/agent/tools`)
 
-Đường dẫn trong tool là **tương đối với workspace** (cố định `/home/sandbox/workspace` ở A3, xem câu hỏi mở 2). Code chuẩn hoá path, chặn `..` và path tuyệt đối trước khi gọi files API (files API vẫn tự chặn lần nữa).
+Đường dẫn trong tool là **tương đối với workspace** (thư mục dự án: `/home/sandbox/workspace/app` nếu tồn tại, vì gitimport clone vào đó; nếu không có thì `/home/sandbox/workspace`. Chọn một lần lúc bắt đầu run, lưu vào event `status`). Code chuẩn hoá path, chặn `..` và path tuyệt đối trước khi gọi files API (files API vẫn tự chặn lần nữa).
 
 | Tool | Tham số | Thực thi | Giới hạn / ghi chú |
 |---|---|---|---|
@@ -206,7 +206,7 @@ func (c *Client) StreamTools(ctx context.Context, req ToolRequest, onText func(s
 
 ## 8. Checkpoint, files_changed, revert
 
-Chạy qua exec, `cwd=/home/sandbox/workspace`, `timeout_s=60`:
+Chạy qua exec, `cwd` = thư mục dự án (mục 6), `timeout_s=60`:
 
 ```bash
 set -euo pipefail
@@ -336,12 +336,15 @@ Thứ tự: `A3.0 → A3.1 → A3.2 → A3.3 → A3.4 → A3.5`. A3.0 và phần
 | Run làm hỏng code người dùng | Checkpoint trước mỗi run; revert; không đụng HEAD/branch |
 | Pool RLS bị dùng cross-org | Chỉ `agent_claim_next` (SECURITY DEFINER) thấy hàng đợi; mọi thao tác khác qua `WithOrg(run.OrgID)` |
 
-## 13. Câu hỏi còn mở cho Doan
+## 13. Đã chốt (Doan giao Claude chốt, 2026-11-12)
 
-1. Có cần cho **hệ multi-agent ngoài** dùng agent (`agent:run` qua `/v1`) ngay ở A3, hay A3 chỉ làm cho UI và để `/v1` sang A5? Đề xuất làm luôn ở A3.1 vì code dùng chung, chỉ thêm scope.
-2. Workspace mặc định `/home/sandbox/workspace` có đúng với cách tạo sandbox hiện tại (gitimport clone vào đâu)? Nếu khác thì lấy theo metadata sandbox.
-3. Một chat gắn **một** sandbox cố định, đổi sandbox thì tạo chat mới. Có đồng ý không?
-4. Quota token theo tháng cho plan free (A5): 2M/org có phù hợp với giới hạn thật của WebHub không?
+Bảng ở mục 2 là quyết định chính thức, không còn là đề xuất. Thêm:
+
+1. **`/v1` cho hệ multi-agent ngoài làm ngay ở A3.1** (scope `agent:run`, `agent:read`), vì dùng chung code với BFF. MCP `run_agent_task` vẫn ở A5.
+2. **Thư mục dự án**: `/home/sandbox/workspace/app` nếu tồn tại (gitimport clone vào đó, xem `control-plane/internal/api/handlers.go`), nếu không thì `/home/sandbox/workspace`. Files API vẫn tính path từ `/home/sandbox`, nên tool tự thêm tiền tố.
+3. **Một chat gắn cố định một sandbox.** Muốn làm việc với sandbox khác thì tạo chat mới. Chat chưa có run thì vẫn đổi được sandbox.
+4. **Quota tháng (A5)**: free 2M token/org/tháng, cảnh báo 80 %, chặn 100 %. Điều chỉnh khi biết giới hạn thật của WebHub (spike A3.0 ghi lại).
+5. Người làm: z.ai làm A3.0 → A3.5 theo thứ tự, mỗi phase một PR. Claude review từng PR theo mục "Xong khi".
 
 ## 14. Ngoài phạm vi A3
 
