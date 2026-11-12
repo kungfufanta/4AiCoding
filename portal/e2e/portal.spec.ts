@@ -304,7 +304,7 @@ test.describe.serial("portal preview", () => {
       flavor: "generic",
       base_url: FAKE_LLM_BASE,
       default_model: "fake-4.6",
-      models: [{ id: "fake-4.6" }],
+      models: [{ id: "fake-4.6", supports_tools: true }],
       key_mode: "shared",
       timeout_s: 30,
       max_tokens: 4096,
