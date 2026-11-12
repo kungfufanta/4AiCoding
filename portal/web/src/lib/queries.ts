@@ -75,3 +75,15 @@ export function useChatMessages(orgID: string, chatID: string | undefined) {
     refetchOnWindowFocus: false,
   });
 }
+
+// P5: usage rollup for the dashboard page. Window defaults to the
+// last 30 days; refetch every 60s.
+export function useUsage(orgID: string) {
+  return useQuery({
+    queryKey: ["usage", orgID],
+    queryFn: () => api.getUsage(orgID),
+    enabled: orgID !== "",
+    staleTime: 60_000,
+    refetchInterval: 60_000,
+  });
+}

@@ -450,3 +450,91 @@ func (c *Client) MetricsStream(ctx context.Context, id string, interval int) (*h
 	}
 	return res, nil
 }
+
+// Raw issues an arbitrary request to sandboxd and returns the raw
+// response. Used by the A1 files gateway: the request body, query
+// string, and headers are forwarded verbatim; the response body is
+// relayed byte-for-byte to the Portal caller. The caller owns closing
+// res.Body.
+//
+// Files reads can be large (2 MiB per call) but not stream-long, so
+// the per-call HTTP client (c.httpClient) bounds them. PUT/DELETE/move
+// are short. Use streamClient() only when the call is stream-shaped
+// (none of the files routes are); the gateway caps the read body via
+// io.LimitReader to 8 MiB as a safety net.
+func (c *Client) Raw(ctx context.Context, method, path string, body []byte, contentType string) (*http.Response, error) {
+	var rdr io.Reader
+	if body != nil {
+		rdr = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.BaseURL+path, rdr)
+	if err != nil {
+		return nil, err
+	}
+	if body != nil && contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	if c.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	}
+	res, err := c.httpClient().Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if res.StatusCode >= 400 {
+		defer res.Body.Close()
+		data, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+		return nil, decodeErr(res.StatusCode, data)
+	}
+	return res, nil
+}
+
+// ExecStream opens the exec v2 endpoint in NDJSON streaming mode
+// (?stream=ndjson) and returns the raw response. The caller reads
+// newline-delimited JSON lines and relays them; the request context
+// bounds the stream. Use this instead of Exec when the client wants
+// ?stream=ndjson. (AGENT_PLAN A1.)
+func (c *Client) ExecStream(ctx context.Context, id string, in ExecInput) (*http.Response, error) {
+	body := map[string]any{"cmd": in.Cmd}
+	if in.Cwd != "" {
+		body["cwd"] = in.Cwd
+	}
+	if len(in.Env) > 0 {
+		body["env"] = in.Env
+	}
+	if in.Stdin != nil {
+		body["stdin"] = string(in.Stdin)
+	}
+	if in.TimeoutS > 0 {
+		body["timeout_s"] = in.TimeoutS
+	}
+	if in.MaxOutputBytes > 0 {
+		body["max_output_bytes"] = in.MaxOutputBytes
+	}
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("encode exec stream request: %w", err)
+	}
+	q := url.Values{"stream": {"ndjson"}}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		c.BaseURL+"/v1/sandboxes/"+url.PathEscape(id)+"/exec?"+q.Encode(),
+		bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	}
+	req.Header.Set("Accept", "application/x-ndjson")
+	res, err := c.streamClient().Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if res.StatusCode >= 400 {
+		defer res.Body.Close()
+		data, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+		return nil, decodeErr(res.StatusCode, data)
+	}
+	return res, nil
+}

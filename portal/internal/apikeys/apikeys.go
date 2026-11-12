@@ -45,8 +45,13 @@ var (
 	secretRe = regexp.MustCompile(`^[A-Za-z0-9]{40,}$`)
 )
 
-// Scopes the plan v1 API knows (PORTAL_PLAN 5). Keys request a subset.
-var KnownScopes = []string{"sandbox:create", "sandbox:read", "sandbox:exec", "usage:read"}
+// Scopes the plan v1 API knows (PORTAL_PLAN 5; AGENT_PLAN A1 adds
+// sandboxes:files). Keys request a subset.
+var KnownScopes = []string{
+	"sandbox:create", "sandbox:read", "sandbox:exec",
+	"sandboxes:files", // A1: workspace file list/read/write/delete/move
+	"usage:read",
+}
 
 // ScopeValid reports whether s is a known scope.
 func ScopeValid(s string) bool {
