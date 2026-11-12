@@ -40,7 +40,7 @@ export type ApiKeyCreateBody = {
 };
 
 // Chat MVP: conversations are private to their author.
-export type ChatStatus = { enabled: boolean; model: string };
+export type ChatStatus = { enabled: boolean; model: string; models?: string[] };
 export type ChatConversation = { id: string; title: string; created_at: string; updated_at: string };
 export type ChatMessage = { id: string; role: "user" | "assistant"; content: string; created_at: string };
 
@@ -113,6 +113,56 @@ export type UsageResponse = {
   kind: string;
   series: UsageSeriesPoint[];
   plan: UsagePlan;
+};
+
+// A2: LLM model connections. api_key is write-only (create/update);
+// responses carry has_api_key + key_label (last 4 chars) instead.
+export type LLMModel = {
+  id: string;
+  context_window?: number;
+  max_output?: number;
+  supports_tools?: boolean;
+};
+export type LLMConnection = {
+  id: string;
+  org_id?: string; // "" = platform connection
+  name: string;
+  protocol: "openai" | "anthropic";
+  flavor: "generic" | "webhub";
+  base_url: string;
+  default_model: string;
+  models: LLMModel[];
+  key_mode: "shared" | "per_org";
+  timeout_s: number;
+  max_tokens: number;
+  enabled: boolean;
+  is_default: boolean;
+  has_api_key: boolean;
+  key_label?: string;
+  updated_at?: string;
+  created_at?: string;
+};
+export type LLMConnectionBody = {
+  name: string;
+  protocol: "openai" | "anthropic";
+  flavor: "generic" | "webhub";
+  base_url: string;
+  default_model: string;
+  models: LLMModel[];
+  key_mode: "shared" | "per_org";
+  timeout_s: number;
+  max_tokens: number;
+  enabled: boolean;
+  is_default: boolean;
+  api_key?: string; // write-only; empty leaves the stored key untouched
+};
+export type LLMConnectionList = { connections: LLMConnection[] };
+export type LLMTestResult = {
+  ok: boolean;
+  model?: string;
+  latency_ms?: number;
+  reply?: string;
+  error?: string;
 };
 
 export class ApiError extends Error {
@@ -215,20 +265,48 @@ export const api = {
   deleteChat: (orgID: string, chatID: string) => call<void>("DELETE", `/api/orgs/${orgID}/chats/${chatID}`),
   chatMessages: (orgID: string, chatID: string) =>
     call<ChatMessage[]>("GET", `/api/orgs/${orgID}/chats/${chatID}/messages`),
-  sendChatMessage: (orgID: string, chatID: string, content: string, h: ChatStreamHandlers, signal?: AbortSignal) =>
-    streamChat(`/api/orgs/${orgID}/chats/${chatID}/messages`, content, h, signal),
+  sendChatMessage: (orgID: string, chatID: string, content: string, h: ChatStreamHandlers, opts?: { model?: string; signal?: AbortSignal }) =>
+    streamChat(`/api/orgs/${orgID}/chats/${chatID}/messages`, content, h, opts),
+  // A2: LLM model connections. The platform admin manages the
+  // platform defaults at /api/admin/llm/connections; org owner/admin
+  // manages org connections at /api/orgs/{orgID}/llm/connections.
+  // The plaintext key is write-only (never in any response).
+  listLLMConnections: (orgID: string) =>
+    call<LLMConnectionList>("GET", `/api/orgs/${orgID}/llm/connections`),
+  createLLMConnection: (orgID: string, body: LLMConnectionBody) =>
+    call<LLMConnection>("POST", `/api/orgs/${orgID}/llm/connections`, body),
+  updateLLMConnection: (orgID: string, cid: string, body: LLMConnectionBody) =>
+    call<LLMConnection>("PATCH", `/api/orgs/${orgID}/llm/connections/${cid}`, body),
+  deleteLLMConnection: (orgID: string, cid: string) =>
+    call<void>("DELETE", `/api/orgs/${orgID}/llm/connections/${cid}`),
+  testLLMConnection: (orgID: string, cid: string) =>
+    call<LLMTestResult>("POST", `/api/orgs/${orgID}/llm/connections/${cid}/test`),
+  listLLMModels: (orgID: string, cid: string) =>
+    call<{ models: string[] }>("GET", `/api/orgs/${orgID}/llm/connections/${cid}/models`),
+  listPlatformLLMConnections: () =>
+    call<LLMConnectionList>("GET", `/api/admin/llm/connections`),
+  createPlatformLLMConnection: (body: LLMConnectionBody) =>
+    call<LLMConnection>("POST", `/api/admin/llm/connections`, body),
+  updatePlatformLLMConnection: (cid: string, body: LLMConnectionBody) =>
+    call<LLMConnection>("PATCH", `/api/admin/llm/connections/${cid}`, body),
+  deletePlatformLLMConnection: (cid: string) =>
+    call<void>("DELETE", `/api/admin/llm/connections/${cid}`),
+  testPlatformLLMConnection: (cid: string) =>
+    call<LLMTestResult>("POST", `/api/admin/llm/connections/${cid}/test`),
+  listPlatformLLMModels: (cid: string) =>
+    call<{ models: string[] }>("GET", `/api/admin/llm/connections/${cid}/models`),
 };
 
 // streamChat POSTs one message and parses the SSE reply (events
 // user / delta / done / error). EventSource cannot POST or send the
 // CSRF header, so this reads the fetch body stream directly.
-async function streamChat(path: string, content: string, h: ChatStreamHandlers, signal?: AbortSignal) {
+async function streamChat(path: string, content: string, h: ChatStreamHandlers, opts?: { model?: string; signal?: AbortSignal }) {
   const res = await fetch(path, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken(), Accept: "text/event-stream" },
-    body: JSON.stringify({ content }),
+    body: JSON.stringify(opts?.model ? { content, model: opts.model } : { content }),
     credentials: "same-origin",
-    signal,
+    signal: opts?.signal,
   });
   if (!res.ok || !res.body) {
     const data = (await res.json().catch(() => ({}))) as { error?: { code: string; message: string } };

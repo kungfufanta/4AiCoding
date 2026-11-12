@@ -52,8 +52,24 @@ type Server struct {
 	Tokens *agenttoken.Signer
 
 	// LLM answers the Chat page; nil (no PORTAL_DEFAULT_LLM_API_KEY)
-	// makes sending a message answer 503 chat_not_configured.
+	// makes sending a message answer 503 chat_not_configured. A2
+	// replaces this with per-org model connections resolved at chat
+	// time; the env-based client is kept as a fallback for dev stacks
+	// that have no DB connection configured.
 	LLM *llm.Client
+	// LLMHTTP is the HTTP client used for LLM test/models probes. nil
+	// = default with a 10s timeout. Tests override it to point at a
+	// fake httptest.Server.
+	LLMHTTP *http.Client
+	// PlatformAdminEnabled gates the /api/admin/llm/* routes. When
+	// false, those routes answer 403. The bootstrap admin (password
+	// login) is the only platform admin until a platform_admins table
+	// is added.
+	PlatformAdminEnabled bool
+	// BootstrapAdminID is the user id of the bootstrap admin (from
+	// passwordauth). requirePlatformAdmin checks the session user id
+	// against this.
+	BootstrapAdminID string
 	// Sandboxd is the gateway client for the S3 surface; nil disables
 	// /v1/sandboxes* (503) and the BFF Sandboxes page reports
 	// "not configured". WebhookSecret enables the lifecycle webhook
@@ -150,6 +166,21 @@ func (s *Server) Handler() *http.ServeMux {
 	mux.Handle("GET /v1/usage", http.HandlerFunc(s.handleV1Usage))
 	// P5: Usage page BFF (dashboard cookie + CSRF, member role).
 	mux.Handle("GET /api/orgs/{orgID}/usage", s.withSession(http.HandlerFunc(s.handleBFFUsage)))
+	// A2: LLM model connections. Platform admin manages the platform
+	// defaults; org owner/admin manages org connections + BYO key.
+	// Members read; the Chat page resolves the effective connection.
+	mux.Handle("GET /api/admin/llm/connections", s.withSession(http.HandlerFunc(s.handleListLLMConnections)))
+	mux.Handle("POST /api/admin/llm/connections", s.withSession(http.HandlerFunc(s.handleCreateLLMConnection)))
+	mux.Handle("PATCH /api/admin/llm/connections/{cid}", s.withSession(http.HandlerFunc(s.handleUpdateLLMConnection)))
+	mux.Handle("DELETE /api/admin/llm/connections/{cid}", s.withSession(http.HandlerFunc(s.handleDeleteLLMConnection)))
+	mux.Handle("POST /api/admin/llm/connections/{cid}/test", s.withSession(http.HandlerFunc(s.handleTestLLMConnection)))
+	mux.Handle("GET /api/admin/llm/connections/{cid}/models", s.withSession(http.HandlerFunc(s.handleListLLMModels)))
+	mux.Handle("GET /api/orgs/{orgID}/llm/connections", s.withSession(http.HandlerFunc(s.handleListLLMConnections)))
+	mux.Handle("POST /api/orgs/{orgID}/llm/connections", s.withSession(http.HandlerFunc(s.handleCreateLLMConnection)))
+	mux.Handle("PATCH /api/orgs/{orgID}/llm/connections/{cid}", s.withSession(http.HandlerFunc(s.handleUpdateLLMConnection)))
+	mux.Handle("DELETE /api/orgs/{orgID}/llm/connections/{cid}", s.withSession(http.HandlerFunc(s.handleDeleteLLMConnection)))
+	mux.Handle("POST /api/orgs/{orgID}/llm/connections/{cid}/test", s.withSession(http.HandlerFunc(s.handleTestLLMConnection)))
+	mux.Handle("GET /api/orgs/{orgID}/llm/connections/{cid}/models", s.withSession(http.HandlerFunc(s.handleListLLMModels)))
 	// A1: workspace files gateway (PORTAL_PLAN 5; AGENT_PLAN A0/A1).
 	// Each route checks keyOwnsSandbox (org + project for pinned keys)
 	// and the Portal scope `sandboxes:files`, then proxies to sandboxd

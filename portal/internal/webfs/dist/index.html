@@ -1,13 +1,14 @@
 <!doctype html>
+<!-- Placeholder SPA shell so the Go build embeds a valid dist/.
+     The Dockerfile replaces this directory with the real Vite build
+     (portal/web) before compiling. Serve `portal/web` in dev with
+     `pnpm dev`. -->
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Portal — sandbox for agents</title>
-    <script type="module" crossorigin src="/assets/index-X67QO5I1.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/index-DbFU0V-S.css">
+    <title>Portal</title>
   </head>
   <body>
-    <div id="root"></div>
+    <p>Portal SPA not embedded in this build — see portal/web (docs/PORTAL_PLAN.md).</p>
   </body>
 </html>
