@@ -19,10 +19,12 @@ import (
 	"time"
 
 	"github.com/tastyeffectco/sandboxd/portal/internal/agent"
+	"github.com/tastyeffectco/sandboxd/portal/internal/agent/sandboxtest"
 	"github.com/tastyeffectco/sandboxd/portal/internal/agenttoken"
 	"github.com/tastyeffectco/sandboxd/portal/internal/apikeys"
 	"github.com/tastyeffectco/sandboxd/portal/internal/db"
 	"github.com/tastyeffectco/sandboxd/portal/internal/llm"
+	"github.com/tastyeffectco/sandboxd/portal/internal/sandboxd"
 )
 
 // cleanAgent runs before each agent test: the agent tables plus the
@@ -81,30 +83,34 @@ func newAgentLLM(t *testing.T, chunks []string, delay time.Duration) *agentLLM {
 
 // setupAgent wires the BFF for agent tests: no model_connections in
 // the DB (resolveRunModel falls back to the env-style s.LLM), a fake
-// upstream, an API-key verifier and the shared notifier.
-func setupAgent(t *testing.T) (*Server, *agentLLM, *agent.Notifier) {
+// upstream, a fake sandboxd (the A3.2 loop executes tools through
+// it), an API-key verifier and the shared notifier.
+func setupAgent(t *testing.T) (*Server, *agentLLM, *agent.Notifier, *sandboxd.Client) {
 	t.Helper()
 	srv := setupBFF(t) // skips without PORTAL_TEST_DATABASE_URL
 	cleanAgent(t)
 	fake := newAgentLLM(t, []string{"Tạo ", "file ", "xong."}, 5*time.Millisecond)
 	srv.LLM = &llm.Client{BaseURL: fake.srv.URL, Model: "glm-4.6", Flavor: "webhub", APIKey: "wh_test"}
+	sbx := sandboxtest.New(t.TempDir())
+	t.Cleanup(sbx.Close)
 	srv.Keys = &apikeys.Verifier{Pool: srv.Pool, Log: discardLogger()}
 	srv.Tokens, _ = agenttoken.NewSigner()
 	notify := agent.NewNotifier(context.Background(), discardLogger(), os.Getenv("PORTAL_TEST_DATABASE_URL"))
 	srv.AgentNotify = notify
 	t.Cleanup(notify.Close)
-	return srv, fake, notify
+	return srv, fake, notify, sbx.Client()
 }
 
 // startAgentWorker runs a worker against the test pool with fast
 // timings; cleanup cancels and waits.
-func startAgentWorker(t *testing.T, srv *Server, notify *agent.Notifier, src agent.LLMSource) *agent.Worker {
+func startAgentWorker(t *testing.T, srv *Server, notify *agent.Notifier, src agent.LLMSource, sbx *sandboxd.Client) *agent.Worker {
 	t.Helper()
 	w := &agent.Worker{
 		ID:         fmt.Sprintf("httpapi-%d", time.Now().UnixNano()%100000),
 		Log:        discardLogger(),
 		Store:      agent.NewStore(srv.Pool),
 		LLM:        src,
+		Sandboxd:   sbx,
 		Notify:     notify,
 		Lease:      3 * time.Second,
 		Heartbeat:  300 * time.Millisecond,
@@ -130,8 +136,8 @@ func seedAgentSandbox(t *testing.T, srv *Server, orgID, tag string) string {
 	id := "SBX" + fmt.Sprint(time.Now().UnixNano()) + "-" + tag
 	if err := db.WithOrg(ctx, srv.Pool, orgID, func(tx db.Tx) error {
 		_, err := tx.Exec(ctx, `
-			INSERT INTO sandboxes (id, org_id, status, image, created_at, updated_at)
-			VALUES ($1, $2::uuid, 'running', 'ubuntu:24.04', now(), now())`, id, orgID)
+                        INSERT INTO sandboxes (id, org_id, status, image, created_at, updated_at)
+                        VALUES ($1, $2::uuid, 'running', 'ubuntu:24.04', now(), now())`, id, orgID)
 		return err
 	}); err != nil {
 		t.Fatalf("seed sandbox: %v", err)
@@ -164,8 +170,8 @@ func waitForRunStatus(t *testing.T, srv *Server, orgID, runID string, cookies []
 // full event contract), 2 (409 second run), sandbox attach rules and
 // the sandbox_required guard.
 func TestAgentBFFFlowAndGuards(t *testing.T) {
-	srv, _, notify := setupAgent(t)
-	startAgentWorker(t, srv, notify, agent.EnvSource{Fallback: srv.LLM})
+	srv, _, notify, sbx := setupAgent(t)
+	startAgentWorker(t, srv, notify, agent.EnvSource{Fallback: srv.LLM}, sbx)
 
 	sfx := fmt.Sprint(time.Now().UnixNano())
 	aliceID, alice, aliceCSRF := login(t, srv, "agent-alice-"+sfx, "agent-alice-"+sfx+"@example.test", "Alice")
@@ -173,7 +179,7 @@ func TestAgentBFFFlowAndGuards(t *testing.T) {
 
 	rec := do(t, srv, http.MethodPost, "/api/orgs", `{"name":"Agent Org `+sfx+`"}`, alice, aliceCSRF)
 	orgID := extractString(t, rec.Body.String(), "id")
-	sbx := seedAgentSandbox(t, srv, orgID, "flow")
+	sandboxID := seedAgentSandbox(t, srv, orgID, "flow")
 
 	// Bob (not a member): 404 on attach and create — no leak.
 	rec = do(t, srv, http.MethodPost, "/api/orgs/"+orgID+"/chats", "", alice, aliceCSRF)
@@ -182,7 +188,7 @@ func TestAgentBFFFlowAndGuards(t *testing.T) {
 	}
 	chat := extractString(t, rec.Body.String(), "id")
 
-	rec = do(t, srv, http.MethodPatch, "/api/orgs/"+orgID+"/chats/"+chat, `{"sandbox_id":"`+sbx+`"}`, alice, aliceCSRF)
+	rec = do(t, srv, http.MethodPatch, "/api/orgs/"+orgID+"/chats/"+chat, `{"sandbox_id":"`+sandboxID+`"}`, alice, aliceCSRF)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("attach sandbox = %d: %s", rec.Code, rec.Body.String())
 	}
@@ -191,7 +197,7 @@ func TestAgentBFFFlowAndGuards(t *testing.T) {
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("attach foreign sandbox = %d, want 404", rec.Code)
 	}
-	rec = do(t, srv, http.MethodPatch, "/api/orgs/"+orgID+"/chats/"+chat, `{"sandbox_id":"`+sbx+`"}`, bob, bobCSRF)
+	rec = do(t, srv, http.MethodPatch, "/api/orgs/"+orgID+"/chats/"+chat, `{"sandbox_id":"`+sandboxID+`"}`, bob, bobCSRF)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("attach as outsider = %d, want 404", rec.Code)
 	}
@@ -296,7 +302,7 @@ func contains(list []string, want string) bool {
 // TestAgentSSELastEventID — criterion 5: replay with Last-Event-ID 5
 // answers exactly seq > 5 (no dup, no gap).
 func TestAgentSSELastEventID(t *testing.T) {
-	srv, _, _ := setupAgent(t)
+	srv, _, _, _ := setupAgent(t)
 
 	sfx := fmt.Sprint(time.Now().UnixNano())
 	_, alice, aliceCSRF := login(t, srv, "agent-sse-"+sfx, "agent-sse-"+sfx+"@example.test", "Alice")
@@ -372,11 +378,11 @@ func TestAgentSSELastEventID(t *testing.T) {
 // TestAgentCancelLive — criterion 3: cancel during a slow stream
 // stops the run in ≤5 s (SSE frame reader on a real HTTP server).
 func TestAgentCancelLive(t *testing.T) {
-	srv, _, notify := setupAgent(t)
+	srv, _, notify, sbx := setupAgent(t)
 	// Replace the fast fake with a slow one for this test.
 	slow := newAgentLLM(t, makeAgentChunks(30, "đoạn "), 200*time.Millisecond) // ~6 s stream
 	srv.LLM = &llm.Client{BaseURL: slow.srv.URL, Model: "glm-4.6", Flavor: "webhub", APIKey: "wh_test"}
-	startAgentWorker(t, srv, notify, agent.EnvSource{Fallback: srv.LLM})
+	startAgentWorker(t, srv, notify, agent.EnvSource{Fallback: srv.LLM}, sbx)
 
 	// Real HTTP server so the SSE response can be read while another
 	// request runs.
@@ -388,10 +394,10 @@ func TestAgentCancelLive(t *testing.T) {
 	_, alice, aliceCSRF := login(t, srv, "agent-cancel-"+sfx, "agent-cancel-"+sfx+"@example.test", "Alice")
 	rec := do(t, srv, http.MethodPost, "/api/orgs", `{"name":"Cancel Org `+sfx+`"}`, alice, aliceCSRF)
 	orgID := extractString(t, rec.Body.String(), "id")
-	sbx := seedAgentSandbox(t, srv, orgID, "cancel")
+	sandboxID := seedAgentSandbox(t, srv, orgID, "cancel")
 	rec = do(t, srv, http.MethodPost, "/api/orgs/"+orgID+"/chats", "", alice, aliceCSRF)
 	chat := extractString(t, rec.Body.String(), "id")
-	rec = do(t, srv, http.MethodPatch, "/api/orgs/"+orgID+"/chats/"+chat, `{"sandbox_id":"`+sbx+`"}`, alice, aliceCSRF)
+	rec = do(t, srv, http.MethodPatch, "/api/orgs/"+orgID+"/chats/"+chat, `{"sandbox_id":"`+sandboxID+`"}`, alice, aliceCSRF)
 	rec = do(t, srv, http.MethodPost, "/api/orgs/"+orgID+"/chats/"+chat+"/agent/runs", `{"prompt":"viết dài"}`, alice, aliceCSRF)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create run = %d: %s", rec.Code, rec.Body.String())
@@ -499,8 +505,8 @@ func makeAgentChunks(n int, s string) []string {
 // cross-org 404 (sandbox, run, events) and 403 without the agent
 // scope, plus Idempotency-Key replay and the agent-token run pin.
 func TestAgentV1AuthAndIsolation(t *testing.T) {
-	srv, fake, notify := setupAgent(t)
-	startAgentWorker(t, srv, notify, agent.EnvSource{Fallback: srv.LLM})
+	srv, fake, notify, sbx := setupAgent(t)
+	startAgentWorker(t, srv, notify, agent.EnvSource{Fallback: srv.LLM}, sbx)
 
 	sfx := fmt.Sprint(time.Now().UnixNano())
 	_, alice, aliceCSRF := login(t, srv, "agent-v1a-"+sfx, "agent-v1a-"+sfx+"@example.test", "Alice")
@@ -510,7 +516,7 @@ func TestAgentV1AuthAndIsolation(t *testing.T) {
 	orgA := extractString(t, rec.Body.String(), "id")
 	rec = do(t, srv, http.MethodPost, "/api/orgs", `{"name":"V1 Org B `+sfx+`"}`, bob, bobCSRF)
 	orgB := extractString(t, rec.Body.String(), "id")
-	sbxA := seedAgentSandbox(t, srv, orgA, "v1a")
+	sandboxA := seedAgentSandbox(t, srv, orgA, "v1a")
 
 	// Keys: A has the agent scopes; B's key has NO agent scope; C is
 	// org B's key WITH agent scopes (for the cross-org checks).
@@ -533,23 +539,23 @@ func TestAgentV1AuthAndIsolation(t *testing.T) {
 	}
 
 	// No key → 401.
-	if rec := v1(http.MethodPost, "/v1/sandboxes/"+sbxA+"/agent/runs", `{"prompt":"p"}`, ""); rec.Code != http.StatusUnauthorized {
+	if rec := v1(http.MethodPost, "/v1/sandboxes/"+sandboxA+"/agent/runs", `{"prompt":"p"}`, ""); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("no key = %d, want 401", rec.Code)
 	}
 	// Wrong scope → 403 (criterion 7).
-	if rec := v1(http.MethodPost, "/v1/sandboxes/"+sbxA+"/agent/runs", `{"prompt":"p"}`, keyBNoScope); rec.Code != http.StatusForbidden {
+	if rec := v1(http.MethodPost, "/v1/sandboxes/"+sandboxA+"/agent/runs", `{"prompt":"p"}`, keyBNoScope); rec.Code != http.StatusForbidden {
 		t.Fatalf("scope-less key = %d: %s, want 403", rec.Code, rec.Body.String())
 	}
-	if rec := v1(http.MethodGet, "/v1/sandboxes/"+sbxA+"/agent/runs", "", keyBNoScope); rec.Code != http.StatusForbidden {
+	if rec := v1(http.MethodGet, "/v1/sandboxes/"+sandboxA+"/agent/runs", "", keyBNoScope); rec.Code != http.StatusForbidden {
 		t.Fatalf("scope-less read = %d, want 403", rec.Code)
 	}
 	// Foreign org's sandbox → 404 (criterion 6), never 403.
-	if rec := v1(http.MethodPost, "/v1/sandboxes/"+sbxA+"/agent/runs", `{"prompt":"p"}`, keyB); rec.Code != http.StatusNotFound {
+	if rec := v1(http.MethodPost, "/v1/sandboxes/"+sandboxA+"/agent/runs", `{"prompt":"p"}`, keyB); rec.Code != http.StatusNotFound {
 		t.Fatalf("cross-org create = %d: %s, want 404", rec.Code, rec.Body.String())
 	}
 
 	// A creates a run through /v1 with an Idempotency-Key.
-	req := httptest.NewRequest(http.MethodPost, "/v1/sandboxes/"+sbxA+"/agent/runs", strings.NewReader(`{"prompt":"v1 chạy giúp tôi"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/sandboxes/"+sandboxA+"/agent/runs", strings.NewReader(`{"prompt":"v1 chạy giúp tôi"}`))
 	req.Header.Set("Authorization", "Bearer "+keyA)
 	req.Header.Set("Idempotency-Key", "v1-idem-1")
 	rec2 := httptest.NewRecorder()
@@ -560,7 +566,7 @@ func TestAgentV1AuthAndIsolation(t *testing.T) {
 	runID := extractString(t, rec2.Body.String(), "id")
 
 	// Replay: same key header, same run, replay marker.
-	req = httptest.NewRequest(http.MethodPost, "/v1/sandboxes/"+sbxA+"/agent/runs", strings.NewReader(`{"prompt":"v1 chạy giúp tôi"}`))
+	req = httptest.NewRequest(http.MethodPost, "/v1/sandboxes/"+sandboxA+"/agent/runs", strings.NewReader(`{"prompt":"v1 chạy giúp tôi"}`))
 	req.Header.Set("Authorization", "Bearer "+keyA)
 	req.Header.Set("Idempotency-Key", "v1-idem-1")
 	rec2 = httptest.NewRecorder()
@@ -584,7 +590,7 @@ func TestAgentV1AuthAndIsolation(t *testing.T) {
 	if rec := v1(http.MethodGet, "/v1/agent/runs/"+runID+"/events", "", keyB); rec.Code != http.StatusNotFound {
 		t.Fatalf("cross-org events = %d, want 404", rec.Code)
 	}
-	if rec := v1(http.MethodGet, "/v1/sandboxes/"+sbxA+"/agent/runs", "", keyB); rec.Code != http.StatusNotFound {
+	if rec := v1(http.MethodGet, "/v1/sandboxes/"+sandboxA+"/agent/runs", "", keyB); rec.Code != http.StatusNotFound {
 		t.Fatalf("cross-org list = %d, want 404", rec.Code)
 	}
 

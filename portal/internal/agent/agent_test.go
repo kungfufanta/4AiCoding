@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/tastyeffectco/sandboxd/portal/internal/agent/sandboxtest"
 	"github.com/tastyeffectco/sandboxd/portal/internal/db"
 	"github.com/tastyeffectco/sandboxd/portal/internal/llm"
 	"github.com/tastyeffectco/sandboxd/portal/internal/tenants"
@@ -178,19 +179,24 @@ func (f *slowLLM) client() *llm.Client {
 
 type fixedSource struct{ c *llm.Client }
 
-func (s fixedSource) Client(_ context.Context, run Run) (*llm.Client, error) {
+func (s fixedSource) Client(_ context.Context, run Run) (LLMChoice, error) {
 	c := *s.c
 	c.Model = run.Model
-	return &c, nil
+	return LLMChoice{Client: &c, SupportsTools: true}, nil
 }
 
-// newWorker builds a worker with test-fast timings.
-func newWorker(st *Store, src LLMSource, notify *Notifier) *Worker {
+// newWorker builds a worker with test-fast timings, wired to a fake
+// sandboxd rooted at a fresh temp dir (the A3.2 loop needs a sandbox
+// backend to prep, checkpoint and postcheck against).
+func newWorker(t *testing.T, st *Store, src LLMSource, notify *Notifier) (*Worker, *sandboxtest.Server) {
+	sbx := sandboxtest.New(t.TempDir())
+	t.Cleanup(sbx.Close)
 	return &Worker{
 		ID:         fmt.Sprintf("test-%d", time.Now().UnixNano()%100000),
 		Log:        testLogger(),
 		Store:      st,
 		LLM:        src,
+		Sandboxd:   sbx.Client(),
 		Notify:     notify,
 		Lease:      3 * time.Second,
 		Heartbeat:  300 * time.Millisecond,
@@ -198,7 +204,7 @@ func newWorker(st *Store, src LLMSource, notify *Notifier) *Worker {
 		CancelPoll: 200 * time.Millisecond,
 		SweepEvery: 250 * time.Millisecond,
 		SweepGrace: time.Second,
-	}
+	}, sbx
 }
 
 // waitForStatus polls until the run reaches a terminal state.
@@ -235,7 +241,7 @@ func TestRunLifecycle(t *testing.T) {
 	fake := newSlowLLM(t, []string{"Xin ", "chào, ", "đã xong."}, 10*time.Millisecond)
 	notify := NewNotifier(context.Background(), testLogger(), handle.URL)
 	defer func() { _ = notify }()
-	w := newWorker(st, fixedSource{fake.client()}, notify)
+	w, _ := newWorker(t, st, fixedSource{fake.client()}, notify)
 	ctx, cancel := context.WithCancel(context.Background())
 	w.Start(ctx)
 	defer func() { cancel(); w.Shutdown(0); w.Wait() }()
@@ -428,7 +434,7 @@ func TestCancelWithin5s(t *testing.T) {
 	// ~6 s of stream so the cancel lands mid-stream.
 	fake := newSlowLLM(t, makeChunks(30, "đoạn "), 200*time.Millisecond)
 	notify := NewNotifier(context.Background(), testLogger(), handle.URL)
-	w := newWorker(st, fixedSource{fake.client()}, notify)
+	w, _ := newWorker(t, st, fixedSource{fake.client()}, notify)
 	ctx, cancel := context.WithCancel(context.Background())
 	w.Start(ctx)
 	defer func() { cancel(); w.Shutdown(0); w.Wait() }()
@@ -501,7 +507,7 @@ func TestWorkerLostSwept(t *testing.T) {
 	}
 
 	// A healthy worker's sweeper reaps the stale lease (grace 0.5 s).
-	w := newWorker(st, fixedSource{newSlowLLM(t, []string{"hi"}, 5*time.Millisecond).client()}, nil)
+	w, _ := newWorker(t, st, fixedSource{newSlowLLM(t, []string{"hi"}, 5*time.Millisecond).client()}, nil)
 	wctx, wcancel := context.WithCancel(ctx)
 	w.Start(wctx)
 	defer func() { wcancel(); w.Shutdown(0); w.Wait() }()
