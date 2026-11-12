@@ -65,6 +65,14 @@ chat:
   model: ""
   flavor: ""
 
+# Master key (PORTAL_SECRETS_KEY) that encrypts stored LLM API keys
+# (A2). Name an existing Secret holding it; empty leaves the env unset
+# and saving/using stored keys fails. Never rotate it once keys are
+# stored: the old ciphertexts become unreadable.
+secretsKey:
+  existingSecret: ""
+  existingSecretKey: secrets-key
+
 service:
   type: ClusterIP
   port: 80

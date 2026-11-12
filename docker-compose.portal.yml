@@ -62,6 +62,10 @@ services:
       PORTAL_ADMIN_USERNAME: ${PORTAL_ADMIN_USERNAME:-}
       PORTAL_ADMIN_PASSWORD: ${PORTAL_ADMIN_PASSWORD:-}
       PORTAL_ADMIN_EMAIL: ${PORTAL_ADMIN_EMAIL:-}
+      # Master key for stored LLM keys (A2). The default is a dev-only
+      # passphrase so keys saved locally survive restarts; never reuse it
+      # outside this compose stack.
+      PORTAL_SECRETS_KEY: ${PORTAL_SECRETS_KEY:-dev-only-portal-secrets-key}
       # Sandbox gateway (P4): empty until the `sandboxes` profile is up
       # (the preview workflow passes PORTAL_SANDBOXD_URL explicitly).
       PORTAL_SANDBOXD_URL: ${PORTAL_SANDBOXD_URL:-}

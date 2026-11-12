@@ -45,6 +45,13 @@ database:
   existingSecret: portal-database
   existingSecretKey: database-url
 
+# Created once by deploy-k3s-portal.yml (from the PORTAL_SECRETS_KEY
+# environment secret, or freshly generated when that is unset) and never
+# rotated afterwards — stored LLM keys depend on it.
+secretsKey:
+  existingSecret: portal-secrets-key
+  existingSecretKey: secrets-key
+
 # S1 cookies (Secure, SameSite=Lax) and the OIDC redirect URI derive
 # from this base URL.
 publicURL: "https://chat.devhub.io.vn"
