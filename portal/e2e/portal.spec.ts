@@ -355,7 +355,16 @@ test.describe.serial("portal preview", () => {
     // 4. The result card: succeeded + summary + hello.txt changed.
     await expect(card).toHaveAttribute("data-status", "succeeded", { timeout: 120_000 });
     await expect(page.getByTestId("result-summary")).toContainText("hello.txt");
-    await expect(page.getByTestId("files-changed")).toContainText("hello.txt");
+    // files_changed comes from the git checkpoint; if it is empty, dump
+    // the run JSON (carries result.warning) so the CI log says WHY.
+    const filesBox = page.getByTestId("files-changed");
+    try {
+      await expect(filesBox).toContainText("hello.txt", { timeout: 5_000 });
+    } catch {
+      const runID2 = (await page.getByTestId("agent-run-card").getAttribute("data-run-id")) ?? "";
+      const runDump = await bff(page, "GET", `/api/orgs/${orgID}/agent/runs/${runID2}`);
+      throw new Error(`files-changed empty — run dump: ${JSON.stringify(runDump.data)}`);
+    }
     await shot(page, "33-agent-result");
 
     // 5. Revert through the UI confirm, then the files API proves the

@@ -98,6 +98,11 @@ jobs:
           BASE_URL: http://localhost:8080
         run: npx playwright test
 
+      - name: compose logs (diagnose failures)
+        if: failure()
+        run: |
+          docker compose -f docker-compose.portal.yml --profile sandboxes --profile e2e logs portal sandboxd fake-llm --tail 200
+
       - name: screenshots
         if: always()
         uses: actions/upload-artifact@v4

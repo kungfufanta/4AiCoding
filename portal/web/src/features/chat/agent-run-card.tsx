@@ -299,6 +299,7 @@ export function AgentRunCard({
       className="ml-10 rounded-xl border border-border bg-surface"
       data-testid="agent-run-card"
       data-status={run.status}
+      data-run-id={run.id}
     >
       {/* header: status + counters + actions */}
       <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2">
