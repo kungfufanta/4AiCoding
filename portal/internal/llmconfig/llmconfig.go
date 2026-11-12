@@ -153,10 +153,10 @@ func loadDefaultConnection(ctx context.Context, tx pgx.Tx, orgScoped bool) (Conn
 }
 
 // resolveKey returns the plaintext API key for the connection. For
-// key_mode=shared, the key lives in model_connection_keys under the
-// org's row (the platform admin enters one key per org; the same
-// key is shared across the org). For key_mode=per_org, each org has
-// its own key. Either way the row is keyed by (connection_id, org_id).
+// key_mode = shared, the key is on model_connections.api_key_enc
+// (one key for every org). For key_mode = per_org, the key is in
+// model_connection_keys for the calling org. Platform connections
+// (org_id IS NULL) are always shared (no org_id to key against).
 //
 // The plaintext is AES-256-GCM decrypted with the master key. The
 // master key derivation is in MasterKey(); the env var
@@ -164,16 +164,28 @@ func loadDefaultConnection(ctx context.Context, tx pgx.Tx, orgScoped bool) (Conn
 func resolveKey(ctx context.Context, tx pgx.Tx, c Connection, orgID string) (string, string, error) {
 	var enc []byte
 	var label string
-	err := tx.QueryRow(ctx, `
-                SELECT api_key_enc, key_label
-                FROM model_connection_keys
-                WHERE connection_id = $1 AND org_id = $2::uuid`,
-		c.ID, orgID).Scan(&enc, &label)
+	var err error
+	if c.KeyMode == "shared" || c.OrgID == "" {
+		// Shared key on the connection row itself.
+		err = tx.QueryRow(ctx,
+			`SELECT api_key_enc, key_label FROM model_connections WHERE id = $1`, c.ID).
+			Scan(&enc, &label)
+	} else {
+		// Per-org key.
+		err = tx.QueryRow(ctx, `
+                        SELECT api_key_enc, key_label
+                        FROM model_connection_keys
+                        WHERE connection_id = $1 AND org_id = $2::uuid`,
+			c.ID, orgID).Scan(&enc, &label)
+	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", "", fmt.Errorf("no key configured for connection %s in org %s", c.ID, orgID)
 	}
 	if err != nil {
 		return "", "", fmt.Errorf("load key: %w", err)
+	}
+	if enc == nil {
+		return "", "", fmt.Errorf("no key configured for connection %s", c.ID)
 	}
 	plaintext, err := Decrypt(enc)
 	if err != nil {

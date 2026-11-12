@@ -24,6 +24,7 @@ import (
 
 	"github.com/tastyeffectco/sandboxd/portal/internal/db"
 	"github.com/tastyeffectco/sandboxd/portal/internal/llm"
+	"github.com/tastyeffectco/sandboxd/portal/internal/llmconfig"
 )
 
 const (
@@ -57,12 +58,16 @@ type chatMessageJSON struct {
 
 // handleChatStatus tells the SPA whether chat is wired and which model
 // answers, so the page can show a setup hint instead of failing.
+// A2 resolves the effective connection (org → platform → env fallback).
 func (s *Server) handleChatStatus(w http.ResponseWriter, r *http.Request) {
+	orgID := pathOrgID(r)
 	model := ""
-	if s.LLM != nil {
+	if c, err := s.resolveChatClient(r.Context(), orgID); err == nil {
+		model = c.Model
+	} else if s.LLM != nil {
 		model = s.LLM.Model
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"enabled": s.LLM != nil, "model": model})
+	writeJSON(w, http.StatusOK, map[string]any{"enabled": model != "", "model": model})
 }
 
 func (s *Server) handleListChats(w http.ResponseWriter, r *http.Request) {
@@ -255,9 +260,13 @@ func (s *Server) handleSendChatMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.LLM == nil {
-		writeErr(w, http.StatusServiceUnavailable, "chat_not_configured",
-			"chat is not configured (PORTAL_DEFAULT_LLM_API_KEY)")
-		return
+		// A2: even without the env fallback, a DB-configured
+		// connection may exist. Try resolving before 503.
+		if _, err := s.resolveChatClient(r.Context(), orgID); err != nil {
+			writeErr(w, http.StatusServiceUnavailable, "chat_not_configured",
+				"chat is not configured (no model connection for this org and no PORTAL_DEFAULT_LLM_API_KEY)")
+			return
+		}
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 128<<10)
 	var body struct {
@@ -348,7 +357,18 @@ func (s *Server) handleSendChatMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = send("user", map[string]any{"message": userMsg})
 
-	reply, streamErr := s.LLM.Stream(r.Context(), llm.Request{
+	// A2: resolve the effective LLM connection for this org. Falls
+	// back to s.LLM (env-based) when no DB connection is configured.
+	chatClient, err := s.resolveChatClient(r.Context(), orgID)
+	if err != nil {
+		chatClient = s.LLM // may be nil; the nil check above guards
+	}
+	if chatClient == nil {
+		writeErr(w, http.StatusServiceUnavailable, "chat_not_configured",
+			"chat is not configured (no model connection for this org)")
+		return
+	}
+	reply, streamErr := chatClient.Stream(r.Context(), llm.Request{
 		Messages:  msgs,
 		UserID:    userID,
 		SessionID: id,
@@ -391,4 +411,27 @@ func (s *Server) handleSendChatMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = send("done", map[string]any{"message": asst, "title": title})
+}
+
+// resolveChatClient returns the llm.Client to use for one chat call.
+// Resolution order (AGENT_PLAN A2 §5.2):
+//  1. the org's is_default connection (from model_connections);
+//  2. the platform's is_default connection;
+//  3. env PORTAL_DEFAULT_LLM_* (s.LLM, the Chat MVP fallback).
+//
+// The DB lookup is best-effort: if the DB is unreachable or no
+// connection is configured, the function returns ErrNotFound so the
+// caller can fall back to s.LLM. The decrypted key is never logged.
+func (s *Server) resolveChatClient(ctx context.Context, orgID string) (*llm.Client, error) {
+	k, err := llmconfig.ResolveEffective(ctx, s.Pool, orgID)
+	if err != nil {
+		return nil, err
+	}
+	return &llm.Client{
+		BaseURL: k.BaseURL,
+		APIKey:  k.APIKey, // plaintext; never logged
+		Model:   k.DefaultModel,
+		Flavor:  k.Flavor,
+		HTTP:    s.LLMHTTP,
+	}, nil
 }

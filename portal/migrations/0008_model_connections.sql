@@ -26,6 +26,11 @@ CREATE TABLE IF NOT EXISTS model_connections (
     default_model   TEXT NOT NULL,
     models          JSONB NOT NULL DEFAULT '[]',  -- [{id,context_window,max_output,supports_tools}]
     key_mode        TEXT NOT NULL DEFAULT 'shared' CHECK (key_mode IN ('shared','per_org')),
+    -- api_key_enc holds the shared key when key_mode = 'shared'. NULL
+    -- for key_mode = per_org (the key lives in model_connection_keys,
+    -- one per org). AES-256-GCM encrypted with PORTAL_SECRETS_KEY.
+    api_key_enc     BYTEA NULL,
+    key_label       TEXT NOT NULL DEFAULT '',  -- last 4 chars for UI hint
     timeout_s       INT NOT NULL DEFAULT 60 CHECK (timeout_s > 0 AND timeout_s <= 600),
     max_tokens      INT NOT NULL DEFAULT 4096 CHECK (max_tokens > 0 AND max_tokens <= 32768),
     enabled         BOOLEAN NOT NULL DEFAULT true,
@@ -66,3 +71,9 @@ CREATE POLICY model_connection_keys_tenant ON model_connection_keys FOR ALL
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON model_connections TO portal_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON model_connection_keys TO portal_app;
+
+-- Idempotent column adds so a DB that ran an earlier draft of this
+-- migration (without api_key_enc / key_label) catches up without a
+-- manual DROP.
+ALTER TABLE model_connections ADD COLUMN IF NOT EXISTS api_key_enc BYTEA NULL;
+ALTER TABLE model_connections ADD COLUMN IF NOT EXISTS key_label TEXT NOT NULL DEFAULT '';
