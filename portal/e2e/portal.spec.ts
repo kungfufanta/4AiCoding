@@ -175,4 +175,86 @@ test.describe.serial("portal preview", () => {
     ).toBeVisible();
     await shot(page, "09-invite-invalid");
   });
+
+  // A2 phase 3 follow-up: the bug fix for "chat portal chưa chat được".
+  // The chat status route is org-scoped so a DB-configured platform
+  // connection makes chat usable without PORTAL_DEFAULT_LLM_API_KEY.
+  // The Playwright stack has no PORTAL_DEFAULT_LLM_API_KEY set, so
+  // before this fix the chat textarea was always disabled.
+  //
+  // The Test button + chat reply depend on the Portal container
+  // reaching the public WebHub endpoint. The Go e2e test
+  // TestChatStatusAndSendViaPlatformConnection already covers the
+  // full end-to-end send path against a fake LLM server; the
+  // Playwright test focuses on the UI flow + the bug fix assertion
+  // (chat status enabled after a DB connection is saved).
+  test("admin LLM connection wires up chat (A2 phase 3)", async ({ page }) => {
+    test.setTimeout(120_000); // form fill + Test probe + chat send
+    const slug = await gotoOrgBase(page);
+
+    // 1. Chat is initially disabled (no env LLM, no DB connection yet).
+    await page.goto(`/orgs/${slug}/chat`);
+    await expect(page.getByText("Chat is not configured yet")).toBeVisible();
+    await shot(page, "20-chat-disabled");
+
+    // 2. Admin adds a platform connection pointing at the public WebHub
+    //    demo endpoint.
+    await page.goto(`/orgs/${slug}/admin/llm`);
+    await expect(page.getByRole("heading", { name: "LLM connections" })).toBeVisible();
+    await shot(page, "21-admin-llm-empty");
+
+    await page.getByRole("button", { name: "New connection" }).click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog.getByText("New LLM connection")).toBeVisible();
+    await dialog.getByLabel("Name").fill("webhub-demo");
+    await dialog.getByLabel("Flavor").click();
+    await page.getByRole("option", { name: "WebHub" }).click();
+    await dialog.getByPlaceholder("https://h11hp9dd1y90-d.space-z.ai/v1").fill(
+      "https://h11hp9dd1y90-d.space-z.ai/v1",
+    );
+    await dialog.getByPlaceholder("glm-4.6").fill("glm-4.6");
+    await dialog.getByPlaceholder("wh_… or sk_…").fill("wh_demo_key_local");
+    await dialog.getByRole("checkbox", { name: "Set as default" }).check();
+    await page.getByRole("button", { name: "Save connection" }).click();
+    await expect(page.getByText("webhub-demo")).toBeVisible({ timeout: 10_000 });
+    await shot(page, "22-admin-llm-created");
+
+    // 3. Test the connection — either outcome is fine: success →
+    //    "Test OK" toast; failure → error toast (the bridge network
+    //    may not reach the public WebHub endpoint). We just assert
+    //    that the click produced SOME toast within the Test HTTP
+    //    client's 10s timeout + a buffer, proving the Test button is
+    //    wired to the backend.
+    await page.getByRole("row", { name: /webhub-demo/ }).getByRole("button", { name: "Test" }).click();
+    await expect(
+      page.locator('[role="status"]').first(),
+      "Test button should produce a toast (success or failure)",
+    ).toBeVisible({ timeout: 30_000 });
+    await shot(page, "23-admin-llm-test-toast");
+
+    // 4. Chat is now wired (the actual bug fix). The textarea is
+    //    enabled and the empty state offers the suggestion buttons.
+    //    This assertion does NOT depend on WebHub being reachable —
+    //    the status endpoint reads the DB-configured platform
+    //    connection directly. Before the route fix, this assertion
+    //    failed because ResolveEffective returned "empty org id" and
+    //    the status endpoint fell through to the env-fallback branch
+    //    (s.LLM == nil → enabled:false → textarea disabled).
+    await page.goto(`/orgs/${slug}/chat`);
+    await expect(page.getByPlaceholder(/Nhắn tin/)).toBeEnabled();
+    await expect(page.getByText("Hôm nay bạn muốn làm gì?")).toBeVisible();
+    await shot(page, "24-chat-enabled");
+
+    // 5. Send a message — assert the user bubble appears (proves the
+    //    chat send path is wired and the message was stored locally
+    //    before the upstream call). The user bubble is rendered as
+    //    soon as the SSE `event: user` arrives, before the upstream
+    //    LLM call returns. Whether the upstream reply arrives depends
+    //    on the docker-compose bridge network reaching WebHub; the Go
+    //    e2e test covers the full reply path against a fake LLM.
+    await page.getByPlaceholder(/Nhắn tin/).fill("Say pong");
+    await page.getByRole("button", { name: "Send" }).click();
+    await expect(page.getByText("Say pong").first()).toBeVisible({ timeout: 10_000 });
+    await shot(page, "25-chat-user-bubble");
+  });
 });

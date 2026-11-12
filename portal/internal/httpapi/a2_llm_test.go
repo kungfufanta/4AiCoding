@@ -324,5 +324,77 @@ func TestLLMConnectionListModels(t *testing.T) {
 	}
 }
 
+// TestChatStatusAndSendViaPlatformConnection — the bug fix for "chat
+// portal chưa chat được": the chat status endpoint is org-scoped
+// (GET /api/orgs/{orgID}/chat/status) so ResolveEffective can see a
+// DB-configured platform connection. Before the fix, the org-less
+// /api/chat/status route left orgID empty, ResolveEffective returned
+// "empty org id", and the chat textarea stayed disabled even after
+// the admin added a default connection.
+//
+// This test:
+//  1. has the platform admin create a default platform connection
+//     pointing at a fake OpenAI-compatible server;
+//  2. logs in a regular user, creates an org, and asserts the chat
+//     status reports enabled:true with the connection's model + the
+//     allowed-list models the admin entered;
+//  3. sends a chat message and asserts the SSE stream emits a delta
+//     and a done event, and that the upstream received the
+//     connection's decrypted Bearer key.
+func TestChatStatusAndSendViaPlatformConnection(t *testing.T) {
+	srv, fake, adminSub := setupA2(t)
+	// 1. Admin creates a default platform connection.
+	adminCookies := loginA2Admin(t, srv, adminSub)
+	connBody := `{"name":"webhub-platform","protocol":"openai","flavor":"webhub",` +
+		`"base_url":"` + fake.URL + `/v1","default_model":"glm-4.6",` +
+		`"models":[{"id":"glm-4.6","supports_tools":true},{"id":"glm-4.5-air"}],` +
+		`"key_mode":"shared","timeout_s":60,"max_tokens":4096,` +
+		`"enabled":true,"is_default":true,"api_key":"wh_platform_test_98765"}`
+	rec := do(t, srv, http.MethodPost, "/api/admin/llm/connections", connBody, adminCookies...)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("platform create = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// 2. Regular user creates an org and queries chat status.
+	orgID, ownerCookies := newOrgWithCookies(t, srv, "a2-chat-status", "a2-chat-status@example.test")
+	rec = do(t, srv, http.MethodGet, "/api/orgs/"+orgID+"/chat/status", "", ownerCookies...)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		`"enabled":true`,
+		`"model":"glm-4.6"`,
+		`"glm-4.6"`,
+		`"glm-4.5-air"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("status missing %q: %s", want, body)
+		}
+	}
+
+	// 3. Create a chat + send a message; the fake streams "ok".
+	rec = do(t, srv, http.MethodPost, "/api/orgs/"+orgID+"/chats", "", ownerCookies...)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create chat = %d: %s", rec.Code, rec.Body.String())
+	}
+	chatID := extractString(t, rec.Body.String(), "id")
+	rec = do(t, srv, http.MethodPost, "/api/orgs/"+orgID+"/chats/"+chatID+"/messages",
+		`{"content":"ping"}`, ownerCookies...)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("send = %d: %s", rec.Code, rec.Body.String())
+	}
+	stream := rec.Body.String()
+	for _, want := range []string{"event: user", "event: delta", `"text":"ok"`, "event: done"} {
+		if !strings.Contains(stream, want) {
+			t.Errorf("stream missing %q:\n%s", want, stream)
+		}
+	}
+	// The connection's decrypted key reached the upstream.
+	if auth := fake.lastHeader("Authorization"); auth != "Bearer wh_platform_test_98765" {
+		t.Errorf("upstream Authorization = %q, want Bearer wh_platform_test_98765", auth)
+	}
+}
+
 // keep imports honest
 var _ = db.WithOrg

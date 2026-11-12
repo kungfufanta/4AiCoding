@@ -259,7 +259,7 @@ export const api = {
     return call<UsageResponse>("GET", `/api/orgs/${orgID}/usage${s ? `?${s}` : ""}`);
   },
   logout: () => call<void>("POST", "/auth/logout"),
-  chatStatus: () => call<ChatStatus>("GET", "/api/chat/status"),
+  chatStatus: (orgID: string) => call<ChatStatus>("GET", `/api/orgs/${orgID}/chat/status`),
   listChats: (orgID: string) => call<ChatConversation[]>("GET", `/api/orgs/${orgID}/chats`),
   createChat: (orgID: string) => call<ChatConversation>("POST", `/api/orgs/${orgID}/chats`, {}),
   deleteChat: (orgID: string, chatID: string) => call<void>("DELETE", `/api/orgs/${orgID}/chats/${chatID}`),

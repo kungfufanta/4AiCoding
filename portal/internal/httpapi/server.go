@@ -134,7 +134,12 @@ func (s *Server) Handler() *http.ServeMux {
 	mux.Handle("POST /api/orgs/{orgID}/api-keys", s.withSession(http.HandlerFunc(s.handleCreateApiKey)))
 	mux.Handle("DELETE /api/orgs/{orgID}/api-keys/{keyID}", s.withSession(http.HandlerFunc(s.handleRevokeApiKey)))
 	// Chat MVP: conversations with the platform LLM (SSE replies).
-	mux.Handle("GET /api/chat/status", s.withSession(http.HandlerFunc(s.handleChatStatus)))
+	// A2: the status route is org-scoped so ResolveEffective can
+	// see DB-configured org/platform connections (the legacy
+	// /api/chat/status path left orgID empty and ResolveEffective
+	// returned "empty org id", which made the chat textarea appear
+	// disabled even after the admin added a platform connection).
+	mux.Handle("GET /api/orgs/{orgID}/chat/status", s.withSession(http.HandlerFunc(s.handleChatStatus)))
 	mux.Handle("GET /api/orgs/{orgID}/chats", s.withSession(http.HandlerFunc(s.handleListChats)))
 	mux.Handle("POST /api/orgs/{orgID}/chats", s.withSession(http.HandlerFunc(s.handleCreateChat)))
 	mux.Handle("DELETE /api/orgs/{orgID}/chats/{chatID}", s.withSession(http.HandlerFunc(s.handleDeleteChat)))
