@@ -13,7 +13,7 @@ File theo dõi cho kế hoạch [`docs/PORTAL_PLAN_V2.md`](PORTAL_PLAN_V2.md). C
 | P3 | Tag tenant + webhook ở sandboxd (S3a) | ✅ Xong | #40 | Merged; CI 7/7 xanh |
 | P4 | Gateway sandboxd + trang Sandboxes (S3 + UI) | ✅ Xong | #41 + #46 (merge qua #47) | gateway /v1 + webhook + UI list/detail + preview có sandboxd thật; review fix symlink escape, pinned-key 404 chéo project, stream/exec dùng Stream client, stdin string |
 | P5 | Quota + rate limit + trang Usage (S4 + UI) | 🟨 Đang review | #50 | Branch `portal-p5-quota-usage` (z.ai) — plans + usage_events + quota check trước create (advisory lock theo org) + token bucket theo key + GET /v1/usage + trang Usage UI |
-| P6 | SDK + MCP + trang Quickstart (S5 + UI) | ⬜ | | Cần P4 |
+| P6 | SDK + MCP + trang Quickstart (S5 + UI) | 🟨 Đang review | #55 | Branch `portal-p6-sdk-mcp-quickstart` — portal/openapi.yaml + SDK Python (17 tests) + SDK TypeScript (20 tests) + MCP server 6 tools (9 tests) + trang Quickstart + docs/portal-quickstart.md |
 | Chat MVP | Trang Chat (stream SSE qua WebHub glm-4.6, chưa tool/sandbox) | ✅ Xong | #45 | Merged; A2/A3 sẽ gắn model connection + agent vào chính trang này |
 
 ### Kế hoạch AGENT (`docs/AGENT_PLAN.md`, PR #39 — A0–A7 + T1–T3)
@@ -21,8 +21,8 @@ File theo dõi cho kế hoạch [`docs/PORTAL_PLAN_V2.md`](PORTAL_PLAN_V2.md). C
 | M | Nội dung | Trạng thái | PR | Ghi chú |
 |---|---|---|---|---|
 | A0 | sandboxd: exec v2 + files API (chỉ control-plane) | ✅ Xong | #41 + #46 (merge qua #47) | exec v2 (`timeout_s`/`cwd`/`env`/`stdin`/`max_output_bytes`/`?stream=ndjson`/policy `exec.max_timeout_s`) + files API 5 route + scope `sandboxes:files`; review fix: `noSymlinkComponents` chạy trước MkdirAll/chown, `chownNewParents` Lstat/Lchown + bỏ qua symlink, `execNDJSON` khóa mutex 2 goroutine |
-| A1 | Portal gateway cho exec v2 + files | 🟨 Đang review | #51 | Branch `portal-a1-gateway-files` (z.ai) — proxy 5 route files qua `keyOwnsSandbox` + scope Portal `sandboxes:files`; client Stream cho exec (timeout_s/cwd/env/stdin/max_output_bytes truyền thẳng, `?stream=ndjson` relay SSE); test chéo org → 404 |
-| A2 | Model connections (Portal) | ⬜ | | Cần P2 (đủ); song song A0/A1 — WebHub free mặc định `glm-4.6` (§5.2.1); spike đầu A2: tool calling khi streaming |
+| A1 | Portal gateway cho exec v2 + files | ✅ Xong | #51 + #52 | Gateway files + exec v2; review #52 fix: stream replay 409 idempotency_key_used, audit chỉ ghi khi sandboxd chấp nhận |
+| A2 | Model connections (Portal) | 🟨 Phase 1 đang review | #57 | Branch `portal-a2-llm-connections` — migration 0008 + llmconfig (crypto AES-GCM + SSRF guard + resolver); phase 2 (API + Chat refactor + UI) chờ cron tiếp tục |
 | A3 | Agent runtime + API | ⬜ | | Cần A0+A1+A2 |
 | A4 | UI Agent + Files | ⬜ | | Cần A3 |
 | A5 | Quota/usage/MCP cho agent | ⬜ | | Cần A3, P5, P6 |
@@ -125,3 +125,4 @@ Việc còn mở (không chặn merge):
   - Hai goroutine dùng chung `json.Encoder`/`http.ResponseWriter` phải có `sync.Mutex` quanh emit, nếu không có data race và dòng đan xen.
   - Field contract giữa Portal client và sandboxd phải khớp tên + kiểu: A0 exec v2 nhận `stdin` (chuỗi), không phải `stdin_b64`.
 - **Preview smoke (`scripts/preview/smoke.cjs`):** id sandbox là ULID 26 ký tự, không có tiền tố `sbx-`. Regex đợi nút "Open <id>" phải là `^Open [0-9A-HJKMNP-TV-Z]{26}$`. Nếu preview đỏ, đọc log xem bước nào fail trước khi kết luận DNS flake; chỉ tính flake khi log có `Temporary failure resolving` ở bước cài deps.
+- **A2 phase 1 PR #57 mở (z.ai):** Branch `portal-a2-llm-connections`. Migration `0008_model_connections.sql`: bảng `model_connections` (org_id NULL = platform, RLS cho org) + `model_connection_keys` (per-org, AES-GCM encrypted). Package `portal/internal/llmconfig`: `ResolveEffective` (org default → platform default → ErrNotFound), `MasterKey` (AES-256 từ PORTAL_SECRETS_KEY: raw 32-byte base64/hex hoặc passphrase Argon2id), `Encrypt/Decrypt` (AES-256-GCM), `IsPrivateBaseURL` SSRF guard (127/8, 10/8, 172.16, 192.168, 169.254, ::1, fc00, fe80, DNS fail). Tests: round-trip, tampered ciphertext fails (GCM auth tag), passphrase deterministic, missing env errors, 13 SSRF cases. Phase 2 (chưa làm, cron tiếp): API BFF + /v1, POST /test, GET /models, Chat MVP refactor, WebHub header, UI, e2e tests.
