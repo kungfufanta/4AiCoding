@@ -17,7 +17,11 @@
 #   PORTAL_OIDC_CLIENT_SECRET
 #   PORTAL_DEFAULT_LLM_API_KEY     optional: WebHub wh_ key for the Chat
 #                                  page (glm-4.6). Unset = chat shows
-#                                  "not configured".
+#                                  "not configured". A repository secret
+#                                  works too (environment wins if both).
+#   PORTAL_DEFAULT_LLM_API_LINK    optional: WebHub base URL for the Chat
+#                                  page (PORTAL_DEFAULT_LLM_BASE_URL).
+#                                  Unset = the binary default.
 #   PORTAL_SECRETS_KEY             optional: master key for stored LLM
 #                                  keys (A2). Leave it unset and the first
 #                                  deploy generates one and keeps it in the
@@ -208,8 +212,22 @@ jobs:
           OIDC_ISSUER: ${{ secrets.PORTAL_OIDC_ISSUER }}
           OIDC_CLIENT_ID: ${{ secrets.PORTAL_OIDC_CLIENT_ID }}
           OIDC_CLIENT_SECRET: ${{ secrets.PORTAL_OIDC_CLIENT_SECRET }}
+          LLM_API_LINK: ${{ secrets.PORTAL_DEFAULT_LLM_API_LINK }}
         run: |
           set -eu
+          llm_args=()
+          if [ -n "$LLM_API_LINK" ]; then
+            # Same file trick as OIDC below: jq -Rs quotes the URL safely.
+            llm_file="$RUNNER_TEMP/portal-llm-values.yaml"
+            {
+              echo "chat:"
+              echo "  baseURL: $(printf '%s' "$LLM_API_LINK" | jq -Rs .)"
+            } > "$llm_file"
+            llm_args=(--values "$llm_file")
+            echo "chat base URL: from PORTAL_DEFAULT_LLM_API_LINK"
+          else
+            echo "chat base URL: binary default (PORTAL_DEFAULT_LLM_API_LINK not set)"
+          fi
           oidc_args=()
           if [ -n "$OIDC_ISSUER" ] && [ -n "$OIDC_CLIENT_ID" ] && [ -n "$OIDC_CLIENT_SECRET" ]; then
             # Helm --set/--set-string mangle commas and special characters,
@@ -232,6 +250,7 @@ jobs:
             --values deploy/k3s-1-portal-values.yaml \
             --set image.repository="$IMAGE" \
             --set image.tag="${{ github.sha }}" \
+            "${llm_args[@]}" \
             "${oidc_args[@]}" \
             --wait --timeout 5m
       - name: Verify applied pod hardening
