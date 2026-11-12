@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/tastyeffectco/sandboxd/portal/internal/db"
@@ -34,7 +35,14 @@ type dbBundle struct {
 }
 
 // setupDB opens the pool and applies migrations; skips when the env
-// is unset.
+// is unset. The agent package gets its OWN database (cloned schema,
+// dropped at cleanup): `go test ./...` runs packages in parallel and
+// several of them (httpapi a1/p5b/sandboxes setups) truncate the
+// shared tables — long-lived worker state (leases, sweeps, a run
+// executing over seconds) cannot survive another package deleting
+// its rows mid-test. An isolated database removes the interference
+// in both directions; DROP ... WITH (FORCE) reaps any connection the
+// notifier or a worker still holds.
 func setupDB(t *testing.T) *dbBundle {
 	t.Helper()
 	url := os.Getenv("PORTAL_TEST_DATABASE_URL")
@@ -42,7 +50,26 @@ func setupDB(t *testing.T) *dbBundle {
 		t.Skip("PORTAL_TEST_DATABASE_URL not set")
 	}
 	ctx := context.Background()
-	admin, err := db.Open(ctx, testLogger(), url, "")
+	agentURL := url[:strings.LastIndex(url, "/")+1] + "portal_test_agent"
+
+	adminConn, err := pgx.Connect(ctx, url)
+	if err != nil {
+		t.Fatalf("connect shared db: %v", err)
+	}
+	drop := func() {
+		_, _ = adminConn.Exec(context.Background(), `DROP DATABASE IF EXISTS portal_test_agent WITH (FORCE)`)
+	}
+	drop()
+	if _, err := adminConn.Exec(ctx, `CREATE DATABASE portal_test_agent`); err != nil {
+		_ = adminConn.Close(ctx)
+		t.Fatalf("create agent test db: %v", err)
+	}
+	t.Cleanup(func() {
+		drop()
+		_ = adminConn.Close(context.Background())
+	})
+
+	admin, err := db.Open(ctx, testLogger(), agentURL, "")
 	if err != nil {
 		t.Fatalf("open admin: %v", err)
 	}
@@ -51,28 +78,12 @@ func setupDB(t *testing.T) *dbBundle {
 		t.Fatalf("migrate: %v", err)
 	}
 	admin.Close()
-	pool, err := db.Open(ctx, testLogger(), url, "portal_app")
+	pool, err := db.Open(ctx, testLogger(), agentURL, "portal_app")
 	if err != nil {
 		t.Fatalf("open app pool: %v", err)
 	}
 	t.Cleanup(pool.Close)
-	t.Cleanup(func() { cleanAgentTables(t, url) })
-	return &dbBundle{Pool: pool, URL: url}
-}
-
-func cleanAgentTables(t *testing.T, url string) {
-	t.Helper()
-	ctx := context.Background()
-	admin, err := db.Open(ctx, testLogger(), url, "")
-	if err != nil {
-		return
-	}
-	defer admin.Close()
-	for _, table := range []string{"agent_runs", "chat_messages", "chat_conversations", "sandboxes"} {
-		_, _ = admin.Exec(ctx, "DELETE FROM "+table)
-	}
-	// Only the agent tests' orgs (unique prefix), never other tests'.
-	_, _ = admin.Exec(ctx, `DELETE FROM orgs WHERE name LIKE 'Agent Org %'`)
+	return &dbBundle{Pool: pool, URL: agentURL}
 }
 
 // seedOrg creates an org (+ its owner user) and a sandbox row, the
@@ -111,8 +122,8 @@ func seedSandbox(t *testing.T, st *Store, orgID, tag string) string {
 	sandboxID := "SBX" + fmt.Sprint(time.Now().UnixNano()) + "-" + tag
 	if err := db.WithOrg(ctx, st.Pool, orgID, func(tx db.Tx) error {
 		_, err := tx.Exec(ctx, `
-			INSERT INTO sandboxes (id, org_id, status, image, created_at, updated_at)
-			VALUES ($1, $2::uuid, 'running', 'ubuntu:24.04', now(), now())`, sandboxID, orgID)
+                        INSERT INTO sandboxes (id, org_id, status, image, created_at, updated_at)
+                        VALUES ($1, $2::uuid, 'running', 'ubuntu:24.04', now(), now())`, sandboxID, orgID)
 		return err
 	}); err != nil {
 		t.Fatalf("seed sandbox: %v", err)
@@ -235,9 +246,9 @@ func TestRunLifecycle(t *testing.T) {
 	var chatID string
 	if err := db.WithOrg(db.WithUserID(ctx, userID), st.Pool, orgID, func(tx db.Tx) error {
 		return tx.QueryRow(ctx, `
-			INSERT INTO chat_conversations (org_id, user_id, title)
-			VALUES ($1::uuid, $2::uuid, 'agent flow')
-			RETURNING id::text`, orgID, userID).Scan(&chatID)
+                        INSERT INTO chat_conversations (org_id, user_id, title)
+                        VALUES ($1::uuid, $2::uuid, 'agent flow')
+                        RETURNING id::text`, orgID, userID).Scan(&chatID)
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -314,7 +325,7 @@ func TestRunLifecycle(t *testing.T) {
 	var summaries []string
 	if err := db.WithOrg(db.WithUserID(ctx, userID), st.Pool, orgID, func(tx db.Tx) error {
 		rows, err := tx.Query(ctx, `
-			SELECT content FROM chat_messages WHERE agent_run_id = $1::uuid`, run.ID)
+                        SELECT content FROM chat_messages WHERE agent_run_id = $1::uuid`, run.ID)
 		if err != nil {
 			return err
 		}
