@@ -176,3 +176,49 @@ func lastLine(s string) string {
 	}
 	return s
 }
+
+// revertScript restores the run's checkpoint (plan §8): git checkout
+// <ref> -- . puts the checkpoint content back into index + worktree
+// for every path the tree tracks, then the run's own status-A paths —
+// the files it created, which the ref does not track, so checkout
+// leaves them — are removed from the NUL-separated list on stdin.
+// Paths ride stdin (never argv, never interpolation): they may contain
+// spaces, unicode, quotes. No git clean, no HEAD move, no branch or
+// user-staging reset beyond what checkout <ref> -- . prescribes.
+const revertScript = `set -euo pipefail
+if [ -n "$(git ls-tree -r --name-only "$CHECK_REF" | head -n 1)" ]; then
+  git checkout "$CHECK_REF" -- .
+fi
+paths=$(mktemp); rm -f "$paths"; trap 'rm -f "$paths"' EXIT
+cat > "$paths"
+if [ -s "$paths" ]; then
+  xargs -0 -r rm -f -- < "$paths"
+fi
+`
+
+// RevertChanges rolls the workspace back to the run's checkpoint ref
+// (plan §8). addedPaths is the run's own files_changed subset with
+// status A. The caller post-checks with FilesChanged — after a
+// correct revert the diff against the ref is empty.
+func RevertChanges(ctx context.Context, sbx *sandboxd.Client, sandboxID, projectDir, ref string, addedPaths []string) error {
+	stdin := make([]byte, 0, 64*len(addedPaths))
+	for _, p := range addedPaths {
+		stdin = append(stdin, p...)
+		stdin = append(stdin, 0)
+	}
+	res, err := sbx.Exec(ctx, sandboxID, sandboxd.ExecInput{
+		Cmd:            []string{"bash", "-c", revertScript},
+		Cwd:            projectDir,
+		Env:            map[string]string{"CHECK_REF": ref},
+		Stdin:          stdin,
+		TimeoutS:       60,
+		MaxOutputBytes: 8 << 10,
+	})
+	if err != nil {
+		return err
+	}
+	if res.ExitCode != 0 {
+		return fmt.Errorf("revert failed (exit %d): %s", res.ExitCode, lastLine(res.Stderr))
+	}
+	return nil
+}

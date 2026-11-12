@@ -7,11 +7,13 @@
 //	  GET    /api/orgs/{org}/agent/runs/{run}        — detail
 //	  GET    /api/orgs/{org}/agent/runs/{run}/events — SSE
 //	  POST   /api/orgs/{org}/agent/runs/{run}/cancel — cancel
+//	  POST   /api/orgs/{org}/agent/runs/{run}/revert — revert (creator/admin)
 //	  POST /v1/sandboxes/{id}/agent/runs   (agent:run,  Idempotency-Key)
 //	  GET  /v1/sandboxes/{id}/agent/runs   (agent:read)
 //	  GET  /v1/agent/runs/{run}            (agent:read)
 //	  GET  /v1/agent/runs/{run}/events     (agent:read, ?follow=false)
 //	  POST /v1/agent/runs/{run}/cancel     (agent:run)
+//	  POST /v1/agent/runs/{run}/revert     (agent:run)
 //
 // Membership (BFF) or key-org (v1) is checked first; a foreign run,
 // chat or sandbox answers 404 — never 403 (no existence leak).
@@ -60,6 +62,7 @@ type runJSON struct {
 	OutputTokens    int64           `json:"output_tokens"`
 	Result          json.RawMessage `json:"result,omitempty"`
 	CancelRequested bool            `json:"cancel_requested,omitempty"`
+	RevertedAt      *time.Time      `json:"reverted_at,omitempty"`
 	CreatedAt       time.Time       `json:"created_at"`
 	StartedAt       *time.Time      `json:"started_at,omitempty"`
 	FinishedAt      *time.Time      `json:"finished_at,omitempty"`
@@ -94,6 +97,10 @@ func runToJSON(r agent.Run) runJSON {
 	if r.FinishedAt.Unix() > 0 {
 		t := r.FinishedAt
 		j.FinishedAt = &t
+	}
+	if r.RevertedAt.Unix() > 0 {
+		t := r.RevertedAt
+		j.RevertedAt = &t
 	}
 	return j
 }
@@ -424,6 +431,146 @@ func (s *Server) cancelAgentRun(w http.ResponseWriter, r *http.Request, orgID, r
 	writeJSON(w, http.StatusAccepted, runToJSON(run))
 }
 
+// revertAccess is who wants the revert: the BFF passes the session
+// user (permission = creator or admin, plan §2-6); /v1 passes the
+// key/token identity (the agent:run scope IS the permission).
+type revertAccess struct {
+	orgID, runID       string
+	actorKind, actorID string
+	isAdmin            bool
+	creatorID          string // session user id, "" for /v1
+}
+
+// handleBFFRevertAgentRun — POST /api/orgs/{org}/agent/runs/{run}/revert.
+func (s *Server) handleBFFRevertAgentRun(w http.ResponseWriter, r *http.Request) {
+	orgID := pathOrgID(r)
+	role, ok := s.requireMember(w, r, orgID)
+	if !ok {
+		return
+	}
+	userID := db.UserID(r.Context())
+	s.revertAgentRun(w, r, revertAccess{
+		orgID: orgID, runID: r.PathValue("runID"),
+		actorKind: "user", actorID: userID,
+		isAdmin:   role == tenants.RoleOwner || role == tenants.RoleAdmin,
+		creatorID: userID,
+	})
+}
+
+// revertAgentRun is the shared A3.3 revert flow (plan §8):
+// validate → exec the restore in the sandbox → claim reverted_at →
+// reverted event + audit. The exec runs BEFORE the claim so a failed
+// restore leaves the run revertible; the claim is the atomic gate
+// against a double revert racing across the two API surfaces.
+func (s *Server) revertAgentRun(w http.ResponseWriter, r *http.Request, a revertAccess) {
+	store := agentStore(s)
+	run, err := store.PrepareRevert(r.Context(), a.orgID, a.runID)
+	switch {
+	case errors.Is(err, agent.ErrNotFound):
+		writeErr(w, http.StatusNotFound, "not_found", "run not found")
+		return
+	case errors.Is(err, agent.ErrRunInProgress):
+		writeErr(w, http.StatusConflict, "run_in_progress", "the sandbox has an active run")
+		return
+	case errors.Is(err, agent.ErrAlreadyReverted):
+		writeErr(w, http.StatusConflict, "already_reverted", "the run was already reverted")
+		return
+	case errors.Is(err, agent.ErrNoCheckpoint):
+		writeErr(w, http.StatusConflict, "no_checkpoint", "the run has no checkpoint to restore from")
+		return
+	case errors.Is(err, agent.ErrNotLatestRun):
+		writeErr(w, http.StatusConflict, "not_latest_run", "only the latest run of a sandbox can be reverted")
+		return
+	case err != nil:
+		writeErr(w, http.StatusInternalServerError, "internal", "could not load run")
+		return
+	}
+	// Permission (plan §2-6): the run's creator or an org admin.
+	// Members get 403; a foreign org never gets here (404 above).
+	if a.creatorID != "" && !a.isAdmin && run.CreatedByUser != a.creatorID {
+		writeErr(w, http.StatusForbidden, "forbidden", "only the run creator or an org admin can revert")
+		return
+	}
+	if s.Sandboxd == nil {
+		writeErr(w, http.StatusServiceUnavailable, "agent_not_configured", "no sandbox gateway wired")
+		return
+	}
+
+	// The run's own files_changed drives the restore (plan §8): the
+	// status-A paths are deleted, the M/D/R count is reported as
+	// files_restored.
+	var changed []agent.FileChange
+	if len(run.Result) > 0 {
+		var res struct {
+			FilesChanged []agent.FileChange `json:"files_changed"`
+		}
+		if jerr := json.Unmarshal(run.Result, &res); jerr == nil {
+			changed = res.FilesChanged
+		}
+	}
+	added := make([]string, 0, len(changed))
+	restored := 0
+	for _, f := range changed {
+		if f.Status == "A" {
+			added = append(added, f.Path)
+		} else {
+			restored++
+		}
+	}
+
+	// Sandbox work outlives the request context being cancelled mid-
+	// exec (the client may hang up while git restores big trees).
+	pctx, pcancel := context.WithTimeout(context.WithoutCancel(r.Context()), 90*time.Second)
+	defer pcancel()
+	env, perr := agent.ProbeEnv(pctx, s.Sandboxd, run.SandboxID)
+	if perr != nil {
+		writeErr(w, http.StatusBadGateway, "sandbox_unavailable", "the sandbox is unreachable")
+		return
+	}
+	if rerr := agent.RevertChanges(pctx, s.Sandboxd, run.SandboxID, env.ProjectDir, run.CheckpointRef, added); rerr != nil {
+		writeErr(w, http.StatusBadGateway, "revert_failed", "could not restore the checkpoint")
+		return
+	}
+	// Post-check (plan §8): files_changed vs the ref must be empty.
+	remaining, ferr := agent.FilesChanged(pctx, s.Sandboxd, run.SandboxID, env.ProjectDir, run.CheckpointRef)
+	if ferr != nil {
+		s.Log.Warn("agent revert post-check failed", "run_id", a.runID, slog.Any("error", ferr))
+		remaining = nil
+	}
+	if len(remaining) > 0 {
+		s.Log.Warn("agent revert left files behind", "run_id", a.runID, "remaining", len(remaining))
+	}
+
+	claimed, cerr := store.ClaimRevert(pctx, a.orgID, a.runID)
+	if cerr != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", "could not mark the run reverted")
+		return
+	}
+	if !claimed {
+		writeErr(w, http.StatusConflict, "already_reverted", "the run was already reverted")
+		return
+	}
+	if aerr := store.AppendRevertEvent(pctx, a.orgID, a.runID, restored, len(added), remaining); aerr != nil {
+		s.Log.Warn("agent reverted event failed", "run_id", a.runID, slog.Any("error", aerr))
+	}
+	auditMeta, _ := json.Marshal(map[string]any{
+		"run_id": a.runID, "sandbox_id": run.SandboxID,
+		"files_restored": restored, "files_removed": len(added),
+	})
+	auditCtx := context.WithoutCancel(r.Context())
+	if err := db.WithOrg(auditCtx, s.Pool, a.orgID, func(tx db.Tx) error {
+		return tenants.Audit(auditCtx, tx, a.actorKind, a.actorID, "agent.run.revert", a.runID, string(auditMeta))
+	}); err != nil {
+		s.Log.Warn("audit agent.run.revert failed", slog.Any("error", err))
+	}
+	fresh, gerr := store.GetRun(pctx, a.orgID, a.runID)
+	if gerr != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"reverted": true})
+		return
+	}
+	writeJSON(w, http.StatusOK, runToJSON(fresh))
+}
+
 // handleBFFAgentRunEvents — GET /api/orgs/{org}/agent/runs/{run}/events.
 func (s *Server) handleBFFAgentRunEvents(w http.ResponseWriter, r *http.Request) {
 	orgID := pathOrgID(r)
@@ -590,6 +737,23 @@ func (s *Server) handleV1CancelAgentRun(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		s.cancelAgentRun(w, r, id.OrgID, runID, id.Kind, id.ActorID)
+	})
+}
+
+// handleV1RevertAgentRun — POST /v1/agent/runs/{run}/revert. The
+// agent:run scope is the permission (plan §9.2); an agent token
+// pinned to one run reverts only that run.
+func (s *Server) handleV1RevertAgentRun(w http.ResponseWriter, r *http.Request) {
+	s.withAgentAuth(w, r, "agent:run", func(w http.ResponseWriter, r *http.Request, id agentIdentity) {
+		runID := r.PathValue("runID")
+		if id.TokenRunID != "" && id.TokenRunID != runID {
+			writeErr(w, http.StatusNotFound, "not_found", "run not found")
+			return
+		}
+		s.revertAgentRun(w, r, revertAccess{
+			orgID: id.OrgID, runID: runID,
+			actorKind: id.Kind, actorID: id.ActorID,
+		})
 	})
 }
 

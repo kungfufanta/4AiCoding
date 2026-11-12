@@ -159,6 +159,7 @@ func (s *Server) Handler() *http.ServeMux {
 	mux.Handle("GET /api/orgs/{orgID}/agent/runs/{runID}", s.withSession(http.HandlerFunc(s.handleBFFGetAgentRun)))
 	mux.Handle("GET /api/orgs/{orgID}/agent/runs/{runID}/events", s.withSession(http.HandlerFunc(s.handleBFFAgentRunEvents)))
 	mux.Handle("POST /api/orgs/{orgID}/agent/runs/{runID}/cancel", s.withSession(http.HandlerFunc(s.handleBFFCancelAgentRun)))
+	mux.Handle("POST /api/orgs/{orgID}/agent/runs/{runID}/revert", s.withSession(http.HandlerFunc(s.handleBFFRevertAgentRun)))
 	// Sandboxes BFF (PORTAL_PLAN_V2 P4 UI): session + CSRF, member role.
 	mux.Handle("GET /api/orgs/{orgID}/sandboxes", s.withSession(http.HandlerFunc(s.handleBFFListSandboxes)))
 	mux.Handle("POST /api/orgs/{orgID}/sandboxes", s.withSession(http.HandlerFunc(s.handleBFFCreateSandbox)))
@@ -217,6 +218,7 @@ func (s *Server) Handler() *http.ServeMux {
 	mux.Handle("GET /v1/agent/runs/{runID}", http.HandlerFunc(s.handleV1GetAgentRun))
 	mux.Handle("GET /v1/agent/runs/{runID}/events", http.HandlerFunc(s.handleV1AgentRunEvents))
 	mux.Handle("POST /v1/agent/runs/{runID}/cancel", http.HandlerFunc(s.handleV1CancelAgentRun))
+	mux.Handle("POST /v1/agent/runs/{runID}/revert", http.HandlerFunc(s.handleV1RevertAgentRun))
 	// Lifecycle webhook (PORTAL_PLAN 4.4): signature-authed, so it does
 	// NOT sit behind withSession. Registered only with a secret.
 	if s.WebhookSecret != "" {

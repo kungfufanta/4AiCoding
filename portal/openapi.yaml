@@ -484,6 +484,31 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error", description: not_cancellable — the run already finished. }
 
+  /v1/agent/runs/{runID}/revert:
+    post:
+      operationId: revertAgentRun
+      tags: [agent]
+      summary: "Roll the sandbox workspace back to the run's checkpoint (plan §8: latest run only, no active run, not yet reverted). Scope: agent:run."
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: runID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Reverted — the workspace matches the run's checkpoint again.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentRun" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error", description: forbidden — BFF-only; on /v1 the agent:run scope is the permission. }
+        "404": { $ref: "#/components/responses/Error", description: not_found — foreign or unknown run. }
+        "409":
+          $ref: "#/components/responses/Error"
+          description: not_latest_run / already_reverted / no_checkpoint / run_in_progress.
+        "502": { $ref: "#/components/responses/Error", description: revert_failed or sandbox_unavailable — the git restore did not land. }
+
 components:
   securitySchemes:
     bearerAuth:
@@ -689,6 +714,7 @@ components:
           nullable: true
           description: "{summary, files_changed[], build_status, preview_ok, steps, input_tokens, output_tokens} once finished."
         cancel_requested: { type: boolean }
+        reverted_at: { type: string, format: date-time, nullable: true, description: Set once the run's changes were rolled back to its checkpoint. }
         created_at: { type: string, format: date-time }
         started_at: { type: string, format: date-time, nullable: true }
         finished_at: { type: string, format: date-time, nullable: true }
