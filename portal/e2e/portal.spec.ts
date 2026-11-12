@@ -388,7 +388,7 @@ test.describe.serial("portal preview", () => {
     if (key.status !== 201) throw new Error(`create key = ${key.status}: ${JSON.stringify(key.data)}`);
     const secret = (key.data as { secret: string }).secret;
     const files = await page.evaluate(async ({ sbxID, secret }) => {
-      const res = await fetch(`/v1/sandboxes/${sbxID}/files?path=/home/sandbox/workspace`, {
+      const res = await fetch(`/v1/sandboxes/${sbxID}/files?path=workspace`, {
         headers: { Authorization: `Bearer ${secret}` },
       });
       return { status: res.status, body: await res.text() };
