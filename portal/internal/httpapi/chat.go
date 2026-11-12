@@ -56,18 +56,26 @@ type chatMessageJSON struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// handleChatStatus tells the SPA whether chat is wired and which model
-// answers, so the page can show a setup hint instead of failing.
-// A2 resolves the effective connection (org → platform → env fallback).
+// handleChatStatus tells the SPA whether chat is wired, which model
+// answers by default and which models the picker may offer (A2).
+// Resolution order: org default → platform default → env fallback.
 func (s *Server) handleChatStatus(w http.ResponseWriter, r *http.Request) {
 	orgID := pathOrgID(r)
 	model := ""
-	if c, err := s.resolveChatClient(r.Context(), orgID); err == nil {
-		model = c.Model
+	models := []string{}
+	if k, err := llmconfig.ResolveEffective(r.Context(), s.Pool, orgID); err == nil {
+		model = k.DefaultModel
+		for _, m := range k.Models {
+			models = append(models, m.ID)
+		}
 	} else if s.LLM != nil {
 		model = s.LLM.Model
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"enabled": model != "", "model": model})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"enabled": model != "",
+		"model":   model,
+		"models":  models,
+	})
 }
 
 func (s *Server) handleListChats(w http.ResponseWriter, r *http.Request) {
@@ -271,6 +279,10 @@ func (s *Server) handleSendChatMessage(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 128<<10)
 	var body struct {
 		Content string `json:"content"`
+		// Model (A2): optional per-message model override. Must be in
+		// the effective connection's allowed list; empty uses the
+		// connection's default_model.
+		Model string `json:"model,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "bad_request", `body must be {"content": "..."}`)
@@ -368,6 +380,17 @@ func (s *Server) handleSendChatMessage(w http.ResponseWriter, r *http.Request) {
 			"chat is not configured (no model connection for this org)")
 		return
 	}
+	// Model override (A2): when the caller picked a model, verify it
+	// is in the connection's allowed list before using it. An empty
+	// override keeps the connection's default_model.
+	if body.Model != "" {
+		if !s.modelAllowed(r.Context(), orgID, body.Model) {
+			writeErr(w, http.StatusBadRequest, "model_not_allowed",
+				"model "+body.Model+" is not in the connection's allowed list")
+			return
+		}
+		chatClient.Model = body.Model
+	}
 	reply, streamErr := chatClient.Stream(r.Context(), llm.Request{
 		Messages:  msgs,
 		UserID:    userID,
@@ -434,4 +457,23 @@ func (s *Server) resolveChatClient(ctx context.Context, orgID string) (*llm.Clie
 		Flavor:  k.Flavor,
 		HTTP:    s.LLMHTTP,
 	}, nil
+}
+
+// modelAllowed reports whether model is in the effective connection's
+// allowed list (or the list is empty = every model allowed). Used to
+// gate the per-message model override from the Chat model picker.
+func (s *Server) modelAllowed(ctx context.Context, orgID, model string) bool {
+	k, err := llmconfig.ResolveEffective(ctx, s.Pool, orgID)
+	if err != nil {
+		return false // no connection = no override
+	}
+	if len(k.Models) == 0 {
+		return true // open list
+	}
+	for _, m := range k.Models {
+		if m.ID == model {
+			return true
+		}
+	}
+	return false
 }

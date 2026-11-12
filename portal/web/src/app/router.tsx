@@ -25,6 +25,8 @@ import { ChatPage } from "../features/chat/chat-page";
 import { SandboxesPage } from "../features/sandboxes/sandboxes-page";
 import { SandboxDetailPage } from "../features/sandboxes/sandbox-detail-page";
 import { UsagePage } from "../features/usage/usage-page";
+import { OrgModelsPage } from "../features/org-models/org-models-page";
+import { AdminLLMPage } from "../features/admin-llm/admin-llm-page";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -55,6 +57,8 @@ export function PortalApp() {
                   <Route path="sandboxes" element={<SandboxesPage />} />
                   <Route path="sandboxes/:sandboxId" element={<SandboxDetailPage />} />
                   <Route path="usage" element={<UsagePage />} />
+                  <Route path="models" element={<OrgModelsPage />} />
+                  <Route path="admin/llm" element={<AdminLLMPage />} />
                   <Route path="members" element={<MembersPage />} />
                   <Route path="api-keys" element={<ApiKeysPage />} />
                   <Route path="audit" element={<AuditPage />} />

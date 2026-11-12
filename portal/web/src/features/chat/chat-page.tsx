@@ -13,6 +13,7 @@ import { cn } from "../../lib/cn";
 import { useShell } from "../../layout/app-shell";
 import { Button } from "../../ui/button";
 import { useConfirm } from "../../ui/dialog";
+import { Select } from "../../ui/select";
 import { Skeleton } from "../../ui/skeleton";
 import { useToast } from "../../ui/toast";
 import { Markdown } from "./markdown";
@@ -55,6 +56,11 @@ export function ChatPage() {
 
   const disabled = status.data?.enabled === false;
   const busy = pending !== null;
+  // A2: per-message model picker. The options come from the effective
+  // connection's allowed list (chat status); empty list = only the
+  // connection's default model, so the picker hides.
+  const availableModels = status.data?.models ?? [];
+  const [selectedModel, setSelectedModel] = useState("");
 
   async function send(text: string) {
     const content = text.trim();
@@ -95,7 +101,7 @@ export function ChatPage() {
           onDone: () => {},
           onError: (_code, message) => toast("error", message),
         },
-        ctrl.signal,
+        { model: selectedModel || undefined, signal: ctrl.signal },
       );
     } catch (err) {
       if (!(err instanceof DOMException && err.name === "AbortError")) {
@@ -200,11 +206,21 @@ export function ChatPage() {
           <h1 className="truncate text-sm font-semibold text-fg">
             {chats.data?.find((c) => c.id === chatId)?.title ?? "New chat"}
           </h1>
-          {status.data?.model && (
+          {availableModels.length > 1 ? (
+            <div className="ml-auto shrink-0">
+              <Select
+                ariaLabel="Model"
+                value={selectedModel || status.data?.model || ""}
+                onValueChange={setSelectedModel}
+                options={availableModels.map((m) => ({ value: m, label: m }))}
+                className="h-7 font-mono text-[11px]"
+              />
+            </div>
+          ) : status.data?.model ? (
             <span className="ml-auto shrink-0 whitespace-nowrap rounded-full bg-surface-2 px-2 py-0.5 font-mono text-[11px] text-muted">
-              {status.data.model}
+              {selectedModel || status.data.model}
             </span>
-          )}
+          ) : null}
         </header>
 
         <div ref={scrollRef} className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-5" aria-live="polite">
