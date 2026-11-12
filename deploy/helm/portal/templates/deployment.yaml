@@ -67,6 +67,16 @@ spec:
                   name: {{ default (include "portal.fullname" .) .Values.database.existingSecret }}
                   key: {{ .Values.chat.apiKeyKey | default "llm-api-key" }}
                   optional: true
+            # Master key for stored LLM keys (A2, AES-256-GCM). Must never
+            # change once keys are stored, so it lives in its own Secret
+            # that deploys create once and then leave alone.
+            {{- if .Values.secretsKey.existingSecret }}
+            - name: PORTAL_SECRETS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secretsKey.existingSecret }}
+                  key: {{ .Values.secretsKey.existingSecretKey | default "secrets-key" }}
+            {{- end }}
             {{- if .Values.chat.baseURL }}
             - name: PORTAL_DEFAULT_LLM_BASE_URL
               value: {{ .Values.chat.baseURL | quote }}

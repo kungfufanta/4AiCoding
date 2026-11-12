@@ -18,6 +18,15 @@
 #   PORTAL_DEFAULT_LLM_API_KEY     optional: WebHub wh_ key for the Chat
 #                                  page (glm-4.6). Unset = chat shows
 #                                  "not configured".
+#   PORTAL_SECRETS_KEY             optional: master key for stored LLM
+#                                  keys (A2). Leave it unset and the first
+#                                  deploy generates one and keeps it in the
+#                                  cluster Secret portal-secrets-key.
+#   PORTAL_SECRETS_ADMIN_TOKEN     optional: fine-grained PAT on this repo
+#                                  with "Secrets" + "Environments" read &
+#                                  write. When set, a generated key is also
+#                                  saved back as the PORTAL_SECRETS_KEY
+#                                  secret of this environment (backup).
 #
 # DNS: chat.devhub.io.vn must point at the k3s-1 edge (same target as
 # 4aicoding.devhub.io.vn) so Traefik routes the host and cert-manager can
@@ -135,6 +144,65 @@ jobs:
           kubectl -n "$NAMESPACE" create secret generic portal-database "${args[@]}" \
             --dry-run=client -o yaml | kubectl apply -f -
           rm -rf "$d"
+      - name: Ensure secrets master key (never rotated)
+        # PORTAL_SECRETS_KEY encrypts every stored LLM API key, so it must
+        # stay the same across deploys. Order of precedence:
+        #   1. the cluster Secret portal-secrets-key, once it exists, is
+        #      the source of truth and is never overwritten;
+        #   2. otherwise the PORTAL_SECRETS_KEY environment secret seeds it;
+        #   3. otherwise a fresh random 32-byte key is generated.
+        # A generated key is copied back to the GitHub environment secret
+        # when PORTAL_SECRETS_ADMIN_TOKEN is set (GITHUB_TOKEN cannot write
+        # secrets). The key is masked and never echoed.
+        env:
+          GH_SECRETS_KEY: ${{ secrets.PORTAL_SECRETS_KEY }}
+          ADMIN_TOKEN: ${{ secrets.PORTAL_SECRETS_ADMIN_TOKEN }}
+        run: |
+          set -euo pipefail
+          name=portal-secrets-key
+          d="$RUNNER_TEMP/portal-secrets-key"
+          mkdir -m 700 -p "$d"
+          trap 'rm -rf "$d"' EXIT
+          generated=false
+          if kubectl -n "$NAMESPACE" get secret "$name" >/dev/null 2>&1; then
+            kubectl -n "$NAMESPACE" get secret "$name" -o jsonpath='{.data.secrets-key}' \
+              | base64 --decode > "$d/key"
+            test -s "$d/key"
+            echo "::add-mask::$(cat "$d/key")"
+            if [ -n "$GH_SECRETS_KEY" ] && [ "$GH_SECRETS_KEY" != "$(cat "$d/key")" ]; then
+              echo "::error::PORTAL_SECRETS_KEY on k3s-1 differs from the cluster Secret $name." >&2
+              echo "Refusing to rotate: stored LLM keys would become unreadable." >&2
+              echo "Remove or fix the GitHub secret (the cluster copy is kept)." >&2
+              exit 1
+            fi
+            echo "secrets key: kept existing cluster Secret $name"
+          else
+            if [ -n "$GH_SECRETS_KEY" ]; then
+              printf '%s' "$GH_SECRETS_KEY" > "$d/key"
+              echo "secrets key: seeded from the PORTAL_SECRETS_KEY environment secret"
+            else
+              openssl rand -base64 32 | tr -d '\n' > "$d/key"
+              echo "::add-mask::$(cat "$d/key")"
+              generated=true
+              echo "secrets key: generated a new random key"
+            fi
+            # create (not apply): fails instead of overwriting if another
+            # run created it in the meantime.
+            kubectl -n "$NAMESPACE" create secret generic "$name" \
+              --from-file=secrets-key="$d/key"
+          fi
+          if [ -z "$GH_SECRETS_KEY" ]; then
+            if [ -n "$ADMIN_TOKEN" ]; then
+              GH_TOKEN="$ADMIN_TOKEN" gh secret set PORTAL_SECRETS_KEY \
+                --repo "$GITHUB_REPOSITORY" --env k3s-1 < "$d/key"
+              echo "secrets key: saved to the k3s-1 environment secret PORTAL_SECRETS_KEY"
+            else
+              echo "::notice::PORTAL_SECRETS_KEY lives only in the cluster Secret $name. Set PORTAL_SECRETS_ADMIN_TOKEN to back it up to GitHub automatically."
+            fi
+          fi
+          if [ "$generated" = true ]; then
+            echo "secrets key: new key in use from this deploy on"
+          fi
       - name: Deploy portal (chat.devhub.io.vn)
         env:
           OIDC_ISSUER: ${{ secrets.PORTAL_OIDC_ISSUER }}
