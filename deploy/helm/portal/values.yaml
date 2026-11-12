@@ -39,7 +39,9 @@ oidc:
 # disables the whole sandbox surface (/v1/sandboxes* answers 503 and the
 # dashboard shows "backend not connected"). The api key is a sandboxd
 # API key carrying the require_external flag (P3a) plus the
-# sandbox:create/read/exec scopes; the webhook secret must match that
+# sandbox:create/read/exec AND sandboxes:files scopes (the files scope
+# is required by A1 — without it the gateway's proxy to /v1/sandboxes/{id}/files*
+# gets 403 from sandboxd); the webhook secret must match that
 # deployment's SANDBOXD_WEBHOOK_SECRET. For production prefer injecting
 # apiKey/webhookSecret via existingSecret + extraEnv instead of values.
 sandboxd:

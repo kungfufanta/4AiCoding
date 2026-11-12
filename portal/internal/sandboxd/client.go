@@ -90,6 +90,11 @@ type CreateInput struct {
 	EgressAllow []string
 	RepoURL     string
 	Branch      string
+	// TTLSeconds (P5b) sets the sandbox's idle timeout. 0 = sandboxd
+	// default. The Portal's plan ceiling (plans.max_ttl_seconds)
+	// clamps this BEFORE CreateInput is built; sandboxd's policy
+	// clamps it again.
+	TTLSeconds int
 }
 
 // ExecInput/ExecResult mirror the v1 exec v2 fields (AGENT_PLAN A0):
@@ -308,6 +313,9 @@ func (c *Client) Create(ctx context.Context, in CreateInput) (Sandbox, error) {
 	}
 	if in.RepoURL != "" {
 		body["workspace"] = map[string]string{"repo_url": in.RepoURL, "branch": in.Branch}
+	}
+	if in.TTLSeconds > 0 {
+		body["lifecycle"] = map[string]any{"idle_timeout_secs": in.TTLSeconds}
 	}
 	var sb Sandbox
 	if err := c.do(ctx, http.MethodPost, "/v1/sandboxes", body, &sb); err != nil {

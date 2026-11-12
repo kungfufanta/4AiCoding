@@ -18,10 +18,14 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"sync"
+	"time"
 
+	"github.com/tastyeffectco/sandboxd/portal/internal/apikeys"
 	"github.com/tastyeffectco/sandboxd/portal/internal/db"
 	"github.com/tastyeffectco/sandboxd/portal/internal/quota"
+	"github.com/tastyeffectco/sandboxd/portal/internal/ratelimit"
 )
 
 var (
@@ -34,12 +38,17 @@ var (
 // orgRunLocks serialises admissions per org (see package comment).
 var orgRunLocks sync.Map // org id → *sync.Mutex
 
-// admitRun checks the org's concurrent-sandbox ceiling and, when the
-// run is admitted, returns a release func the caller MUST call once
-// the sandbox is running and indexed (or the attempt failed). With
-// quota disabled, or an org whose plan is missing from the catalogue,
-// every run is admitted.
-func (s *Server) admitRun(ctx context.Context, orgID string) (func(), error) {
+// admitRun checks the org's concurrent-sandbox ceiling AND the four
+// plan limits (vCPU/TTL/egress/monthly-vCPU), and when the run is
+// admitted returns a release func the caller MUST call once the
+// sandbox is running and indexed (or the attempt failed). With quota
+// disabled, or an org whose plan is missing from the catalogue, every
+// run is admitted.
+//
+// req carries the create request fields the plan limits apply to. It
+// is built by the caller from its createSandboxBody so this package
+// does not depend on httpapi types.
+func (s *Server) admitRun(ctx context.Context, orgID string, req quota.CreateRequest) (func(), error) {
 	if !s.QuotaEnabled {
 		return func() {}, nil
 	}
@@ -61,6 +70,17 @@ func (s *Server) admitRun(ctx context.Context, orgID string) (func(), error) {
 		}
 		return nil, fmt.Errorf("%w: %v", errQuotaCheck, err)
 	}
+	// P5b: per-sandbox limits. CheckConcurrentSandboxes ran its own
+	// tx with the advisory lock; CheckPlanLimits opens a second tx
+	// (the monthly vCPU sum is read-only and does not need the lock,
+	// but the lock above still gates the create that follows).
+	if err := quota.CheckPlanLimits(ctx, s.Pool, orgID, plan, req); err != nil {
+		mu.Unlock()
+		if lv, ok := quota.IsLimitViolation(err); ok {
+			return nil, lv
+		}
+		return nil, fmt.Errorf("%w: %v", errQuotaCheck, err)
+	}
 	return mu.Unlock, nil
 }
 
@@ -74,6 +94,18 @@ func (s *Server) writeAdmitErr(w http.ResponseWriter, orgID string, err error) b
 		s.Log.Error("quota check failed", "org_id", orgID, "error", err.Error())
 		writeErr(w, http.StatusInternalServerError, "internal", "could not check quota")
 	default:
+		if lv, ok := quota.IsLimitViolation(err); ok {
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+				"error": map[string]any{
+					"code":    "plan_limit",
+					"message": "the requested sandbox exceeds the org's plan limit",
+					"limit":   lv.Limit,
+					"used":    lv.Used,
+					"field":   lv.Field,
+				},
+			})
+			return true
+		}
 		return false
 	}
 	return true
@@ -89,4 +121,37 @@ func (s *Server) markRunning(ctx context.Context, orgID, id string) {
 	}); err != nil {
 		s.Log.Warn("sandbox index mark running failed", "sandbox_id", id, "error", err.Error())
 	}
+}
+
+// rateLimit applies the per-key token bucket for one route family.
+// Returns true when the caller may proceed; false (after writing the
+// 429 response) when the bucket is empty. The refill rate comes from
+// the org's plan (plan.rate_limit_rps); a missing plan falls back to
+// the free default (2 RPS). The kind picks one of the per-family
+// buckets so a files loop cannot starve exec.
+//
+// The check is best-effort: if LoadPlan fails (e.g. the DB is briefly
+// unreachable), the call proceeds rather than failing open on a 500 —
+// a misbehaving limiter must not lock the org out of its sandboxes.
+func (s *Server) rateLimit(w http.ResponseWriter, key apikeys.Key, kind ratelimit.BucketKind) bool {
+	if s.Limiter == nil {
+		return true
+	}
+	plan, _ := quota.LoadPlan(context.Background(), s.Pool, key.OrgID)
+	rps := plan.RateLimitRPS
+	if rps <= 0 {
+		rps = 2 // free plan default; LoadPlan never returns 0 for known plans
+	}
+	ok, retry := s.Limiter.TakeKind(key.KeyID, kind, rps, 1)
+	if ok {
+		return true
+	}
+	secs := int(retry.Round(time.Second).Seconds())
+	if secs < 1 {
+		secs = 1
+	}
+	w.Header().Set("Retry-After", strconv.Itoa(secs))
+	writeErr(w, http.StatusTooManyRequests, "rate_limited",
+		"too many requests on the "+string(kind)+" bucket; retry after the backoff")
+	return false
 }

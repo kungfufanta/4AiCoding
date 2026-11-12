@@ -114,3 +114,26 @@ func (l *Limiter) Reset() {
 	defer l.mu.Unlock()
 	l.buckets = map[string]*Bucket{}
 }
+
+// BucketKind identifies a route family so each family gets its own
+// token bucket per key (PORTAL_PLAN_V2 P5b: "Mỗi nhóm có bucket riêng
+// theo key"). The free plan's 2 RPS bucket would otherwise be drained
+// by a files-list loop, blocking exec; splitting the buckets keeps
+// one noisy family from starving the others.
+type BucketKind string
+
+const (
+	BucketCreate BucketKind = "create" // POST /v1/sandboxes
+	BucketExec   BucketKind = "exec"   // POST .../exec
+	BucketFiles  BucketKind = "files"  // /files* (5 routes)
+	BucketAction BucketKind = "action" // start/stop/delete
+	BucketStream BucketKind = "stream" // logs/metrics stream open
+)
+
+// TakeKind is Take with a bucket kind: the key is composed as
+// "<keyID>:<kind>" so each family has its own tokens. rps is the
+// refill rate (read from the plan at call time); cost is the token
+// cost (1 for a single call; streams may charge more on open).
+func (l *Limiter) TakeKind(keyID string, kind BucketKind, rps int, cost float64) (bool, time.Duration) {
+	return l.Take(string(kind)+":"+keyID, rps, cost)
+}

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/tastyeffectco/sandboxd/portal/internal/db"
+	"github.com/tastyeffectco/sandboxd/portal/internal/quota"
 	"github.com/tastyeffectco/sandboxd/portal/internal/sandboxd"
 )
 
@@ -84,7 +85,11 @@ func (s *Server) handleBFFCreateSandbox(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	userID := db.UserID(r.Context())
-	release, err := s.admitRun(r.Context(), orgID)
+	release, err := s.admitRun(r.Context(), orgID, quota.CreateRequest{
+		CPUs:       body.Resources.CPUs,
+		TTLSeconds: body.TTLSeconds,
+		EgressMode: body.Egress.Mode,
+	})
 	if s.writeAdmitErr(w, orgID, err) {
 		return
 	}
@@ -233,7 +238,7 @@ func (s *Server) handleBFFSandboxAction(w http.ResponseWriter, r *http.Request) 
 	action := ""
 	switch {
 	case r.Method == http.MethodPost && endsWith(r.URL.Path, "/start"):
-		release, aerr := s.admitRun(r.Context(), orgID)
+		release, aerr := s.admitRun(r.Context(), orgID, quota.CreateRequest{})
 		if s.writeAdmitErr(w, orgID, aerr) {
 			return
 		}
