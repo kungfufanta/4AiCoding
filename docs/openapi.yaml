@@ -1547,51 +1547,6 @@ paths:
                     items: { $ref: "#/components/schemas/NodeCapacity" }
                   now: { type: string }
 
-  /v1/usage:
-    get:
-      operationId: getUsage
-      tags: [usage]
-      summary: >-
-        Org usage rollup (P5). Returns the daily series (sandbox_seconds
-        + vcpu_seconds) for a window and the org's plan ceiling. Scope:
-        usage:read.
-      security: [{ bearerAuth: [] }]
-      parameters:
-        - { name: from, in: query, schema: { type: string, format: date-time }, description: Window start (default: 30 days ago) }
-        - { name: to, in: query, schema: { type: string, format: date-time }, description: Window end (default: now) }
-        - { name: kind, in: query, schema: { type: string, enum: [sandbox_seconds, vcpu_seconds] }, description: Filter to one kind (default: both) }
-      responses:
-        "200":
-          description: Usage rollup
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  from: { type: string, format: date-time }
-                  to: { type: string, format: date-time }
-                  kind: { type: string, description: "all" when no filter applied }
-                  series:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        day: { type: string, format: date-time }
-                        kind: { type: string, enum: [sandbox_seconds, vcpu_seconds] }
-                        quantity: { type: integer, format: int64 }
-                  plan:
-                    type: object
-                    properties:
-                      plan_id: { type: string }
-                      plan_name: { type: string }
-                      monthly_vcpu_seconds: { type: integer, format: int64 }
-                      used_vcpu_seconds: { type: integer, format: int64 }
-                      max_concurrent_sandboxes: { type: integer }
-                      running_sandboxes: { type: integer }
-        "400": { $ref: "#/components/responses/Error" }
-        "401": { $ref: "#/components/responses/Error" }
-        "403": { $ref: "#/components/responses/Error" }
-
 components:
   securitySchemes:
     bearerAuth:
