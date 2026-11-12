@@ -15,13 +15,39 @@ import (
 	"github.com/tastyeffectco/sandboxd/portal/internal/sandboxd"
 )
 
-// checkpointScript is plan §8 verbatim, plus the BRAIN.md exclude so
-// the project-memory file never enters a checkpoint tree (upstream
-// rule: BRAIN.md is kept out of git via .git/info/exclude).
+// checkpointScript is plan §8 verbatim, plus the .git/info/exclude
+// maintenance: BRAIN.md (upstream rule: the project-memory file never
+// enters a checkpoint tree) and — ONLY for a project without its own
+// .gitignore — the default build-output excludes. Without them "git
+// add -A" swallows node_modules/, .next/, dist/... into every
+// checkpoint: slow (the 60 s exec timeout) and disk-bloating. The
+// defaults go to .git/info/exclude — never into the user's
+// .gitignore — and the user's own rules always win.
 const checkpointScript = `set -euo pipefail
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || git init -q
 mkdir -p .git/info
 grep -qxF 'BRAIN.md' .git/info/exclude 2>/dev/null || echo BRAIN.md >> .git/info/exclude
+if [ ! -e .gitignore ]; then
+  while IFS= read -r line; do
+    grep -qxF "$line" .git/info/exclude 2>/dev/null || printf '%s\n' "$line" >> .git/info/exclude
+  done <<'EXCLUDES'
+node_modules/
+.next/
+.nuxt/
+.output/
+dist/
+build/
+out/
+.venv/
+venv/
+__pycache__/
+.cache/
+coverage/
+.turbo/
+.parcel-cache/
+target/
+EXCLUDES
+fi
 idx=$(mktemp); rm -f "$idx"; trap 'rm -f "$idx"' EXIT
 export GIT_INDEX_FILE="$idx"
 git add -A
@@ -34,13 +60,20 @@ echo "$c"
 
 // filesChangedScript diffs the CURRENT workspace against the run's
 // checkpoint ref (temp index again — the user's staging area is never
-// read or written).
+// read or written). -z makes git emit NUL-separated records and NEVER
+// C-quote paths: without it "tên file.txt" comes out as
+// ""t\303\252n file.txt"" — a path neither revert nor the UI can use.
+// The 500-entry cap moved into the parser (head -n cannot split on
+// NULs); git's own output stays bounded by MaxOutputBytes.
 const filesChangedScript = `set -euo pipefail
 idx=$(mktemp); rm -f "$idx"; trap 'rm -f "$idx"' EXIT
 export GIT_INDEX_FILE="$idx"
 git add -A
-git diff --cached --name-status "$CHECK_REF" | head -n 500
+git diff --cached --name-status -z "$CHECK_REF"
 `
+
+// filesChangedMaxEntries is plan §8's cap on files_changed rows.
+const filesChangedMaxEntries = 500
 
 // FileChange is one row of files_changed (plan §9.3 result).
 type FileChange struct {
@@ -87,28 +120,53 @@ func FilesChanged(ctx context.Context, sbx *sandboxd.Client, sandboxID, projectD
 	if res.ExitCode != 0 {
 		return nil, fmt.Errorf("files_changed failed (exit %d): %s", res.ExitCode, lastLine(res.Stderr))
 	}
-	out := []FileChange{}
-	for _, line := range strings.Split(res.Stdout, "\n") {
-		line = strings.TrimRight(line, "\r")
-		if strings.TrimSpace(line) == "" {
-			continue
+	return parseFilesChangedZ(res.Stdout), nil
+}
+
+// parseFilesChangedZ parses `git diff --cached --name-status -z`
+// output. Records are NUL-terminated: "status \0 path \0", while
+// renames/copies carry three fields ("R100 \0 old \0 new \0" — the NEW
+// path wins, same rule as before). Because every record ends with a
+// NUL, a stream that does not end in NUL was truncated mid-record
+// (MaxOutputBytes): the partial tail is dropped so a half path never
+// reaches the DB or the UI. Parsing stops at filesChangedMaxEntries.
+func parseFilesChangedZ(out string) []FileChange {
+	if out != "" && !strings.HasSuffix(out, "\x00") {
+		if i := strings.LastIndexByte(out, '\x00'); i >= 0 {
+			out = out[:i+1]
+		} else {
+			out = ""
 		}
-		// "A\tpath", "M\tpath", "D\tpath", "R100\told\tnew".
-		status, rest, ok := strings.Cut(line, "\t")
-		if !ok || status == "" {
-			continue
+	}
+	fields := strings.Split(out, "\x00")
+	changes := []FileChange{}
+	for i := 0; i < len(fields); {
+		status := fields[i]
+		if status == "" {
+			break // trailing NUL / end of stream
 		}
-		code := strings.TrimSpace(status)
+		code := status
 		if len(code) > 1 { // rename score, e.g. R100
 			code = code[:1]
 		}
-		path := rest
-		if i := strings.Index(rest, "\t"); i >= 0 { // rename: keep the NEW path
-			path = rest[i+1:]
+		want := 2 // status + path
+		if code == "R" || code == "C" {
+			want = 3 // status + old + new — keep the NEW path
 		}
-		out = append(out, FileChange{Path: path, Status: code})
+		if i+want > len(fields) {
+			break // truncated record (belt and braces)
+		}
+		path := fields[i+want-1]
+		if path == "" || (want == 3 && fields[i+1] == "") {
+			break
+		}
+		changes = append(changes, FileChange{Path: path, Status: code})
+		i += want
+		if len(changes) >= filesChangedMaxEntries {
+			break
+		}
 	}
-	return out, nil
+	return changes
 }
 
 func lastLine(s string) string {
