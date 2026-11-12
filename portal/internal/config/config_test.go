@@ -165,6 +165,14 @@ func TestParseLLMDefaults(t *testing.T) {
 	if !cfg.ChatEnabled() || cfg.LLMBaseURL != "http://llm.local/v1" || cfg.LLMFlavor != "generic" {
 		t.Fatalf("got %+v", cfg)
 	}
+	env["PORTAL_DEFAULT_LLM_BASE_URL"] = "https://hub.example/"
+	if cfg, err = Parse(func(k string) string { return env[k] }); err != nil || cfg.LLMBaseURL != "https://hub.example/v1" {
+		t.Fatalf("bare host base url = %q, %v; want /v1 appended", cfg.LLMBaseURL, err)
+	}
+	env["PORTAL_DEFAULT_LLM_BASE_URL"] = "https://hub.example/api/openai"
+	if cfg, err = Parse(func(k string) string { return env[k] }); err != nil || cfg.LLMBaseURL != "https://hub.example/api/openai" {
+		t.Fatalf("explicit path base url = %q, %v; want unchanged", cfg.LLMBaseURL, err)
+	}
 	env["PORTAL_DEFAULT_LLM_FLAVOR"] = "bogus"
 	if _, err := Parse(func(k string) string { return env[k] }); err == nil {
 		t.Fatal("bogus flavor accepted")

@@ -7,6 +7,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -149,6 +150,12 @@ func Parse(getenv func(string) string) (Config, error) {
 	}
 	if !strings.HasPrefix(cfg.LLMBaseURL, "https://") && !strings.HasPrefix(cfg.LLMBaseURL, "http://") {
 		return cfg, fmt.Errorf("PORTAL_DEFAULT_LLM_BASE_URL must be an http(s) URL")
+	}
+	// OpenAI-compatible endpoints live under /v1; a bare host (e.g. the
+	// WebHub link copied without /v1) would POST to {host}/chat/completions
+	// and get the hub's HTML 404. Add /v1 only when there is no path at all.
+	if u, err := url.Parse(cfg.LLMBaseURL); err == nil && (u.Path == "" || u.Path == "/") {
+		cfg.LLMBaseURL += "/v1"
 	}
 	if v := getenv("PORTAL_SESSION_TTL"); v != "" {
 		d, err := time.ParseDuration(v)
