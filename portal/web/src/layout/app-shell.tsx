@@ -29,6 +29,7 @@ import {
   Users,
   X,
   Gauge,
+  BookOpen,
 } from "lucide-react";
 import { api, type Me, type Org } from "../api";
 import { useMe, useMembers } from "../lib/queries";
@@ -159,6 +160,7 @@ function SidebarContent({ org }: { org: Org }) {
     { to: `${base}/projects`, label: "Projects", icon: FolderKanban },
     { to: `${base}/sandboxes`, label: "Sandboxes", icon: Box },
     { to: `${base}/usage`, label: "Usage", icon: Gauge },
+    { to: `${base}/quickstart`, label: "Quickstart", icon: BookOpen },
     { to: `${base}/members`, label: "Members", icon: Users },
     { to: `${base}/api-keys`, label: "API keys", icon: KeyRound },
     { to: `${base}/audit`, label: "Audit", icon: ScrollText },

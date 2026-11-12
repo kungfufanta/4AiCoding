@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "portal-sdk"
+version = "0.1.0"
+description = "Thin Python SDK (stdlib-only) for the 4AiCoding Portal /v1 API"
+requires-python = ">=3.9"
+license = { text = "Apache-2.0" }
+authors = [{ name = "4AiCoding" }]
+keywords = ["4aicoding", "portal", "sandbox", "sdk"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: OS Independent",
+]
+
+[project.urls]
+Homepage = "https://github.com/4aicoding/portal"
+
+[tool.setuptools.packages.find]
+include = ["portal_sdk*"]
