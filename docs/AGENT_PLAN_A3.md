@@ -165,6 +165,16 @@ func (c *Client) StreamTools(ctx context.Context, req ToolRequest, onText func(s
 - WebHub: mọi call từ step 2 trở đi (đã có tool output) gửi `X-WebHub-Memory: 0`. User là `u_<user_uuid>` hoặc `k_<key_id>`, session là `s_<conversation_id|run_id>`.
 - **Spike bắt buộc đầu A3.0** (ghi kết quả vào mô tả PR): `glm-4.6` qua WebHub có trả `tool_calls` khi `stream:true` không, có trả `usage` không, context window thực tế. Kết quả quyết định mode mặc định cho WebHub.
 
+**Kết quả spike (đã chạy 2026-11-12, script `scripts/a3_spike_webhub.sh`, demo key public docs):**
+
+1. **Native tool calling hoạt động với `stream:true`**: `glm-4.6` (hub map sang `glm-4-plus`) trả `delta.tool_calls` đúng spec OpenAI — `index`, `id`, `function.name`, `function.arguments`. Thứ tự chunk: text delta trước → tool_calls delta → `finish_reason:"tool_calls"`.
+2. **Parallel tool calls hoạt động**: 2 call trả trong các chunk riêng với `index:0` và `index:1`.
+3. **Arguments đến nguyên một chunk** (không tách fragment) — nhưng client vẫn phải ghép fragment theo index cho các provider khác (OpenRouter/vLLM).
+4. **`usage` trong stream: KHÔNG có** — kể cả khi gửi `stream_options:{include_usage:true}`. Endpoint non-stream trả `usage` đầy đủ. → Client ước lượng `len(bytes)/4` + đánh dấu `usage_estimated` (đã implement).
+5. **`glm-4.5-air` cũng chấp nhận `tools`** (HTTP 200, không 400).
+6. **Mode mặc định cho WebHub: native** (fallback chỉ là lưới an toàn khi gặp provider khác).
+7. Context window thực tế không đọc được từ hub (`/v1/models` không trả `context_window`); dùng giá trị khai báo trong `model_connections.models` (A2), mặc định 128k cho glm-4.6.
+
 ## 6. Tool registry (`portal/internal/agent/tools`)
 
 Đường dẫn trong tool là **tương đối với workspace** (thư mục dự án: `/home/sandbox/workspace/app` nếu tồn tại, vì gitimport clone vào đó; nếu không có thì `/home/sandbox/workspace`. Chọn một lần lúc bắt đầu run, lưu vào event `status`). Code chuẩn hoá path, chặn `..` và path tuyệt đối trước khi gọi files API (files API vẫn tự chặn lần nữa).
