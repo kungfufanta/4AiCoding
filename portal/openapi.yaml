@@ -1,0 +1,519 @@
+openapi: 3.0.3
+info:
+  title: 4AiCoding Portal /v1 API
+  version: "0.1.0"
+  description: >
+    The public API of the 4AiCoding Portal — the SaaS layer in front of
+    sandboxd. Auth is a Bearer Portal API key (`sbx_live_…`) or an agent
+    token minted via `POST /v1/tokens`. Every endpoint is org-scoped:
+    a sandbox outside the caller's org answers 404 (not 403) so the
+    existence of a sandbox is never revealed across orgs. A project-pinned
+    key additionally sees only its own project's sandboxes.
+servers:
+  - url: https://chat.devhub.io.vn
+    description: Production (k3s-1)
+  - url: http://127.0.0.1:8080
+    description: Local dev
+security:
+  - bearerAuth: []
+tags:
+  - name: tokens
+  - name: sandboxes
+  - name: exec
+  - name: files
+  - name: logs
+  - name: usage
+
+paths:
+  /v1/tokens:
+    post:
+      operationId: createAgentToken
+      tags: [tokens]
+      summary: Exchange a Portal API key for a short-lived agent token (EdDSA, ≤ 60 min).
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [scopes]
+              properties:
+                scopes:
+                  type: array
+                  items: { type: string }
+                  description: Subset of the key's scopes.
+                ttl_seconds:
+                  type: integer
+                  minimum: 60
+                  maximum: 3600
+                  default: 900
+                agent_run_id:
+                  type: string
+                  description: Pin this token to one agent run (optional).
+      responses:
+        "200":
+          description: Token minted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string }
+                  expires_at: { type: string, format: date-time }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+
+  /v1/sandboxes:
+    post:
+      operationId: createSandbox
+      tags: [sandboxes]
+      summary: Create a sandbox (image in allowlist, resources clamped to plan).
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: Idempotency-Key, in: header, schema: { type: string }, description: "Replay-safe: same key + same body returns the stored 201; same key + different body → 422." }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateSandboxRequest" }
+      responses:
+        "201":
+          description: Sandbox created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SandboxResponse" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+    get:
+      operationId: listSandboxes
+      tags: [sandboxes]
+      summary: List the org's sandboxes.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: project_id, in: query, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Sandbox list.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sandboxes:
+                    type: array
+                    items: { $ref: "#/components/schemas/SandboxResponse" }
+                  unreachable_nodes:
+                    type: array
+                    items: { type: string }
+
+  /v1/sandboxes/{id}:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    get:
+      operationId: getSandbox
+      tags: [sandboxes]
+      summary: Get one sandbox (read-through sync from sandboxd).
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Sandbox detail.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SandboxResponse" }
+        "404": { $ref: "#/components/responses/Error" }
+    delete:
+      operationId: deleteSandbox
+      tags: [sandboxes]
+      summary: Delete a sandbox (container + workspace + index row).
+      security: [{ bearerAuth: [] }]
+      responses:
+        "204": { description: Deleted. }
+        "404": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+
+  /v1/sandboxes/{id}/exec:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    post:
+      operationId: execSandbox
+      tags: [exec]
+      summary: >
+        Run a command in a running sandbox. v2 fields (timeout_s, cwd,
+        env, stdin, max_output_bytes) are optional; a bare {"cmd":[…]}
+        request keeps the P4 contract. ?stream=ndjson streams the run
+        as newline-delimited JSON.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: Idempotency-Key, in: header, schema: { type: string } }
+        - { name: stream, in: query, schema: { type: string, enum: [ndjson] } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ExecRequest" }
+      responses:
+        "200":
+          description: Exec result (buffered) or NDJSON stream.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ExecResult" }
+            application/x-ndjson:
+              schema:
+                type: string
+                description: One {"stream":"stdout"|"stderr","data":"…"} JSON line per chunk, final line {"exit_code":…,"timed_out":…,"duration_ms":…}.
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+
+  /v1/sandboxes/{id}/logs:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    get:
+      operationId: sandboxLogs
+      tags: [logs]
+      summary: Container stdout+stderr. follow=true streams Server-Sent Events.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: tail, in: query, schema: { type: integer, minimum: 1, maximum: 10000, default: 200 } }
+        - { name: follow, in: query, schema: { type: boolean, default: false } }
+      responses:
+        "200":
+          description: Log lines (text/plain), or an SSE stream with one `data:` line per log line when follow=true.
+          content:
+            text/plain: { schema: { type: string } }
+            text/event-stream: { schema: { type: string } }
+        "404": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+
+  /v1/sandboxes/{id}/start:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    post:
+      operationId: startSandbox
+      tags: [sandboxes]
+      summary: Start a stopped sandbox.
+      security: [{ bearerAuth: [] }]
+      responses:
+        "204": { description: Started. }
+        "404": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+
+  /v1/sandboxes/{id}/stop:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    post:
+      operationId: stopSandbox
+      tags: [sandboxes]
+      summary: Stop a running sandbox.
+      security: [{ bearerAuth: [] }]
+      responses:
+        "204": { description: Stopped. }
+        "404": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+
+  /v1/sandboxes/{id}/files:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    get:
+      operationId: listSandboxFiles
+      tags: [files]
+      summary: List workspace files (relative to /home/sandbox). Scope: sandboxes:files.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: path, in: query, schema: { type: string } }
+        - { name: recursive, in: query, schema: { type: boolean, default: false } }
+        - { name: max_entries, in: query, schema: { type: integer, minimum: 1, maximum: 10000, default: 500 } }
+      responses:
+        "200":
+          description: Directory listing.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FileListing" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+    delete:
+      operationId: deleteSandboxFile
+      tags: [files]
+      summary: Delete a file or empty directory. Scope: sandboxes:files.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: path, in: query, required: true, schema: { type: string } }
+      responses:
+        "204": { description: Deleted. }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+
+  /v1/sandboxes/{id}/files/content:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    get:
+      operationId: readSandboxFile
+      tags: [files]
+      summary: Read a file (text UTF-8 or base64 for binary). Scope: sandboxes:files.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: path, in: query, required: true, schema: { type: string } }
+        - { name: offset, in: query, schema: { type: integer, minimum: 0 } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 2097152 } }
+      responses:
+        "200":
+          description: File content.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FileContent" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+    put:
+      operationId: writeSandboxFile
+      tags: [files]
+      summary: Write a file (raw bytes, NOT JSON). Scope: sandboxes:files.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: path, in: query, required: true, schema: { type: string } }
+        - { name: if_match, in: query, schema: { type: string }, description: sha256 of the content the caller last saw (optimistic concurrency). }
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary }
+      responses:
+        "200":
+          description: Written.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FileWriteResult" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+
+  /v1/sandboxes/{id}/files/move:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    post:
+      operationId: moveSandboxFile
+      tags: [files]
+      summary: Move/rename a file or directory. Scope: sandboxes:files.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [from, to]
+              properties:
+                from: { type: string }
+                to: { type: string }
+      responses:
+        "200":
+          description: Moved.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  from: { type: string }
+                  to: { type: string }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+
+  /v1/usage:
+    get:
+      operationId: getUsage
+      tags: [usage]
+      summary: Org usage rollup (daily series + plan ceiling). Scope: usage:read.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+        - { name: kind, in: query, schema: { type: string, enum: [sandbox_seconds, vcpu_seconds] } }
+      responses:
+        "200":
+          description: Usage rollup.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UsageResponse" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: Portal API key (`sbx_live_…`) or agent token.
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, pattern: "^[0-9A-HJKMNP-TV-Z]{26}$" }
+      description: Sandbox id (ULID).
+  responses:
+    Error:
+      description: Error envelope.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string }
+            message: { type: string }
+            field: { type: string, description: Present on 422 plan_limit. }
+            limit: { description: Present on 422 plan_limit. }
+            used: { description: Present on 422 plan_limit. }
+    CreateSandboxRequest:
+      type: object
+      required: [image]
+      properties:
+        image: { type: string, description: "repo[:tag], max 200 chars." }
+        project_id: { type: string, format: uuid }
+        command:
+          type: array
+          items: { type: string }
+          maxItems: 64
+        env:
+          type: object
+          additionalProperties: { type: string }
+          maxProperties: 64
+        resources:
+          type: object
+          properties:
+            cpus: { type: number, minimum: 0, maximum: 16 }
+            memory_mb: { type: integer, minimum: 0, maximum: 65536 }
+        ports:
+          type: array
+          items: { type: integer, minimum: 1, maximum: 65535 }
+          maxItems: 8
+        egress:
+          type: object
+          properties:
+            mode: { type: string, enum: [none, allowlist, open] }
+            allow:
+              type: array
+              items: { type: string }
+              maxItems: 64
+        workspace:
+          type: object
+          properties:
+            repo_url: { type: string }
+            branch: { type: string }
+        ttl_seconds:
+          type: integer
+          minimum: 0
+          maximum: 604800
+          description: Sandbox idle timeout (clamped to plan.max_ttl_seconds).
+    SandboxResponse:
+      type: object
+      properties:
+        id: { type: string }
+        status: { type: string, enum: [pending, created, starting, running, stopped, exited, failed] }
+        image: { type: string }
+        resources:
+          type: object
+          properties:
+            cpus: { type: number }
+            memory_mb: { type: integer }
+        ports:
+          type: array
+          items: { type: integer }
+        egress:
+          type: array
+          items: { type: string }
+        egress_mode: { type: string }
+        preview:
+          type: object
+          properties:
+            url: { type: string }
+            port: { type: integer }
+            status: { type: string }
+        project_id: { type: string, format: uuid, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    ExecRequest:
+      type: object
+      required: [cmd]
+      properties:
+        cmd:
+          type: array
+          items: { type: string }
+          minItems: 1
+          maxItems: 64
+        cwd: { type: string, description: Must be under /home/sandbox. }
+        env:
+          type: object
+          additionalProperties: { type: string }
+        stdin: { type: string, description: Plain string (not base64). Max 1 MiB. }
+        timeout_s: { type: integer, minimum: 1, maximum: 600 }
+        max_output_bytes: { type: integer, format: int64, minimum: 1, maximum: 4194304 }
+    ExecResult:
+      type: object
+      properties:
+        stdout: { type: string }
+        stderr: { type: string }
+        exit_code: { type: integer }
+        timed_out: { type: boolean }
+        truncated: { type: boolean }
+        duration_ms: { type: integer, format: int64 }
+    FileListing:
+      type: object
+      properties:
+        path: { type: string }
+        recursive: { type: boolean }
+        entries:
+          type: array
+          items:
+            type: object
+            properties:
+              path: { type: string }
+              name: { type: string }
+              size: { type: integer }
+              mode: { type: string }
+              is_dir: { type: boolean }
+        truncated: { type: boolean }
+    FileContent:
+      type: object
+      properties:
+        path: { type: string }
+        size: { type: integer }
+        offset: { type: integer }
+        encoding: { type: string, enum: [utf-8, base64] }
+        data: { type: string }
+        truncated: { type: boolean }
+    FileWriteResult:
+      type: object
+      properties:
+        path: { type: string }
+        size: { type: integer }
+        sha256: { type: string }
+    UsageResponse:
+      type: object
+      properties:
+        from: { type: string, format: date-time }
+        to: { type: string, format: date-time }
+        kind: { type: string, description: "all" when no filter applied. }
+        series:
+          type: array
+          items:
+            type: object
+            properties:
+              day: { type: string, format: date-time }
+              kind: { type: string, enum: [sandbox_seconds, vcpu_seconds] }
+              quantity: { type: integer, format: int64 }
+        plan:
+          type: object
+          properties:
+            plan_id: { type: string }
+            plan_name: { type: string }
+            monthly_vcpu_seconds: { type: integer, format: int64 }
+            used_vcpu_seconds: { type: integer, format: int64 }
+            max_concurrent_sandboxes: { type: integer }
+            running_sandboxes: { type: integer }

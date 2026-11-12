@@ -166,10 +166,17 @@ export function SandboxesPage() {
               title="No sandboxes yet"
               description="Spin up your first sandbox, then exec commands, stream logs and watch its resources from here."
               action={
-                <Button onClick={() => setCreating(true)}>
-                  <Plus aria-hidden className="size-4" />
-                  New sandbox
-                </Button>
+                <div className="flex flex-wrap gap-2">
+                  <Button onClick={() => setCreating(true)}>
+                    <Plus aria-hidden className="size-4" />
+                    New sandbox
+                  </Button>
+                  <Link to={`/orgs/${org.slug}/quickstart`}>
+                    <Button variant="ghost">
+                      Read the quickstart
+                    </Button>
+                  </Link>
+                </div>
               }
             />
           </div>
