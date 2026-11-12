@@ -39,7 +39,15 @@ export function OrgModelsPage() {
     queryFn: () => api.listLLMConnections(org.id),
   });
 
-  const invalidate = () => qc.invalidateQueries({ queryKey: ["org-llm-connections", org.id] });
+  // An org connection change (add/edit/delete + default toggle)
+  // flips the effective connection the Chat page resolves through
+  // (org default → platform default). Invalidate the chat-status
+  // cache for this org so the textarea re-evaluates immediately
+  // instead of waiting for the 60s staleTime.
+  const invalidate = () => {
+    qc.invalidateQueries({ queryKey: ["org-llm-connections", org.id] });
+    qc.invalidateQueries({ queryKey: ["chat-status", org.id] });
+  };
 
   const del = useMutation({
     mutationFn: (cid: string) => api.deleteLLMConnection(org.id, cid),

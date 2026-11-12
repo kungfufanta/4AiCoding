@@ -47,7 +47,14 @@ export function AdminLLMPage() {
     queryFn: api.listPlatformLLMConnections,
   });
 
-  const invalidate = () => qc.invalidateQueries({ queryKey: ["platform-llm-connections"] });
+  // A platform connection change ripples to every org's chat status
+  // (org default → platform default fallback). Invalidate the
+  // chat-status cache family so the Chat page's textarea unlocks
+  // (or locks) on the next visit without waiting for staleTime 60s.
+  const invalidate = () => {
+    qc.invalidateQueries({ queryKey: ["platform-llm-connections"] });
+    qc.invalidateQueries({ queryKey: ["chat-status"] });
+  };
 
   const del = useMutation({
     mutationFn: api.deletePlatformLLMConnection,
