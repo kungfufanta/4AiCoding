@@ -369,6 +369,7 @@ func (w *Worker) loop(runCtx context.Context, claimed ClaimedRun) executeRunResu
 		ref, cerr := Checkpoint(limCtx, w.Sandboxd, run.SandboxID, env.ProjectDir, run.ID)
 		if cerr == nil {
 			checkpointRef = ref
+			w.Log.Info("agent checkpoint created", "run_id", run.ID, "ref", ref, "project_dir", env.ProjectDir)
 			if derr := w.Store.SetCheckpoint(limCtx, orgID, run.ID, ref); derr != nil {
 				w.Log.Warn("agent checkpoint not saved", "run_id", run.ID, "error", derr.Error())
 			}
@@ -623,9 +624,12 @@ func (w *Worker) loop(runCtx context.Context, claimed ClaimedRun) executeRunResu
 	} else if checkpointRef != "" {
 		if changes, cerr := FilesChanged(pctx, w.Sandboxd, run.SandboxID, env.ProjectDir, checkpointRef); cerr == nil {
 			out.FilesChanged = changes
+			w.Log.Info("agent files_changed", "run_id", run.ID, "ref", checkpointRef, "count", len(changes))
 		} else {
 			w.Log.Warn("agent files_changed failed", "run_id", run.ID, "error", cerr.Error())
 		}
+	} else {
+		w.Log.Info("agent run has no checkpoint ref", "run_id", run.ID, "has_git", env.HasGit, "project_dir", env.ProjectDir)
 	}
 	// Build + preview only for succeeded runs: a cancelled run must
 	// still answer its done event inside the 5 s cancel budget.

@@ -356,14 +356,19 @@ test.describe.serial("portal preview", () => {
     await expect(card).toHaveAttribute("data-status", "succeeded", { timeout: 120_000 });
     await expect(page.getByTestId("result-summary")).toContainText("hello.txt");
     // files_changed comes from the git checkpoint; if it is empty, dump
-    // the run JSON (carries result.warning) so the CI log says WHY.
+    // the run JSON + all events (tool_result carries exit_code and the
+    // output preview; status carries the checkpoint ref) so the CI log
+    // says WHY.
     const filesBox = page.getByTestId("files-changed");
     try {
       await expect(filesBox).toContainText("hello.txt", { timeout: 5_000 });
     } catch {
       const runID2 = (await page.getByTestId("agent-run-card").getAttribute("data-run-id")) ?? "";
       const runDump = await bff(page, "GET", `/api/orgs/${orgID}/agent/runs/${runID2}`);
-      throw new Error(`files-changed empty — run dump: ${JSON.stringify(runDump.data)}`);
+      const evDump = await bff(page, "GET", `/api/orgs/${orgID}/agent/runs/${runID2}/events?follow=false`);
+      throw new Error(
+        `files-changed empty — run: ${JSON.stringify(runDump.data)}\nevents: ${JSON.stringify(evDump.data)}`,
+      );
     }
     await shot(page, "33-agent-result");
 
