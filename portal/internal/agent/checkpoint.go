@@ -8,11 +8,11 @@
 package agent
 
 import (
-        "context"
-        "fmt"
-        "strings"
+	"context"
+	"fmt"
+	"strings"
 
-        "github.com/tastyeffectco/sandboxd/portal/internal/sandboxd"
+	"github.com/tastyeffectco/sandboxd/portal/internal/sandboxd"
 )
 
 // checkpointScript is plan §8 verbatim, plus the .git/info/exclude
@@ -77,50 +77,50 @@ const filesChangedMaxEntries = 500
 
 // FileChange is one row of files_changed (plan §9.3 result).
 type FileChange struct {
-        Path   string `json:"path"`
-        Status string `json:"status"` // A | M | D | R
+	Path   string `json:"path"`
+	Status string `json:"status"` // A | M | D | R
 }
 
 // Checkpoint creates the run's checkpoint and returns the commit ref.
 func Checkpoint(ctx context.Context, sbx *sandboxd.Client, sandboxID, projectDir, runID string) (string, error) {
-        res, err := sbx.Exec(ctx, sandboxID, sandboxd.ExecInput{
-                Cmd:            []string{"bash", "-c", checkpointScript},
-                Cwd:            projectDir,
-                Env:            map[string]string{"RUN_ID": runID},
-                TimeoutS:       60,
-                MaxOutputBytes: 8 << 10,
-        })
-        if err != nil {
-                return "", err
-        }
-        if res.ExitCode != 0 {
-                return "", fmt.Errorf("checkpoint failed (exit %d): %s", res.ExitCode, lastLine(res.Stderr))
-        }
-        ref := strings.TrimSpace(lastLine(res.Stdout))
-        if ref == "" {
-                return "", fmt.Errorf("checkpoint produced no ref")
-        }
-        return ref, nil
+	res, err := sbx.Exec(ctx, sandboxID, sandboxd.ExecInput{
+		Cmd:            []string{"bash", "-c", checkpointScript},
+		Cwd:            projectDir,
+		Env:            map[string]string{"RUN_ID": runID},
+		TimeoutS:       60,
+		MaxOutputBytes: 8 << 10,
+	})
+	if err != nil {
+		return "", err
+	}
+	if res.ExitCode != 0 {
+		return "", fmt.Errorf("checkpoint failed (exit %d): %s", res.ExitCode, lastLine(res.Stderr))
+	}
+	ref := strings.TrimSpace(lastLine(res.Stdout))
+	if ref == "" {
+		return "", fmt.Errorf("checkpoint produced no ref")
+	}
+	return ref, nil
 }
 
 // FilesChanged lists the workspace changes vs the checkpoint ref
 // (≤ 500 entries, plan §8). An unreadable repo answers an empty list
 // plus the error for the warning log.
 func FilesChanged(ctx context.Context, sbx *sandboxd.Client, sandboxID, projectDir, ref string) ([]FileChange, error) {
-        res, err := sbx.Exec(ctx, sandboxID, sandboxd.ExecInput{
-                Cmd:            []string{"bash", "-c", filesChangedScript},
-                Cwd:            projectDir,
-                Env:            map[string]string{"CHECK_REF": ref},
-                TimeoutS:       60,
-                MaxOutputBytes: 128 << 10,
-        })
-        if err != nil {
-                return nil, err
-        }
-        if res.ExitCode != 0 {
-                return nil, fmt.Errorf("files_changed failed (exit %d): %s", res.ExitCode, lastLine(res.Stderr))
-        }
-        return parseFilesChangedZ(res.Stdout), nil
+	res, err := sbx.Exec(ctx, sandboxID, sandboxd.ExecInput{
+		Cmd:            []string{"bash", "-c", filesChangedScript},
+		Cwd:            projectDir,
+		Env:            map[string]string{"CHECK_REF": ref},
+		TimeoutS:       60,
+		MaxOutputBytes: 128 << 10,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if res.ExitCode != 0 {
+		return nil, fmt.Errorf("files_changed failed (exit %d): %s", res.ExitCode, lastLine(res.Stderr))
+	}
+	return parseFilesChangedZ(res.Stdout), nil
 }
 
 // parseFilesChangedZ parses `git diff --cached --name-status -z`
@@ -131,48 +131,48 @@ func FilesChanged(ctx context.Context, sbx *sandboxd.Client, sandboxID, projectD
 // (MaxOutputBytes): the partial tail is dropped so a half path never
 // reaches the DB or the UI. Parsing stops at filesChangedMaxEntries.
 func parseFilesChangedZ(out string) []FileChange {
-        if out != "" && !strings.HasSuffix(out, "\x00") {
-                if i := strings.LastIndexByte(out, '\x00'); i >= 0 {
-                        out = out[:i+1]
-                } else {
-                        out = ""
-                }
-        }
-        fields := strings.Split(out, "\x00")
-        changes := []FileChange{}
-        for i := 0; i < len(fields); {
-                status := fields[i]
-                if status == "" {
-                        break // trailing NUL / end of stream
-                }
-                code := status
-                if len(code) > 1 { // rename score, e.g. R100
-                        code = code[:1]
-                }
-                want := 2 // status + path
-                if code == "R" || code == "C" {
-                        want = 3 // status + old + new — keep the NEW path
-                }
-                if i+want > len(fields) {
-                        break // truncated record (belt and braces)
-                }
-                path := fields[i+want-1]
-                if path == "" || (want == 3 && fields[i+1] == "") {
-                        break
-                }
-                changes = append(changes, FileChange{Path: path, Status: code})
-                i += want
-                if len(changes) >= filesChangedMaxEntries {
-                        break
-                }
-        }
-        return changes
+	if out != "" && !strings.HasSuffix(out, "\x00") {
+		if i := strings.LastIndexByte(out, '\x00'); i >= 0 {
+			out = out[:i+1]
+		} else {
+			out = ""
+		}
+	}
+	fields := strings.Split(out, "\x00")
+	changes := []FileChange{}
+	for i := 0; i < len(fields); {
+		status := fields[i]
+		if status == "" {
+			break // trailing NUL / end of stream
+		}
+		code := status
+		if len(code) > 1 { // rename score, e.g. R100
+			code = code[:1]
+		}
+		want := 2 // status + path
+		if code == "R" || code == "C" {
+			want = 3 // status + old + new — keep the NEW path
+		}
+		if i+want > len(fields) {
+			break // truncated record (belt and braces)
+		}
+		path := fields[i+want-1]
+		if path == "" || (want == 3 && fields[i+1] == "") {
+			break
+		}
+		changes = append(changes, FileChange{Path: path, Status: code})
+		i += want
+		if len(changes) >= filesChangedMaxEntries {
+			break
+		}
+	}
+	return changes
 }
 
 func lastLine(s string) string {
-        s = strings.TrimRight(s, "\n\r \t")
-        if i := strings.LastIndexAny(s, "\r\n"); i >= 0 {
-                return s[i+1:]
-        }
-        return s
+	s = strings.TrimRight(s, "\n\r \t")
+	if i := strings.LastIndexAny(s, "\r\n"); i >= 0 {
+		return s[i+1:]
+	}
+	return s
 }
