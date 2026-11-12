@@ -214,6 +214,7 @@ func (w *Worker) executeRun(runCtx context.Context, claimed ClaimedRun) (execute
 		Status:       res.Status,
 		ErrorCode:    res.ErrorCode,
 		Result:       res.Result,
+		SandboxID:    run.SandboxID,
 		Steps:        res.Steps,
 		InputTokens:  res.InputTokens,
 		OutputTokens: res.OutputTokens,
@@ -233,6 +234,21 @@ func (w *Worker) executeRun(runCtx context.Context, claimed ClaimedRun) (execute
 		return res, err
 	}
 
+	// The chat keeps one assistant line per run (A3.4's result card
+	// reads it back; RecentSummaries feeds it to the NEXT run of
+	// the conversation — plan §11 A3.3 "tóm tắt run trước khi
+	// Tiếp tục"). A failed/cancelled run has no model summary, so
+	// it gets a short terminal note instead of silence.
+	if res.Summary == "" && run.ConversationID != "" && run.CreatedByUser != "" {
+		note := "(run cancelled)"
+		if res.Status == StatusFailed {
+			note = "(run failed: " + res.ErrorCode + ")"
+		}
+		if err := w.Store.SaveSummary(finalCtx, orgID, run.ID,
+			run.ConversationID, run.CreatedByUser, note); err != nil {
+			w.Log.Warn("agent run note not saved to chat", "run_id", run.ID, "error", err.Error())
+		}
+	}
 	if res.Summary != "" {
 		if err := w.Store.SaveSummary(finalCtx, orgID, run.ID,
 			run.ConversationID, run.CreatedByUser, res.Summary); err != nil {
@@ -284,6 +300,15 @@ func (w *Worker) loop(runCtx context.Context, claimed ClaimedRun) executeRunResu
 			Err: errors.New("the agent worker has no sandboxd client wired")}
 	}
 
+	// Token totals live ABOVE the fail closure: a failed run keeps
+	// the tokens it already burned (the usage ledger records them —
+	// plan §11 A3.3 "usage_events có đúng tổng token của run"). The
+	// closures capture the variables by reference.
+	var (
+		totalIn, totalOut int64
+		usageEstimated    bool
+	)
+
 	fail := func(code string, err error) executeRunResult {
 		// A cancel landing during prep (Get/Start/keep-alive/probe)
 		// surfaces as an exec error, but it must still end cancelled —
@@ -296,7 +321,8 @@ func (w *Worker) loop(runCtx context.Context, claimed ClaimedRun) executeRunResu
 			return w.attachFilesChanged(pctx, run, w.cancelledResult(steps, llm.Usage{}))
 		}
 		w.Log.Warn("agent run failed", "run_id", run.ID, "error_code", code, "error", err.Error())
-		res := executeRunResult{Status: StatusFailed, ErrorCode: code, Err: err, Steps: steps}
+		res := executeRunResult{Status: StatusFailed, ErrorCode: code, Err: err, Steps: steps,
+			InputTokens: totalIn, OutputTokens: totalOut}
 		return w.attachFilesChanged(pctx, run, res)
 	}
 
@@ -413,12 +439,10 @@ func (w *Worker) loop(runCtx context.Context, claimed ClaimedRun) executeRunResu
 
 	// --- step 5: the step loop -----------------------------------------
 	var (
-		totalIn, totalOut int64
-		usageEstimated    bool
-		summary           string
-		finished          bool
-		consecDown        int
-		msgStep           = make([]int, 0, 32) // step each history message was added at
+		summary    string
+		finished   bool
+		consecDown int
+		msgStep    = make([]int, 0, 32) // step each history message was added at
 	)
 	for step := 1; step <= run.MaxSteps; step++ {
 		steps = step
