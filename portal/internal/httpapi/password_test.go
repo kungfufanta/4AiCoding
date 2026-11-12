@@ -43,7 +43,7 @@ func setupPasswordBFF(t *testing.T) *Server {
 		t.Fatalf("open admin pool: %v", err)
 	}
 	defer admin.Close()
-	if err := passwordauth.EnsureBootstrap(context.Background(), admin,
+	if _, err := passwordauth.EnsureBootstrap(context.Background(), admin,
 		discardLogger(), adminUsername, adminPassword, adminEmail); err != nil {
 		t.Fatalf("EnsureBootstrap: %v", err)
 	}
@@ -242,7 +242,7 @@ func TestPasswordLoginRotation(t *testing.T) {
 	if me := doReq(t, h, http.MethodGet, "/api/me", nil, oldSess); me.Code != 200 {
 		t.Fatalf("/api/me before rotation status = %d", me.Code)
 	}
-	if err := passwordauth.EnsureBootstrap(context.Background(), admin,
+	if _, err := passwordauth.EnsureBootstrap(context.Background(), admin,
 		discardLogger(), adminUsername, "rotated-pass", adminEmail); err != nil {
 		t.Fatalf("rotate: %v", err)
 	}
@@ -262,7 +262,7 @@ func TestPasswordLoginRotation(t *testing.T) {
 	}
 
 	// Converging back is also just a boot.
-	if err := passwordauth.EnsureBootstrap(context.Background(), admin,
+	if _, err := passwordauth.EnsureBootstrap(context.Background(), admin,
 		discardLogger(), adminUsername, adminPassword, adminEmail); err != nil {
 		t.Fatalf("rotate back: %v", err)
 	}

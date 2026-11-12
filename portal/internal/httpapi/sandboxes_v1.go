@@ -12,12 +12,12 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
-	"strconv"
 	"time"
 
 	"github.com/tastyeffectco/sandboxd/portal/internal/apikeys"
 	"github.com/tastyeffectco/sandboxd/portal/internal/db"
 	"github.com/tastyeffectco/sandboxd/portal/internal/quota"
+	"github.com/tastyeffectco/sandboxd/portal/internal/ratelimit"
 	"github.com/tastyeffectco/sandboxd/portal/internal/sandboxd"
 	"github.com/tastyeffectco/sandboxd/portal/internal/tenants"
 )
@@ -65,24 +65,9 @@ func (s *Server) handleV1CreateSandbox(w http.ResponseWriter, r *http.Request) {
 		if !s.requireSandboxd(w) {
 			return
 		}
-		// P5 rate limit: token bucket per key, refill rate from the
-		// org's plan. Refusal is 429 rate_limited with Retry-After.
-		if s.Limiter != nil {
-			plan, _ := quota.LoadPlan(r.Context(), s.Pool, key.OrgID)
-			rps := plan.RateLimitRPS
-			if rps <= 0 {
-				rps = 2 // free plan default; LoadPlan never returns 0 for known plans
-			}
-			if ok, retry := s.Limiter.Take(key.KeyID, rps, 1); !ok {
-				secs := int(retry.Round(time.Second).Seconds())
-				if secs < 1 {
-					secs = 1
-				}
-				w.Header().Set("Retry-After", strconv.Itoa(secs))
-				writeErr(w, http.StatusTooManyRequests, "rate_limited",
-					"too many sandbox:create requests; retry after the backoff")
-				return
-			}
+		// P5b rate limit: per-key token bucket for the create family.
+		if !s.rateLimit(w, key, ratelimit.BucketCreate) {
+			return
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, 65536)
 		var body createSandboxBody
@@ -114,11 +99,13 @@ func (s *Server) handleV1CreateSandbox(w http.ResponseWriter, r *http.Request) {
 				// P5: admission inside the idempotent closure, so a
 				// replay returns the stored 201 even at the ceiling
 				// and the lock spans create + index insert.
-				release, err := s.admitRun(r.Context(), key.OrgID)
+				req := admitReq(&body)
+				release, err := s.admitRun(r.Context(), key.OrgID, req)
 				if err != nil {
 					return 0, nil, err
 				}
 				defer release()
+				applyAdmitted(&body, req)
 				sb, err := s.gatewayCreate(r.Context(), key.OrgID, projectID, "api_key", key.KeyID, body)
 				if err != nil {
 					return 0, nil, err
@@ -167,6 +154,7 @@ func (s *Server) gatewayCreate(ctx context.Context, orgID, projectID, actorType,
 		EgressAllow: body.Egress.Allow,
 		RepoURL:     body.Workspace.RepoURL,
 		Branch:      body.Workspace.Branch,
+		TTLSeconds:  body.TTLSeconds,
 	}
 	sb, err := s.Sandboxd.Create(ctx, in)
 	if err != nil {
@@ -235,6 +223,11 @@ func (s *Server) handleV1GetSandbox(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleV1ExecSandbox(w http.ResponseWriter, r *http.Request) {
 	s.withAPIKey(w, r, "sandbox:exec", func(w http.ResponseWriter, r *http.Request, key apikeys.Key) {
 		if !s.requireSandboxd(w) {
+			return
+		}
+		// P5b rate limit: exec has its own bucket so a files loop
+		// cannot starve exec and vice versa.
+		if !s.rateLimit(w, key, ratelimit.BucketExec) {
 			return
 		}
 		id := r.PathValue("id")
@@ -396,6 +389,11 @@ func (s *Server) handleV1SandboxLogs(w http.ResponseWriter, r *http.Request) {
 		if !s.requireSandboxd(w) {
 			return
 		}
+		// P5b: streams have their own bucket, charged once on open
+		// (a long follow is one stream open, not N requests).
+		if !s.rateLimit(w, key, ratelimit.BucketStream) {
+			return
+		}
 		id := r.PathValue("id")
 		if !s.keyOwnsSandbox(r.Context(), key, id) {
 			writeErr(w, http.StatusNotFound, "not_found", "sandbox not found")
@@ -414,6 +412,10 @@ func (s *Server) handleV1SandboxAction(w http.ResponseWriter, r *http.Request) {
 		if !s.requireSandboxd(w) {
 			return
 		}
+		// P5b: start/stop/delete share the action bucket.
+		if !s.rateLimit(w, key, ratelimit.BucketAction) {
+			return
+		}
 		id := r.PathValue("id")
 		if !s.keyOwnsSandbox(r.Context(), key, id) {
 			writeErr(w, http.StatusNotFound, "not_found", "sandbox not found")
@@ -422,7 +424,7 @@ func (s *Server) handleV1SandboxAction(w http.ResponseWriter, r *http.Request) {
 		var action, err = r.URL.Path, error(nil)
 		switch {
 		case r.Method == http.MethodPost && endsWith(action, "/start"):
-			release, aerr := s.admitRun(r.Context(), key.OrgID)
+			release, aerr := s.admitRun(r.Context(), key.OrgID, &quota.CreateRequest{})
 			if s.writeAdmitErr(w, key.OrgID, aerr) {
 				return
 			}
@@ -592,6 +594,10 @@ type createSandboxBody struct {
 		RepoURL string `json:"repo_url"`
 		Branch  string `json:"branch"`
 	} `json:"workspace"`
+	// P5b: TTL seconds the caller asks for. 0 means "use the
+	// sandboxd default". The plan ceiling (plans.max_ttl_seconds)
+	// caps it before the create reaches sandboxd.
+	TTLSeconds int `json:"ttl_seconds,omitempty"`
 }
 
 var (
@@ -628,6 +634,8 @@ func (b *createSandboxBody) validate(w http.ResponseWriter) bool {
 		writeErr(w, http.StatusBadRequest, "bad_request", "workspace.repo_url must be an http(s) or git URL")
 	case b.Workspace.RepoURL != "" && b.Workspace.Branch != "" && !branchRe.MatchString(b.Workspace.Branch):
 		writeErr(w, http.StatusBadRequest, "bad_request", "workspace.branch looks invalid")
+	case b.TTLSeconds < 0 || b.TTLSeconds > 86400*7:
+		writeErr(w, http.StatusBadRequest, "bad_request", "ttl_seconds must be 0..604800 (7 days)")
 	default:
 		return true
 	}

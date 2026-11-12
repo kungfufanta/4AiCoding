@@ -24,6 +24,7 @@ import (
 
 	"github.com/tastyeffectco/sandboxd/portal/internal/db"
 	"github.com/tastyeffectco/sandboxd/portal/internal/llm"
+	"github.com/tastyeffectco/sandboxd/portal/internal/llmconfig"
 )
 
 const (
@@ -55,14 +56,26 @@ type chatMessageJSON struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// handleChatStatus tells the SPA whether chat is wired and which model
-// answers, so the page can show a setup hint instead of failing.
+// handleChatStatus tells the SPA whether chat is wired, which model
+// answers by default and which models the picker may offer (A2).
+// Resolution order: org default → platform default → env fallback.
 func (s *Server) handleChatStatus(w http.ResponseWriter, r *http.Request) {
+	orgID := pathOrgID(r)
 	model := ""
-	if s.LLM != nil {
+	models := []string{}
+	if k, err := llmconfig.ResolveEffective(r.Context(), s.Pool, orgID); err == nil {
+		model = k.DefaultModel
+		for _, m := range k.Models {
+			models = append(models, m.ID)
+		}
+	} else if s.LLM != nil {
 		model = s.LLM.Model
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"enabled": s.LLM != nil, "model": model})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"enabled": model != "",
+		"model":   model,
+		"models":  models,
+	})
 }
 
 func (s *Server) handleListChats(w http.ResponseWriter, r *http.Request) {
@@ -255,13 +268,21 @@ func (s *Server) handleSendChatMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.LLM == nil {
-		writeErr(w, http.StatusServiceUnavailable, "chat_not_configured",
-			"chat is not configured (PORTAL_DEFAULT_LLM_API_KEY)")
-		return
+		// A2: even without the env fallback, a DB-configured
+		// connection may exist. Try resolving before 503.
+		if _, err := s.resolveChatClient(r.Context(), orgID); err != nil {
+			writeErr(w, http.StatusServiceUnavailable, "chat_not_configured",
+				"chat is not configured (no model connection for this org and no PORTAL_DEFAULT_LLM_API_KEY)")
+			return
+		}
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 128<<10)
 	var body struct {
 		Content string `json:"content"`
+		// Model (A2): optional per-message model override. Must be in
+		// the effective connection's allowed list; empty uses the
+		// connection's default_model.
+		Model string `json:"model,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "bad_request", `body must be {"content": "..."}`)
@@ -348,7 +369,32 @@ func (s *Server) handleSendChatMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = send("user", map[string]any{"message": userMsg})
 
-	reply, streamErr := s.LLM.Stream(r.Context(), llm.Request{
+	// A2: resolve the effective LLM connection for this org. Falls
+	// back to s.LLM (env-based) when no DB connection is configured.
+	chatClient, err := s.resolveChatClient(r.Context(), orgID)
+	if err != nil && s.LLM != nil {
+		// Copy: the model override below must not change the shared
+		// env client other requests use.
+		c := *s.LLM
+		chatClient = &c
+	}
+	if chatClient == nil {
+		writeErr(w, http.StatusServiceUnavailable, "chat_not_configured",
+			"chat is not configured (no model connection for this org)")
+		return
+	}
+	// Model override (A2): when the caller picked a model, verify it
+	// is in the connection's allowed list before using it. An empty
+	// override keeps the connection's default_model.
+	if body.Model != "" {
+		if !s.modelAllowed(r.Context(), orgID, body.Model) {
+			writeErr(w, http.StatusBadRequest, "model_not_allowed",
+				"model "+body.Model+" is not in the connection's allowed list")
+			return
+		}
+		chatClient.Model = body.Model
+	}
+	reply, streamErr := chatClient.Stream(r.Context(), llm.Request{
 		Messages:  msgs,
 		UserID:    userID,
 		SessionID: id,
@@ -391,4 +437,46 @@ func (s *Server) handleSendChatMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = send("done", map[string]any{"message": asst, "title": title})
+}
+
+// resolveChatClient returns the llm.Client to use for one chat call.
+// Resolution order (AGENT_PLAN A2 §5.2):
+//  1. the org's is_default connection (from model_connections);
+//  2. the platform's is_default connection;
+//  3. env PORTAL_DEFAULT_LLM_* (s.LLM, the Chat MVP fallback).
+//
+// The DB lookup is best-effort: if the DB is unreachable or no
+// connection is configured, the function returns ErrNotFound so the
+// caller can fall back to s.LLM. The decrypted key is never logged.
+func (s *Server) resolveChatClient(ctx context.Context, orgID string) (*llm.Client, error) {
+	k, err := llmconfig.ResolveEffective(ctx, s.Pool, orgID)
+	if err != nil {
+		return nil, err
+	}
+	return &llm.Client{
+		BaseURL: k.BaseURL,
+		APIKey:  k.APIKey, // plaintext; never logged
+		Model:   k.DefaultModel,
+		Flavor:  k.Flavor,
+		HTTP:    s.llmHTTPFor(k.OrgID, 0),
+	}, nil
+}
+
+// modelAllowed reports whether model is in the effective connection's
+// allowed list (or the list is empty = every model allowed). Used to
+// gate the per-message model override from the Chat model picker.
+func (s *Server) modelAllowed(ctx context.Context, orgID, model string) bool {
+	k, err := llmconfig.ResolveEffective(ctx, s.Pool, orgID)
+	if err != nil {
+		return false // no connection = no override
+	}
+	if len(k.Models) == 0 {
+		return true // open list
+	}
+	for _, m := range k.Models {
+		if m.ID == model {
+			return true
+		}
+	}
+	return false
 }

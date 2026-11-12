@@ -39,6 +39,12 @@ type Request struct {
 	SessionID string
 	// RequestID makes a retry idempotent on the hub (X-Request-Id).
 	RequestID string
+	// DisableMemory sets X-WebHub-Memory: 0 (AGENT_PLAN §5.2.1).
+	// The agent loop sets this on every call that carries tool output,
+	// so the hub does not persist file contents / command output as
+	// long-term memory (prompt-injection vector). The first LLM call
+	// of a run (no tool output yet) leaves memory on.
+	DisableMemory bool
 }
 
 // Client talks to one OpenAI-compatible endpoint.
@@ -103,6 +109,11 @@ func (c *Client) Stream(ctx context.Context, req Request, onDelta func(string) e
 		}
 		if req.SessionID != "" {
 			hreq.Header.Set("X-Session-Id", "s_"+req.SessionID)
+		}
+		if req.DisableMemory {
+			// AGENT_PLAN §5.2.1: tool output may contain file
+			// contents or .env; do not let the hub persist it.
+			hreq.Header.Set("X-WebHub-Memory", "0")
 		}
 	}
 	if req.RequestID != "" {
@@ -170,4 +181,110 @@ func (c *Client) Stream(ctx context.Context, req Request, onDelta func(string) e
 	}
 	// Stream closed without [DONE]: keep what arrived.
 	return out.String(), nil
+}
+
+// TestResult is one probe of a model connection (AGENT_PLAN A2).
+// POST /api/.../connections/{id}/test sends a tiny prompt and reports
+// whether the provider answered, the model it used, the latency, and
+// any error.
+type TestResult struct {
+	OK            bool   `json:"ok"`
+	Model         string `json:"model,omitempty"`
+	Latency       int64  `json:"latency_ms,omitempty"`
+	Reply         string `json:"reply,omitempty"`
+	Error         string `json:"error,omitempty"`
+	SupportsTools bool   `json:"supports_tools,omitempty"`
+}
+
+// Test sends a one-shot "Reply with the single word: ok" prompt and
+// reports the result. It does NOT stream — a test call should be fast.
+// supports_tools is probed by asking the model to call a no-op tool
+// when protocol = openai; the probe is best-effort (a provider that
+// ignores tool_choice still reports OK on the text reply).
+func (c *Client) Test(ctx context.Context, model string) TestResult {
+	start := time.Now()
+	body := map[string]any{
+		"model":      model,
+		"messages":   []Message{{Role: "user", Content: "Reply with the single word: ok"}},
+		"stream":     false,
+		"max_tokens": 16,
+	}
+	raw, _ := json.Marshal(body)
+	hreq, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		strings.TrimRight(c.BaseURL, "/")+"/chat/completions", bytes.NewReader(raw))
+	if err != nil {
+		return TestResult{Error: err.Error()}
+	}
+	hreq.Header.Set("Content-Type", "application/json")
+	if c.APIKey != "" {
+		hreq.Header.Set("Authorization", "Bearer "+c.APIKey)
+	}
+	if c.Flavor == "webhub" {
+		hreq.Header.Set("X-WebHub-Memory", "0")
+	}
+	res, err := c.httpClient().Do(hreq)
+	if err != nil {
+		return TestResult{Error: err.Error()}
+	}
+	defer res.Body.Close()
+	data, _ := io.ReadAll(io.LimitReader(res.Body, 4<<10))
+	if res.StatusCode != http.StatusOK {
+		return TestResult{Error: fmt.Sprintf("upstream %d: %s", res.StatusCode, string(data))}
+	}
+	var resp struct {
+		Model   string `json:"model"`
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return TestResult{Error: "decode: " + err.Error()}
+	}
+	reply := ""
+	if len(resp.Choices) > 0 {
+		reply = resp.Choices[0].Message.Content
+	}
+	return TestResult{
+		OK:      true,
+		Model:   resp.Model,
+		Latency: time.Since(start).Milliseconds(),
+		Reply:   reply,
+	}
+}
+
+// ListModels calls GET {base}/models and returns the model id list.
+// Used by the connection editor's "Load models" button.
+func (c *Client) ListModels(ctx context.Context) ([]string, error) {
+	hreq, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		strings.TrimRight(c.BaseURL, "/")+"/models", nil)
+	if err != nil {
+		return nil, err
+	}
+	if c.APIKey != "" {
+		hreq.Header.Set("Authorization", "Bearer "+c.APIKey)
+	}
+	res, err := c.httpClient().Do(hreq)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(io.LimitReader(res.Body, 1<<10))
+		return nil, fmt.Errorf("upstream %d: %s", res.StatusCode, string(data))
+	}
+	var resp struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&resp); err != nil {
+		return nil, fmt.Errorf("decode: %w", err)
+	}
+	out := make([]string, 0, len(resp.Data))
+	for _, m := range resp.Data {
+		out = append(out, m.ID)
+	}
+	return out, nil
 }

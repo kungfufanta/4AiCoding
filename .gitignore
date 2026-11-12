@@ -41,3 +41,10 @@ docs/internal/
 *.env.bak*
 .env.*.bak
 preview-shots/
+
+# Portal SDK build artifacts (P6)
+portal/sdk/typescript/node_modules/
+portal/sdk/typescript/dist/
+portal/sdk/python/*.egg-info/
+portal/sdk/python/.pytest_cache/
+portal/sdk/python/__pycache__/

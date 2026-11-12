@@ -26,6 +26,7 @@ import (
 	"strconv"
 
 	"github.com/tastyeffectco/sandboxd/portal/internal/apikeys"
+	"github.com/tastyeffectco/sandboxd/portal/internal/ratelimit"
 )
 
 // Portal-side scope for the files gateway (already in KnownScopes).
@@ -40,6 +41,11 @@ const maxPortalFileBodyBytes int64 = 8 << 20
 func (s *Server) handleV1ListFiles(w http.ResponseWriter, r *http.Request) {
 	s.withAPIKey(w, r, portalScopeFiles, func(w http.ResponseWriter, r *http.Request, key apikeys.Key) {
 		if !s.requireSandboxd(w) {
+			return
+		}
+		// P5b: files routes share one bucket so a recursive listing
+		// loop cannot starve exec.
+		if !s.rateLimit(w, key, ratelimit.BucketFiles) {
 			return
 		}
 		id := r.PathValue("id")
@@ -57,6 +63,9 @@ func (s *Server) handleV1FileContent(w http.ResponseWriter, r *http.Request) {
 		if !s.requireSandboxd(w) {
 			return
 		}
+		if !s.rateLimit(w, key, ratelimit.BucketFiles) {
+			return
+		}
 		id := r.PathValue("id")
 		if !s.keyOwnsSandbox(r.Context(), key, id) {
 			writeErr(w, http.StatusNotFound, "not_found", "sandbox not found")
@@ -70,6 +79,9 @@ func (s *Server) handleV1FileContent(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleV1PutFile(w http.ResponseWriter, r *http.Request) {
 	s.withAPIKey(w, r, portalScopeFiles, func(w http.ResponseWriter, r *http.Request, key apikeys.Key) {
 		if !s.requireSandboxd(w) {
+			return
+		}
+		if !s.rateLimit(w, key, ratelimit.BucketFiles) {
 			return
 		}
 		id := r.PathValue("id")
@@ -101,6 +113,9 @@ func (s *Server) handleV1DeleteFile(w http.ResponseWriter, r *http.Request) {
 		if !s.requireSandboxd(w) {
 			return
 		}
+		if !s.rateLimit(w, key, ratelimit.BucketFiles) {
+			return
+		}
 		id := r.PathValue("id")
 		if !s.keyOwnsSandbox(r.Context(), key, id) {
 			writeErr(w, http.StatusNotFound, "not_found", "sandbox not found")
@@ -118,6 +133,9 @@ func (s *Server) handleV1DeleteFile(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleV1MoveFile(w http.ResponseWriter, r *http.Request) {
 	s.withAPIKey(w, r, portalScopeFiles, func(w http.ResponseWriter, r *http.Request, key apikeys.Key) {
 		if !s.requireSandboxd(w) {
+			return
+		}
+		if !s.rateLimit(w, key, ratelimit.BucketFiles) {
 			return
 		}
 		id := r.PathValue("id")

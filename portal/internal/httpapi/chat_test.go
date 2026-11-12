@@ -1,16 +1,19 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/google/uuid"
 
+	"github.com/tastyeffectco/sandboxd/portal/internal/db"
 	"github.com/tastyeffectco/sandboxd/portal/internal/llm"
 )
 
@@ -82,6 +85,15 @@ func (f *fakeLLM) server(t *testing.T) *httptest.Server {
 
 func TestChatFlow(t *testing.T) {
 	srv := setupBFF(t)
+	// A2: clean any model_connections left by A2 tests so
+	// resolveChatClient finds nothing and falls back to s.LLM (nil).
+	ctx := context.Background()
+	admin, err := db.Open(ctx, discardLogger(), os.Getenv("PORTAL_TEST_DATABASE_URL"), "")
+	if err != nil {
+		t.Fatalf("open admin for cleanup: %v", err)
+	}
+	defer admin.Close()
+	_, _ = admin.Exec(ctx, "DELETE FROM model_connection_keys; DELETE FROM model_connections;")
 	fake := &fakeLLM{}
 	hub := fake.server(t)
 

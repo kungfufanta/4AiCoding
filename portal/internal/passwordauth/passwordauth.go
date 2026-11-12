@@ -82,16 +82,20 @@ func Hash(password string) (string, error) {
 // always ends up matching the configured password — that is how
 // PORTAL_ADMIN_PASSWORD rotation is applied (set a new value,
 // redeploy; no SQL by hand).
-func EnsureBootstrap(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger, username, password, email string) error {
+//
+// Returns the admin user id (A2: needed by httpapi.Server to gate the
+// /api/admin/llm/* routes against the session user).
+func EnsureBootstrap(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger, username, password, email string) (string, error) {
 	hash, err := Hash(password)
 	if err != nil {
-		return err
+		return "", err
 	}
 	newOrgID, err := db.NewOrgID()
 	if err != nil {
-		return err
+		return "", err
 	}
 	sub := SubjectPrefix + strings.ToLower(strings.TrimSpace(username))
+	var adminID string
 	err = db.BootstrapTx(ctx, pool, newOrgID, func(tx db.Tx) error {
 		u, _, err := tenants.UpsertUser(ctx, tx, sub, email, "Admin")
 		if err != nil {
@@ -100,6 +104,7 @@ func EnsureBootstrap(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger, 
 			}
 			return err
 		}
+		adminID = u.ID
 		if err := db.PinUser(ctx, tx, u.ID); err != nil {
 			return err
 		}
@@ -134,11 +139,11 @@ func EnsureBootstrap(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger, 
 			log.Info("bootstrap admin password rotated; existing sessions revoked")
 		}
 		_, err = tx.Exec(ctx, `
-			INSERT INTO password_logins (user_id, username, password_hash)
-			VALUES ($1::uuid, $2, $3)
-			ON CONFLICT (username) DO UPDATE
-			    SET user_id       = EXCLUDED.user_id,
-			        password_hash = EXCLUDED.password_hash`,
+                        INSERT INTO password_logins (user_id, username, password_hash)
+                        VALUES ($1::uuid, $2, $3)
+                        ON CONFLICT (username) DO UPDATE
+                            SET user_id       = EXCLUDED.user_id,
+                                password_hash = EXCLUDED.password_hash`,
 			u.ID, strings.TrimSpace(username), hash)
 		if err != nil {
 			return fmt.Errorf("upsert password login: %w", err)
@@ -146,10 +151,10 @@ func EnsureBootstrap(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger, 
 		return nil
 	})
 	if err != nil {
-		return err
+		return "", err
 	}
 	log.Info("bootstrap password login ensured", "username", strings.TrimSpace(username))
-	return nil
+	return adminID, nil
 }
 
 // DisableAll removes every password login and signs out the sessions
@@ -164,8 +169,8 @@ func DisableAll(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger) error
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	sessions, err := tx.Exec(ctx, `
-		DELETE FROM web_sessions
-		WHERE user_id IN (SELECT user_id FROM password_logins)`)
+                DELETE FROM web_sessions
+                WHERE user_id IN (SELECT user_id FROM password_logins)`)
 	if err != nil {
 		return fmt.Errorf("revoke password-login sessions: %w", err)
 	}

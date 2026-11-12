@@ -78,7 +78,7 @@ Or without Docker: point `PORTAL_DATABASE_URL` at any Postgres 16+ and
 | `PORTAL_ADMIN_EMAIL` | `admin@portal.local` | Directory email of the bootstrap admin (gets a personal org like any user) |
 | `PORTAL_DB_ROLE` | `portal_app` | Non-owner role for RLS; `-` disables the `SET ROLE` |
 | `PORTAL_SANDBOXD_URL` | — | sandboxd control plane the gateway proxies to (P4). Empty disables the whole sandbox surface: `/v1/sandboxes*` answers 503 and the dashboard shows "backend not connected" |
-| `PORTAL_SANDBOXD_API_KEY` | — | Bearer key the gateway presents to sandboxd. Production keys carry the `require_external` flag (P3a) + `sandbox:create/read/exec` scopes; a dev sandboxd without its auth store ignores it |
+| `PORTAL_SANDBOXD_API_KEY` | — | Bearer key the gateway presents to sandboxd. Production keys carry the `require_external` flag (P3a) + `sandbox:create/read/exec` + `sandboxes:files` scopes (A1 needs `sandboxes:files` or the gateway's files proxy gets 403 from sandboxd); a dev sandboxd without its auth store ignores it |
 | `PORTAL_SANDBOXD_WEBHOOK_SECRET` | — | HMAC secret verifying `X-Sandboxd-Signature` on `POST /api/webhooks/sandboxd` (must match sandboxd's `SANDBOXD_WEBHOOK_SECRET`). Empty disables the receiver |
 | `PORTAL_SANDBOXD_TIMEOUT` | `30s` | Per-call timeout to sandboxd (streaming proxies honor the request context instead) |
 

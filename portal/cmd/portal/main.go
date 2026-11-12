@@ -63,12 +63,15 @@ func run() error {
 	// Bootstrap password login (owner decision 2026-11-11): the
 	// local admin is ensured with the configured password on every
 	// boot, so PORTAL_ADMIN_PASSWORD rotation is just a redeploy.
+	var bootstrapAdminID string
 	if cfg.PasswordLogin {
-		if err := passwordauth.EnsureBootstrap(ctx, adminPool, log,
-			cfg.AdminUsername, cfg.AdminPassword, cfg.AdminEmail); err != nil {
+		id, err := passwordauth.EnsureBootstrap(ctx, adminPool, log,
+			cfg.AdminUsername, cfg.AdminPassword, cfg.AdminEmail)
+		if err != nil {
 			adminPool.Close()
 			return fmt.Errorf("bootstrap password login: %w", err)
 		}
+		bootstrapAdminID = id
 	} else if err := passwordauth.DisableAll(ctx, adminPool, log); err != nil {
 		adminPool.Close()
 		return fmt.Errorf("disable password login: %w", err)
@@ -147,6 +150,11 @@ func run() error {
 		// the plan catalogue.
 		QuotaEnabled: true,
 		Limiter:      ratelimit.New(),
+		// A2: platform admin = the bootstrap admin (password login).
+		// /api/admin/llm/* routes are enabled iff a bootstrap admin
+		// was created (PORTAL_ADMIN_PASSWORD set).
+		PlatformAdminEnabled: cfg.PasswordLogin,
+		BootstrapAdminID:     bootstrapAdminID,
 	}
 	mux := srv.Handler()
 	// The SPA (embedded via internal/webfs) rides on the same origin:

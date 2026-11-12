@@ -29,6 +29,9 @@ import {
   Users,
   X,
   Gauge,
+  BookOpen,
+  Cpu,
+  SlidersHorizontal,
 } from "lucide-react";
 import { api, type Me, type Org } from "../api";
 import { useMe, useMembers } from "../lib/queries";
@@ -103,7 +106,7 @@ function Shell({ me, org }: { me: Me; org: Org }) {
     <div className="min-h-dvh lg:grid lg:grid-cols-[240px_1fr]">
       {/* Desktop sidebar */}
       <aside className="sticky top-0 hidden h-dvh flex-col border-r border-border bg-surface lg:flex">
-        <SidebarContent org={org} />
+        <SidebarContent org={org} role={role} />
       </aside>
 
       {/* Mobile drawer */}
@@ -122,7 +125,7 @@ function Shell({ me, org }: { me: Me; org: Org }) {
             >
               <X aria-hidden className="size-4" />
             </button>
-            <SidebarContent org={org} />
+            <SidebarContent org={org} role={role} />
           </aside>
         </div>
       )}
@@ -152,17 +155,23 @@ function Shell({ me, org }: { me: Me; org: Org }) {
   );
 }
 
-function SidebarContent({ org }: { org: Org }) {
+function SidebarContent({ org, role }: { org: Org; role?: string }) {
   const base = `/orgs/${org.slug}`;
+  const isOwnerOrAdmin = role === "owner" || role === "admin";
   const items = [
     { to: `${base}/chat`, label: "Chat", icon: MessageSquare },
     { to: `${base}/projects`, label: "Projects", icon: FolderKanban },
     { to: `${base}/sandboxes`, label: "Sandboxes", icon: Box },
     { to: `${base}/usage`, label: "Usage", icon: Gauge },
+    { to: `${base}/quickstart`, label: "Quickstart", icon: BookOpen },
+    { to: `${base}/models`, label: "Models", icon: Cpu },
     { to: `${base}/members`, label: "Members", icon: Users },
     { to: `${base}/api-keys`, label: "API keys", icon: KeyRound },
     { to: `${base}/audit`, label: "Audit", icon: ScrollText },
   ];
+  if (isOwnerOrAdmin) {
+    items.splice(5, 0, { to: `${base}/admin/llm`, label: "Admin LLM", icon: SlidersHorizontal });
+  }
 
   return (
     <>

@@ -43,6 +43,29 @@ var ErrExceeded = errors.New("quota_exceeded")
 // treats this as a server error rather than a quota verdict.
 var ErrUnknownPlan = errors.New("unknown_plan")
 
+// LimitViolation carries the field that breached a plan limit and the
+// used/limit values for the error envelope. The gateway maps it to
+// 422 plan_limit (HTTP semantics: the request is well-formed but
+// conflicts with the org's plan).
+type LimitViolation struct {
+	Field string
+	Limit any
+	Used  any
+}
+
+func (v *LimitViolation) Error() string {
+	return fmt.Sprintf("plan_limit: %s (used=%v, limit=%v)", v.Field, v.Used, v.Limit)
+}
+
+// IsLimitViolation reports whether err is a *LimitViolation.
+func IsLimitViolation(err error) (*LimitViolation, bool) {
+	var lv *LimitViolation
+	if errors.As(err, &lv) {
+		return lv, true
+	}
+	return nil, false
+}
+
 // LoadPlan reads the plan row for the org's plan_id inside the org's
 // RLS context. Returns ErrUnknownPlan when the row is missing.
 func LoadPlan(ctx context.Context, pool *pgxpool.Pool, orgID string) (Plan, error) {
