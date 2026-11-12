@@ -51,6 +51,8 @@ var KnownScopes = []string{
 	"sandbox:create", "sandbox:read", "sandbox:exec",
 	"sandboxes:files", // A1: workspace file list/read/write/delete/move
 	"usage:read",
+	"agent:run",  // A3.1: create + cancel agent runs
+	"agent:read", // A3.1: read runs + their event streams
 }
 
 // ScopeValid reports whether s is a known scope.

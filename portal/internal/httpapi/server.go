@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/tastyeffectco/sandboxd/portal/internal/agent"
 	"github.com/tastyeffectco/sandboxd/portal/internal/agenttoken"
 	"github.com/tastyeffectco/sandboxd/portal/internal/apikeys"
 	"github.com/tastyeffectco/sandboxd/portal/internal/llm"
@@ -93,6 +94,10 @@ type Server struct {
 	// (P5). nil disables rate limiting entirely (the existing P4
 	// behaviour, kept for tests that pre-date P5).
 	Limiter *ratelimit.Limiter
+	// AgentNotify wakes agent SSE followers (and /v1 readers) when new
+	// run events land; nil = poll-only streaming (still correct, 1 s
+	// latency floor). Wired in main from agent.NewNotifier.
+	AgentNotify *agent.Notifier
 }
 
 func (s *Server) sessionTTL() time.Duration {
@@ -145,6 +150,15 @@ func (s *Server) Handler() *http.ServeMux {
 	mux.Handle("DELETE /api/orgs/{orgID}/chats/{chatID}", s.withSession(http.HandlerFunc(s.handleDeleteChat)))
 	mux.Handle("GET /api/orgs/{orgID}/chats/{chatID}/messages", s.withSession(http.HandlerFunc(s.handleListChatMessages)))
 	mux.Handle("POST /api/orgs/{orgID}/chats/{chatID}/messages", s.withSession(http.HandlerFunc(s.handleSendChatMessage)))
+	// A3.1: agent runs in the Chat page (docs/AGENT_PLAN_A3.md §9.1).
+	// A chat pins one sandbox; runs stream events as SSE with a
+	// replay cursor (Last-Event-ID / ?since=).
+	mux.Handle("PATCH /api/orgs/{orgID}/chats/{chatID}", s.withSession(http.HandlerFunc(s.handleBFFAttachSandbox)))
+	mux.Handle("POST /api/orgs/{orgID}/chats/{chatID}/agent/runs", s.withSession(http.HandlerFunc(s.handleBFFCreateAgentRun)))
+	mux.Handle("GET /api/orgs/{orgID}/chats/{chatID}/agent/runs", s.withSession(http.HandlerFunc(s.handleBFFListAgentRuns)))
+	mux.Handle("GET /api/orgs/{orgID}/agent/runs/{runID}", s.withSession(http.HandlerFunc(s.handleBFFGetAgentRun)))
+	mux.Handle("GET /api/orgs/{orgID}/agent/runs/{runID}/events", s.withSession(http.HandlerFunc(s.handleBFFAgentRunEvents)))
+	mux.Handle("POST /api/orgs/{orgID}/agent/runs/{runID}/cancel", s.withSession(http.HandlerFunc(s.handleBFFCancelAgentRun)))
 	// Sandboxes BFF (PORTAL_PLAN_V2 P4 UI): session + CSRF, member role.
 	mux.Handle("GET /api/orgs/{orgID}/sandboxes", s.withSession(http.HandlerFunc(s.handleBFFListSandboxes)))
 	mux.Handle("POST /api/orgs/{orgID}/sandboxes", s.withSession(http.HandlerFunc(s.handleBFFCreateSandbox)))
@@ -195,6 +209,14 @@ func (s *Server) Handler() *http.ServeMux {
 	mux.Handle("PUT /v1/sandboxes/{id}/files/content", http.HandlerFunc(s.handleV1PutFile))
 	mux.Handle("DELETE /v1/sandboxes/{id}/files", http.HandlerFunc(s.handleV1DeleteFile))
 	mux.Handle("POST /v1/sandboxes/{id}/files/move", http.HandlerFunc(s.handleV1MoveFile))
+	// A3.1: agent runs over the public API (docs/AGENT_PLAN_A3.md
+	// §9.2): Bearer API key or short-lived agent token; scopes
+	// agent:run / agent:read; Idempotency-Key on create.
+	mux.Handle("POST /v1/sandboxes/{id}/agent/runs", http.HandlerFunc(s.handleV1CreateAgentRun))
+	mux.Handle("GET /v1/sandboxes/{id}/agent/runs", http.HandlerFunc(s.handleV1ListAgentRuns))
+	mux.Handle("GET /v1/agent/runs/{runID}", http.HandlerFunc(s.handleV1GetAgentRun))
+	mux.Handle("GET /v1/agent/runs/{runID}/events", http.HandlerFunc(s.handleV1AgentRunEvents))
+	mux.Handle("POST /v1/agent/runs/{runID}/cancel", http.HandlerFunc(s.handleV1CancelAgentRun))
 	// Lifecycle webhook (PORTAL_PLAN 4.4): signature-authed, so it does
 	// NOT sit behind withSession. Registered only with a secret.
 	if s.WebhookSecret != "" {

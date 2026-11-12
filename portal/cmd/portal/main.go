@@ -4,6 +4,11 @@
 // the embedded migrations and serve /healthz + /readyz. Later
 // milestones mount the BFF (dashboard) and the public /v1 API on the
 // same server.
+//
+// A3.1 adds the agent workers: N goroutines (PORTAL_AGENT_WORKERS,
+// default 2, 0 = off) claim runs from Postgres and execute them in
+// this process. `portal agent-worker` runs the same workers without
+// the HTTP server (the seam A6 needs to move them to a Deployment).
 package main
 
 import (
@@ -17,6 +22,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/tastyeffectco/sandboxd/portal/internal/agent"
 	"github.com/tastyeffectco/sandboxd/portal/internal/agenttoken"
 	"github.com/tastyeffectco/sandboxd/portal/internal/apikeys"
 	"github.com/tastyeffectco/sandboxd/portal/internal/config"
@@ -33,6 +39,13 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "agent-worker" {
+		if err := runWorkerOnly(); err != nil {
+			fmt.Fprintf(os.Stderr, "portal agent-worker: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(); err != nil {
 		fmt.Fprintf(os.Stderr, "portal: %v\n", err)
 		os.Exit(1)
@@ -131,6 +144,26 @@ func run() error {
 		log.Info("sandboxd gateway disabled (PORTAL_SANDBOXD_URL unset)")
 	}
 
+	// A3.1: the agent stack. Workers run in this process (decision
+	// §2-4); `0` disables them (another process — e.g. the dedicated
+	// `portal agent-worker` pod — owns the queue). The notifier is
+	// shared with the HTTP side so SSE followers wake instantly.
+	var workers []*agent.Worker
+	var notifier *agent.Notifier
+	if cfg.AgentWorkers > 0 {
+		notifier = agent.NewNotifier(ctx, log, cfg.DatabaseURL)
+		workers = agent.StartPool(ctx, log, pool, notifier,
+			agent.ConfigSource{Pool: pool, Fallback: chat}, cfg.AgentWorkers)
+		log.Info("agent workers enabled", "workers", cfg.AgentWorkers)
+	} else {
+		log.Info("agent workers disabled (PORTAL_AGENT_WORKERS=0)")
+	}
+	defer func() {
+		for _, w := range workers {
+			w.Wait()
+		}
+	}()
+
 	srv := &httpapi.Server{
 		Log:           log,
 		Pool:          pool,
@@ -155,6 +188,7 @@ func run() error {
 		// was created (PORTAL_ADMIN_PASSWORD set).
 		PlatformAdminEnabled: cfg.PasswordLogin,
 		BootstrapAdminID:     bootstrapAdminID,
+		AgentNotify:          notifier,
 	}
 	mux := srv.Handler()
 	// The SPA (embedded via internal/webfs) rides on the same origin:
@@ -179,8 +213,60 @@ func run() error {
 		return err
 	case <-ctx.Done():
 		log.Info("shutting down")
+		// Workers first: they get the shutdown grace (cancel active
+		// runs as worker_shutdown), then the HTTP server drains.
+		for _, w := range workers {
+			w.Shutdown(agent.DefaultShutdownGrace)
+		}
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		return httpServer.Shutdown(shutdownCtx)
 	}
+}
+
+// runWorkerOnly — `portal agent-worker`: migrations + workers, no
+// HTTP listener. Same config, same queue; A6 turns this into the
+// dedicated worker Deployment.
+func runWorkerOnly() error {
+	log := logging.NewLogger(os.Getenv("PORTAL_DEBUG") != "")
+	cfg, err := config.Parse(os.Getenv)
+	if err != nil {
+		return err
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	adminPool, err := db.Open(ctx, log, cfg.DatabaseURL, "")
+	if err != nil {
+		return err
+	}
+	if err := db.Migrate(ctx, adminPool, log); err != nil {
+		adminPool.Close()
+		return fmt.Errorf("migrate: %w", err)
+	}
+	adminPool.Close()
+
+	pool, err := db.Open(ctx, log, cfg.DatabaseURL, cfg.DBRole)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+
+	n := cfg.AgentWorkers
+	if n == 0 {
+		n = 2 // the dedicated process defaults to two workers
+	}
+	notifier := agent.NewNotifier(ctx, log, cfg.DatabaseURL)
+	workers := agent.StartPool(ctx, log, pool, notifier,
+		agent.ConfigSource{Pool: pool}, n)
+	log.Info("agent worker process started", "workers", n)
+
+	<-ctx.Done()
+	for _, w := range workers {
+		w.Shutdown(agent.DefaultShutdownGrace)
+	}
+	for _, w := range workers {
+		w.Wait()
+	}
+	return nil
 }

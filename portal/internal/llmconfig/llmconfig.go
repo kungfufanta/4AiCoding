@@ -122,6 +122,65 @@ func ResolveEffective(ctx context.Context, pool *pgxpool.Pool, orgID string) (Ke
 	return k, nil
 }
 
+// ResolveForRun resolves the connection a worker should use for a
+// stored run (A3.1): connectionID pins the exact connection the run
+// was created against; an empty id falls back to ResolveEffective
+// (org default → platform default). The key is decrypted here and the
+// plaintext never leaves this call in logs.
+func ResolveForRun(ctx context.Context, pool *pgxpool.Pool, orgID, connectionID string) (Keyed, error) {
+	if connectionID == "" {
+		return ResolveEffective(ctx, pool, orgID)
+	}
+	var k Keyed
+	err := db.WithOrg(ctx, pool, orgID, func(tx pgx.Tx) error {
+		c, ok, err := loadConnectionByID(ctx, tx, connectionID)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return ErrNotFound
+		}
+		k.Connection = c
+		key, label, err := resolveKey(ctx, tx, c, orgID)
+		if err != nil {
+			return err
+		}
+		k.APIKey = key
+		k.KeyLabel = label
+		return nil
+	})
+	if err != nil {
+		return Keyed{}, err
+	}
+	return k, nil
+}
+
+// loadConnectionByID loads one enabled connection visible to the org
+// (its own row or the platform row). Returns ok=false when the id is
+// unknown, disabled or foreign — callers answer ErrNotFound.
+func loadConnectionByID(ctx context.Context, tx pgx.Tx, id string) (Connection, bool, error) {
+	var c Connection
+	var modelsJSON []byte
+	err := tx.QueryRow(ctx, `
+                SELECT id, COALESCE(org_id::text,''), name, protocol, flavor, base_url,
+                       default_model, models, key_mode, timeout_s, max_tokens, enabled, is_default
+                FROM model_connections
+                WHERE id = $1::uuid AND enabled`, id).
+		Scan(&c.ID, &c.OrgID, &c.Name, &c.Protocol, &c.Flavor, &c.BaseURL,
+			&c.DefaultModel, &modelsJSON, &c.KeyMode, &c.TimeoutS, &c.MaxTokens,
+			&c.Enabled, &c.IsDefault)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Connection{}, false, nil
+	}
+	if err != nil {
+		return Connection{}, false, fmt.Errorf("load connection %s: %w", id, err)
+	}
+	if len(modelsJSON) > 0 {
+		_ = json.Unmarshal(modelsJSON, &c.Models)
+	}
+	return c, true, nil
+}
+
 // loadDefaultConnection loads the is_default row. When orgScoped is
 // true it looks for an org_id = current org row; otherwise for the
 // platform row (org_id IS NULL). Returns ok=false when no default
