@@ -257,4 +257,207 @@ test.describe.serial("portal preview", () => {
     await expect(page.getByText("Say pong").first()).toBeVisible({ timeout: 10_000 });
     await shot(page, "25-chat-user-bubble");
   });
+
+  // A3.4 helpers: BFF calls ride the page's cookies (same-origin) and
+  // must echo the CSRF cookie back (double-submit), so plain
+  // page.request is not enough — evaluate inside the browser context.
+  async function bff(page: Page, method: string, path: string, body?: unknown) {
+    return page.evaluate(async ({ method, path, body }) => {
+      const m = document.cookie.match(/(?:^|;\s*)portal_csrf=([^;]*)/);
+      const res = await fetch(path, {
+        method,
+        headers: {
+          "Content-Type": "application/json",
+          ...(method !== "GET" && m ? { "X-CSRF-Token": decodeURIComponent(m[1]) } : {}),
+        },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+      const text = await res.text();
+      let data: unknown = null;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        data = text;
+      }
+      return { status: res.status, data: data as Record<string, unknown> };
+    }, { method, path, body });
+  }
+
+  // The agent e2e runs against the compose fake-llm (fixed script:
+  // write_file → run_command → finish) and a git-capable sandbox image
+  // (sandboxd-e2e-agent:ci) so checkpoint + revert really work.
+  const FAKE_LLM_BASE = "http://fake-llm:9933/v1";
+
+  test("agent mode — attach, run, result, revert (A3.4)", async ({ page }) => {
+    test.setTimeout(240_000);
+    const slug = await gotoOrgBase(page);
+
+    // 0. Setup via BFF: the platform LLM connection (private compose
+    //    URL → platform connections are exempt from the SSRF guard)
+    //    and one git-capable sandbox, waited until running.
+    const me = (await bff(page, "GET", "/api/me")).data as { orgs: { slug: string; id: string }[] };
+    const orgID = me.orgs.find((o) => o.slug === slug)!.id;
+
+    const conn = await bff(page, "POST", "/api/admin/llm/connections", {
+      name: `fake-llm-${runStamp}`,
+      protocol: "openai",
+      flavor: "generic",
+      base_url: FAKE_LLM_BASE,
+      default_model: "fake-4.6",
+      models: [{ id: "fake-4.6" }],
+      key_mode: "shared",
+      timeout_s: 30,
+      max_tokens: 4096,
+      enabled: true,
+      is_default: true,
+      api_key: "sk_fake_local",
+    });
+    if (conn.status !== 201) throw new Error(`create connection = ${conn.status}: ${JSON.stringify(conn.data)}`);
+
+    const sbx = await bff(page, "POST", `/api/orgs/${orgID}/sandboxes`, { image: "sandboxd-e2e-agent:ci" });
+    if (sbx.status !== 201) throw new Error(`create sandbox = ${sbx.status}: ${JSON.stringify(sbx.data)}`);
+    const sbxID = (sbx.data as { id: string }).id;
+    let status = "";
+    for (let i = 0; i < 60; i++) {
+      const cur = await bff(page, "GET", `/api/orgs/${orgID}/sandboxes/${sbxID}`);
+      status = (cur.data as { status?: string }).status ?? "";
+      if (status === "running") break;
+      await page.waitForTimeout(1000);
+    }
+    if (status !== "running") throw new Error(`sandbox never ran: ${status}`);
+
+    // 1. Chat page: attach the sandbox through the header dropdown —
+    //    this creates the conversation and navigates to it.
+    await page.goto(`/orgs/${slug}/chat`);
+    await page.getByLabel("Sandbox").click();
+    await page.getByRole("option", { name: new RegExp(sbxID.slice(-6)) }).click();
+    await expect(page).toHaveURL(new RegExp(`/orgs/${slug}/chat/[0-9a-f-]{36}$`), { timeout: 15_000 });
+    await shot(page, "30-chat-attached");
+
+    // 2. Agent mode on, hand over the fixed task.
+    await page.getByRole("button", { name: "Agent", exact: true }).click();
+    await page.getByPlaceholder(/Giao việc cho agent/).fill("Tạo file hello.txt cho tôi");
+    await page.getByRole("button", { name: "Send" }).click();
+
+    // 3. The prompt shows as an Agent bubble and the run card goes
+    //    live; the fake LLM walks write_file → run_command → finish.
+    const card = page.getByTestId("agent-run-card");
+    await expect(card).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId("tool-row").filter({ hasText: "write_file" }).first()).toBeVisible({
+      timeout: 90_000,
+    });
+    await shot(page, "31-agent-tool-write");
+    await expect(page.getByTestId("tool-row").filter({ hasText: "run_command" }).first()).toBeVisible({
+      timeout: 90_000,
+    });
+    await shot(page, "32-agent-tool-run");
+
+    // 4. The result card: succeeded + summary + hello.txt changed.
+    await expect(card).toHaveAttribute("data-status", "succeeded", { timeout: 120_000 });
+    await expect(page.getByTestId("result-summary")).toContainText("hello.txt");
+    await expect(page.getByTestId("files-changed")).toContainText("hello.txt");
+    await shot(page, "33-agent-result");
+
+    // 5. Revert through the UI confirm, then the files API proves the
+    //    file is gone (plan §8 acceptance).
+    await page.getByRole("button", { name: "Revert run" }).click();
+    const confirmDialog = page.getByRole("dialog");
+    await expect(confirmDialog.getByText("Revert run này?")).toBeVisible();
+    await confirmDialog.getByRole("button", { name: "Revert", exact: true }).click();
+    await expect(page.getByTestId("reverted-badge")).toBeVisible({ timeout: 60_000 });
+    await shot(page, "34-agent-reverted");
+
+    const key = await bff(page, "POST", `/api/orgs/${orgID}/api-keys`, {
+      name: `agent-files-${runStamp}`,
+      scopes: ["sandboxes:files"],
+    });
+    if (key.status !== 201) throw new Error(`create key = ${key.status}: ${JSON.stringify(key.data)}`);
+    const secret = (key.data as { secret: string }).secret;
+    const files = await page.evaluate(async ({ sbxID, secret }) => {
+      const res = await fetch(`/v1/sandboxes/${sbxID}/files?path=/home/sandbox/workspace`, {
+        headers: { Authorization: `Bearer ${secret}` },
+      });
+      return { status: res.status, body: await res.text() };
+    }, { sbxID, secret });
+    if (files.status !== 200) throw new Error(`files list = ${files.status}: ${files.body}`);
+    if (files.body.includes("hello.txt")) {
+      throw new Error(`hello.txt survived the revert: ${files.body}`);
+    }
+    await shot(page, "35-files-after-revert");
+  });
+
+  test("agent run survives a mid-run reload and Stop works (A3.4)", async ({ page }) => {
+    test.setTimeout(240_000);
+    const slug = await gotoOrgBase(page);
+
+    // The previous test left a chat with a sandbox attached; open the
+    // (still attached) chat via the sidebar, or attach a fresh sandbox
+    // when the list is empty (rerun against a clean volume).
+    await page.goto(`/orgs/${slug}/chat`);
+    const me = (await bff(page, "GET", "/api/me")).data as { orgs: { slug: string; id: string }[] };
+    const orgID = me.orgs.find((o) => o.slug === slug)!.id;
+
+    const chats = (await bff(page, "GET", `/api/orgs/${orgID}/chats`)).data as
+      | { id: string; sandbox_id: string }[]
+      | null;
+    let chatID = chats?.[0]?.id ?? "";
+    let sbxID = chats?.[0]?.sandbox_id ?? "";
+    if (!chatID || !sbxID) {
+      const sbx = await bff(page, "POST", `/api/orgs/${orgID}/sandboxes`, { image: "sandboxd-e2e-agent:ci" });
+      if (sbx.status !== 201) throw new Error(`create sandbox = ${sbx.status}: ${JSON.stringify(sbx.data)}`);
+      sbxID = (sbx.data as { id: string }).id;
+      chatID = ((await bff(page, "POST", `/api/orgs/${orgID}/chats`, {})).data as { id: string }).id;
+      const att = await bff(page, "PATCH", `/api/orgs/${orgID}/chats/${chatID}`, { sandbox_id: sbxID });
+      if (att.status !== 200) throw new Error(`attach = ${att.status}: ${JSON.stringify(att.data)}`);
+    }
+
+    // Fresh sandbox state: the previous test's run is on this chat;
+    // work on a NEW chat so the run list starts empty for this test.
+    const newChat = ((await bff(page, "POST", `/api/orgs/${orgID}/chats`, {})).data as { id: string }).id;
+    const att = await bff(page, "PATCH", `/api/orgs/${orgID}/chats/${newChat}`, { sandbox_id: sbxID });
+    if (att.status !== 200) throw new Error(`attach new chat = ${att.status}: ${JSON.stringify(att.data)}`);
+
+    await page.goto(`/orgs/${slug}/chat/${newChat}`);
+    await page.getByRole("button", { name: "Agent", exact: true }).click();
+
+    // --- reload mid-run -------------------------------------------------
+    await page.getByPlaceholder(/Giao việc cho agent/).fill("Chạy lại kịch bản hello");
+    await page.getByRole("button", { name: "Send" }).click();
+    const card = page.getByTestId("agent-run-card");
+    await expect(card).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId("tool-row").first()).toBeVisible({ timeout: 90_000 });
+
+    await page.reload();
+    // The run card rebuilds from GET runs + SSE replay (seq 0): the
+    // already-seen tool row reappears and the run still finishes.
+    await expect(page.getByTestId("agent-run-card")).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId("tool-row").first()).toBeVisible({ timeout: 90_000 });
+    await expect(page.getByTestId("agent-run-card")).toHaveAttribute("data-status", "succeeded", {
+      timeout: 120_000,
+    });
+    await shot(page, "36-agent-reload-midrun");
+
+    // --- Stop mid-run ---------------------------------------------------
+    const stopped = ((await bff(page, "POST", `/api/orgs/${orgID}/chats`, {})).data as { id: string }).id;
+    const att2 = await bff(page, "PATCH", `/api/orgs/${orgID}/chats/${stopped}`, { sandbox_id: sbxID });
+    if (att2.status !== 200) throw new Error(`attach stop chat = ${att2.status}: ${JSON.stringify(att2.data)}`);
+    await page.goto(`/orgs/${slug}/chat/${stopped}`);
+    await page.getByRole("button", { name: "Agent", exact: true }).click();
+    await page.getByPlaceholder(/Giao việc cho agent/).fill("Run này sẽ bị dừng giữa chừng");
+    await page.getByRole("button", { name: "Send" }).click();
+    await expect(page.getByTestId("agent-run-card")).toBeVisible({ timeout: 30_000 });
+    await page.getByRole("button", { name: "Dừng run" }).click();
+    await expect(page.getByTestId("agent-run-card")).toHaveAttribute("data-status", "cancelled", {
+      timeout: 30_000,
+    });
+    await shot(page, "37-agent-stopped");
+
+    // --- dark mode + mobile 390 px of the agent view --------------------
+    await page.emulateMedia({ colorScheme: "dark" });
+    await page.evaluate(() => document.documentElement.classList.add("dark"));
+    await shot(page, "38-agent-dark");
+    await page.setViewportSize({ width: 390, height: 844 });
+    await shot(page, "39-agent-mobile-390");
+    await page.setViewportSize({ width: 1280, height: 720 });
+  });
 });

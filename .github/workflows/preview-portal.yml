@@ -59,8 +59,19 @@ jobs:
           [ -n "$ok" ] || { echo "browser deps install failed twice"; exit 1; }
           npx playwright --version
 
-      - name: sandbox backend up (build sandboxd + e2e base image)
-        run: docker compose -f docker-compose.portal.yml --profile sandboxes up -d --build sandboxd
+      - name: sandbox backend up (build sandboxd + e2e base images)
+        run: docker compose -f docker-compose.portal.yml --profile sandboxes up -d --build sandboxd sandbox-image sandbox-agent-image
+
+      - name: fake LLM up (A3.4 agent scenario)
+        run: docker compose -f docker-compose.portal.yml --profile e2e up -d fake-llm
+
+      - name: wait for fake-llm health
+        run: |
+          for i in $(seq 1 60); do
+            curl -fsS http://127.0.0.1:9933/healthz && break
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:9933/healthz
 
       - name: wait for sandboxd health
         run: |

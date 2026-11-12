@@ -206,6 +206,43 @@ func (s *Server) handleBFFListAgentRuns(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, out)
 }
 
+// handleBFFListSandboxAgentRuns — GET /api/orgs/{org}/sandboxes/{sbx}/agent/runs.
+// A3.4: the Chat header locks the composer when the ATTACHED sandbox
+// has an active run that does NOT belong to this conversation (a run
+// started via /v1 or another chat) — the plan's "Agent đang chạy (từ
+// API)". Runs created by this chat are already rendered from the
+// chat-scoped list; this endpoint is the honest cross-surface check.
+func (s *Server) handleBFFListSandboxAgentRuns(w http.ResponseWriter, r *http.Request) {
+	orgID := pathOrgID(r)
+	if _, ok := s.requireMember(w, r, orgID); !ok {
+		return
+	}
+	sbx := r.PathValue("sandboxID")
+	// The sandbox must be visible in this org (RLS hides others) —
+	// a foreign id answers 404, never 403 (no existence leak).
+	err := db.WithOrg(r.Context(), s.Pool, orgID, func(tx db.Tx) error {
+		return tx.QueryRow(r.Context(), `SELECT 1 FROM sandboxes WHERE id = $1`, sbx).Scan(nil)
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeErr(w, http.StatusNotFound, "not_found", "sandbox not found")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", "could not load sandbox")
+		return
+	}
+	runs, err := agentStore(s).ListRunsBySandbox(r.Context(), orgID, sbx)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", "could not list runs")
+		return
+	}
+	out := make([]runJSON, 0, len(runs))
+	for _, run := range runs {
+		out = append(out, runToJSON(run))
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
 // handleBFFCreateAgentRun — POST /api/orgs/{org}/chats/{chat}/agent/runs.
 // The sandbox comes from the chat (decision §13-3), the connection
 // from the org's effective model connection.

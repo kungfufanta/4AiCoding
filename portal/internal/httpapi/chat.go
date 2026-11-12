@@ -43,8 +43,12 @@ const chatSystemPrompt = "You are the 4AiCoding assistant inside the Portal dash
 	"You cannot run code or open sandboxes yet; say so if asked."
 
 type chatConversationJSON struct {
-	ID        string    `json:"id"`
-	Title     string    `json:"title"`
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	// A3.4: the sandbox pinned to the conversation (decision §13-3).
+	// "" = not attached yet. The Chat header needs it to render the
+	// attach dropdown and the Chat/Agent switch state.
+	SandboxID string    `json:"sandbox_id"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -97,7 +101,7 @@ func (s *Server) handleListChats(w http.ResponseWriter, r *http.Request) {
 	out := []chatConversationJSON{}
 	err := db.WithOrg(r.Context(), s.Pool, orgID, func(tx db.Tx) error {
 		rows, err := tx.Query(r.Context(), `
-                        SELECT id::text, title, created_at, updated_at
+                        SELECT id::text, title, COALESCE(sandbox_id::text, ''), created_at, updated_at
                         FROM chat_conversations
                         ORDER BY updated_at DESC
                         LIMIT 100`)
@@ -107,7 +111,7 @@ func (s *Server) handleListChats(w http.ResponseWriter, r *http.Request) {
 		defer rows.Close()
 		for rows.Next() {
 			var c chatConversationJSON
-			if err := rows.Scan(&c.ID, &c.Title, &c.CreatedAt, &c.UpdatedAt); err != nil {
+			if err := rows.Scan(&c.ID, &c.Title, &c.SandboxID, &c.CreatedAt, &c.UpdatedAt); err != nil {
 				return err
 			}
 			out = append(out, c)
@@ -131,9 +135,9 @@ func (s *Server) handleCreateChat(w http.ResponseWriter, r *http.Request) {
 		return tx.QueryRow(r.Context(), `
                         INSERT INTO chat_conversations (org_id, user_id, title)
                         VALUES ($1::uuid, $2::uuid, $3)
-                        RETURNING id::text, title, created_at, updated_at`,
+                        RETURNING id::text, title, COALESCE(sandbox_id::text, ''), created_at, updated_at`,
 			orgID, db.UserID(r.Context()), chatDefaultTitle).
-			Scan(&c.ID, &c.Title, &c.CreatedAt, &c.UpdatedAt)
+			Scan(&c.ID, &c.Title, &c.SandboxID, &c.CreatedAt, &c.UpdatedAt)
 	})
 	if err != nil {
 		s.Log.Error("create chat failed", slog.Any("error", err))

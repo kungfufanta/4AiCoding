@@ -41,7 +41,14 @@ export type ApiKeyCreateBody = {
 
 // Chat MVP: conversations are private to their author.
 export type ChatStatus = { enabled: boolean; model: string; models?: string[] };
-export type ChatConversation = { id: string; title: string; created_at: string; updated_at: string };
+export type ChatConversation = {
+  id: string;
+  title: string;
+  // A3.4: sandbox pinned to the conversation ("" = none attached yet).
+  sandbox_id: string;
+  created_at: string;
+  updated_at: string;
+};
 export type ChatMessage = { id: string; role: "user" | "assistant"; content: string; created_at: string };
 
 export type ChatStreamHandlers = {
@@ -165,6 +172,51 @@ export type LLMTestResult = {
   error?: string;
 };
 
+// A3.4: agent runs surfaced in the Chat page. The run's `result` is
+// the worker's runResultJSON (summary, files_changed, build, tokens);
+// events arrive over SSE (types mirror portal/internal/agent loop.go).
+export type AgentFileChange = { path: string; status: "A" | "M" | "D" | "R" };
+export type AgentRunResult = {
+  summary?: string;
+  files_changed?: AgentFileChange[];
+  build_status?: string;
+  build_command?: string;
+  preview_ok?: boolean;
+  steps?: number;
+  input_tokens?: number;
+  output_tokens?: number;
+  usage_estimated?: boolean;
+  warning?: string;
+};
+export type AgentRun = {
+  id: string;
+  org_id: string;
+  sandbox_id: string;
+  conversation_id?: string;
+  status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
+  error_code?: string;
+  model: string;
+  prompt: string;
+  max_steps: number;
+  timeout_s: number;
+  steps: number;
+  input_tokens: number;
+  output_tokens: number;
+  result?: AgentRunResult;
+  cancel_requested?: boolean;
+  reverted_at?: string;
+  created_at: string;
+  started_at?: string;
+  finished_at?: string;
+};
+// One SSE frame (agent_events row). `data` is the event payload and
+// differs per type — status{phase,...} / message{delta} /
+// tool_call{id,name,args_preview} / tool_result{id,ok,exit_code?,
+// duration_ms,output_preview,truncated,error_code?,error?} /
+// build{status,command,tail} / reverted{files_restored,files_removed,
+// files_remaining} / done{status,result,error_code?}.
+export type AgentEvent = { seq: number; type: string; data: Record<string, unknown>; created_at?: string };
+
 export class ApiError extends Error {
   status: number;
   code: string;
@@ -267,6 +319,24 @@ export const api = {
     call<ChatMessage[]>("GET", `/api/orgs/${orgID}/chats/${chatID}/messages`),
   sendChatMessage: (orgID: string, chatID: string, content: string, h: ChatStreamHandlers, opts?: { model?: string; signal?: AbortSignal }) =>
     streamChat(`/api/orgs/${orgID}/chats/${chatID}/messages`, content, h, opts),
+  // A3.4: agent mode inside the Chat page. One chat pins one sandbox
+  // (PATCH attach); runs stream events over SSE with replay.
+  attachChatSandbox: (orgID: string, chatID: string, sandboxID: string) =>
+    call<{ id: string; sandbox_id: string }>("PATCH", `/api/orgs/${orgID}/chats/${chatID}`, { sandbox_id: sandboxID }),
+  createAgentRun: (orgID: string, chatID: string, body: { prompt: string; model?: string; max_steps?: number }) =>
+    call<AgentRun>("POST", `/api/orgs/${orgID}/chats/${chatID}/agent/runs`, body),
+  listChatAgentRuns: (orgID: string, chatID: string) =>
+    call<AgentRun[]>("GET", `/api/orgs/${orgID}/chats/${chatID}/agent/runs`),
+  // Cross-surface check: all runs of one sandbox (any conversation or
+  // /v1). The composer locks while a foreign run holds the sandbox.
+  listSandboxAgentRuns: (orgID: string, sandboxID: string) =>
+    call<AgentRun[]>("GET", `/api/orgs/${orgID}/sandboxes/${encodeURIComponent(sandboxID)}/agent/runs`),
+  agentRunEventsUrl: (orgID: string, runID: string) =>
+    `/api/orgs/${orgID}/agent/runs/${encodeURIComponent(runID)}/events`,
+  cancelAgentRun: (orgID: string, runID: string) =>
+    call<AgentRun>("POST", `/api/orgs/${orgID}/agent/runs/${encodeURIComponent(runID)}/cancel`),
+  revertAgentRun: (orgID: string, runID: string) =>
+    call<AgentRun>("POST", `/api/orgs/${orgID}/agent/runs/${encodeURIComponent(runID)}/revert`),
   // A2: LLM model connections. The platform admin manages the
   // platform defaults at /api/admin/llm/connections; org owner/admin
   // manages org connections at /api/orgs/{orgID}/llm/connections.

@@ -156,6 +156,9 @@ func (s *Server) Handler() *http.ServeMux {
 	mux.Handle("PATCH /api/orgs/{orgID}/chats/{chatID}", s.withSession(http.HandlerFunc(s.handleBFFAttachSandbox)))
 	mux.Handle("POST /api/orgs/{orgID}/chats/{chatID}/agent/runs", s.withSession(http.HandlerFunc(s.handleBFFCreateAgentRun)))
 	mux.Handle("GET /api/orgs/{orgID}/chats/{chatID}/agent/runs", s.withSession(http.HandlerFunc(s.handleBFFListAgentRuns)))
+	// A3.4: active-run check for the attached sandbox (composer lock
+	// when a /v1-run or another chat's run holds the sandbox).
+	mux.Handle("GET /api/orgs/{orgID}/sandboxes/{sandboxID}/agent/runs", s.withSession(http.HandlerFunc(s.handleBFFListSandboxAgentRuns)))
 	mux.Handle("GET /api/orgs/{orgID}/agent/runs/{runID}", s.withSession(http.HandlerFunc(s.handleBFFGetAgentRun)))
 	mux.Handle("GET /api/orgs/{orgID}/agent/runs/{runID}/events", s.withSession(http.HandlerFunc(s.handleBFFAgentRunEvents)))
 	mux.Handle("POST /api/orgs/{orgID}/agent/runs/{runID}/cancel", s.withSession(http.HandlerFunc(s.handleBFFCancelAgentRun)))

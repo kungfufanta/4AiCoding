@@ -1,0 +1,17 @@
+# Tiny sandbox image for the A3.4 agent browser test: same skeleton as
+# Dockerfile plus git, because the agent loop checkpoints the workspace
+# with git (checkpoint ref + revert need a real repo). It needs network
+# at build time (apt), unlike Dockerfile; only the preview-portal
+# workflow builds it.
+FROM debian:stable-slim
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git \
+ && rm -rf /var/lib/apt/lists/* \
+ && groupadd -g 1000 sandbox \
+ && useradd -u 1000 -g 1000 -m -d /home/sandbox -s /bin/bash sandbox \
+ && mkdir -p /opt/sandbox-skel/workspace \
+ && chown -R 1000:1000 /opt/sandbox-skel
+USER sandbox
+WORKDIR /home/sandbox
+# PID 1 must exit on SIGTERM so `docker stop` is fast.
+CMD ["bash", "-c", "trap 'exit 0' TERM INT; while :; do sleep 1 & wait $!; done"]

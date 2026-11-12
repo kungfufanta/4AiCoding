@@ -26,6 +26,13 @@
 #   sandbox-image       builds the tiny e2e sandbox base image (no net).
 # The sandboxd lifecycle webhook is pre-wired (dev secret) so the
 # Portal's index stays live without polling.
+#
+# The fake LLM (AGENT_PLAN_A3 A3.4) serves a fixed three-round tool
+# script (write_file → run_command → finish) for the browser tests:
+#
+#   docker compose -f docker-compose.portal.yml --profile e2e up fake-llm
+#
+#   fake-llm :9933      OpenAI-shaped /v1/chat/completions, no deps.
 
 name: portal
 
@@ -87,6 +94,17 @@ services:
     restart: "no"
     profiles: [sandboxes]
 
+  sandbox-agent-image:
+    # A3.4: same skeleton WITH git (apt needs network at build time) so
+    # the agent browser test can checkpoint + revert. Build-only.
+    build:
+      context: ./scripts/e2e
+      dockerfile: Dockerfile.agent
+    image: sandboxd-e2e-agent:ci
+    command: ["true"]
+    restart: "no"
+    profiles: [sandboxes]
+
   sandboxd:
     build: ./control-plane
     image: sandboxd:portal-dev
@@ -102,7 +120,7 @@ services:
       # is never exposed past localhost here.
       SANDBOXD_API_AUTH_DISABLED: "true"
       SANDBOXD_IMAGE: sandboxd-e2e:ci
-      SANDBOXD_IMAGE_ALLOWLIST: sandboxd-e2e:ci
+      SANDBOXD_IMAGE_ALLOWLIST: sandboxd-e2e:ci,sandboxd-e2e-agent:ci
       SANDBOXD_MAX_MEMORY_MB: "2048"
       SANDBOXD_DATA_DIR: /data
       SANDBOXD_LOG_DIR: /data/log
@@ -118,6 +136,25 @@ services:
       - sandboxd_data:/data
     ports:
       - "127.0.0.1:9191:9191"
+
+  # --- A3.4 fake LLM for the browser tests (profile `e2e`) --------------
+
+  fake-llm:
+    image: node:22-alpine
+    profiles: [e2e]
+    # Fixed three-round scenario (scripts/e2e/fake-llm.mjs): write_file
+    # → run_command → finish. The portal reaches it on the compose
+    # network; the host port lets the workflow wait for its health.
+    command: ["node", "/fake-llm.mjs"]
+    volumes:
+      - ./scripts/e2e/fake-llm.mjs:/fake-llm.mjs:ro
+    ports:
+      - "127.0.0.1:9933:9933"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:9933/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 2s
+      timeout: 3s
+      retries: 30
 
   zitadel:
     image: ghcr.io/zitadel/zitadel:latest
