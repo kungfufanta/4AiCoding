@@ -497,6 +497,38 @@ func (c *Client) Raw(ctx context.Context, method, path string, body []byte, cont
 	return res, nil
 }
 
+// RawDecode issues the request Raw does and decodes a JSON body into
+// out. Used by the agent tools (A3.2) for the files API envelopes.
+func (c *Client) RawDecode(ctx context.Context, method, path string, body []byte, out any) error {
+	res, err := c.Raw(ctx, method, path, body, "")
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if out == nil {
+		return nil
+	}
+	data, err := io.ReadAll(io.LimitReader(res.Body, 8<<20))
+	if err != nil {
+		return err
+	}
+	if len(data) == 0 {
+		return nil
+	}
+	return json.Unmarshal(data, out)
+}
+
+// KeepAlive toggles the sandbox's keep-alive flag (idle reaper off/on).
+// The agent loop enables it while a run executes and restores the
+// previous state afterwards (plan §7 "tắt khi xong").
+func (c *Client) KeepAlive(ctx context.Context, id string, on bool) error {
+	method := "DELETE"
+	if on {
+		method = "POST"
+	}
+	return c.do(ctx, method, "/v1/sandboxes/"+url.PathEscape(id)+"/keep-alive", map[string]any{}, nil)
+}
+
 // ExecStream opens the exec v2 endpoint in NDJSON streaming mode
 // (?stream=ndjson) and returns the raw response. The caller reads
 // newline-delimited JSON lines and relays them; the request context

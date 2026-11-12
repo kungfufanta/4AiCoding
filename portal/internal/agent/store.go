@@ -17,6 +17,7 @@ import (
 
 	"github.com/tastyeffectco/sandboxd/portal/internal/db"
 	"github.com/tastyeffectco/sandboxd/portal/internal/llm"
+	"github.com/tastyeffectco/sandboxd/portal/internal/tenants"
 )
 
 // Run statuses (migration 0010 CHECK constraint).
@@ -39,13 +40,14 @@ func Terminal(status string) bool {
 
 // Error codes (plan §4 error_code column + §7 flow).
 const (
-	ErrWorkerLost  = "worker_lost"
-	ErrShutdown    = "worker_shutdown"
-	ErrTimeout     = "timeout"
-	ErrMaxSteps    = "max_steps"
-	ErrTokenBudget = "token_budget"
-	ErrLLM         = "llm_error"
-	ErrInternal    = "internal"
+	ErrWorkerLost         = "worker_lost"
+	ErrShutdown           = "worker_shutdown"
+	ErrTimeout            = "timeout"
+	ErrMaxSteps           = "max_steps"
+	ErrTokenBudget        = "token_budget"
+	ErrLLM                = "llm_error"
+	ErrSandboxUnavailable = "sandbox_unavailable"
+	ErrInternal           = "internal"
 )
 
 // Store is the durable state of agent runs, events and LLM history.
@@ -655,4 +657,71 @@ func (s *Store) SaveSummary(ctx context.Context, orgID, runID, conversationID, u
 			`UPDATE chat_conversations SET updated_at = now() WHERE id = $1::uuid`, conversationID)
 		return err
 	})
+}
+
+// SetCheckpoint records the run's checkpoint ref (plan §7 step 3).
+// Best-effort by the caller: a lost write only means a later
+// files_changed query finds nothing to diff against.
+func (s *Store) SetCheckpoint(ctx context.Context, orgID, runID, ref string) error {
+	return db.WithOrg(ctx, s.Pool, orgID, func(tx db.Tx) error {
+		_, err := tx.Exec(ctx, `
+                        UPDATE agent_runs SET checkpoint_ref = $2 WHERE id = $1::uuid`,
+			runID, ref)
+		return err
+	})
+}
+
+// PrevRunRow is one earlier run for the context block.
+type PrevRunRow struct {
+	ID      string
+	Summary string
+	Result  json.RawMessage
+}
+
+// RecentSummaries returns the ≤ n most recent succeeded runs of the
+// same conversation (excluding this run) with their summaries — the
+// "continue in the same chat" context (plan §7.4). Rows without a
+// result summary are skipped.
+func (s *Store) RecentSummaries(ctx context.Context, orgID, conversationID, excludeRunID string, n int) ([]PrevRunRow, error) {
+	if conversationID == "" {
+		return nil, nil
+	}
+	out := []PrevRunRow{}
+	err := db.WithOrg(ctx, s.Pool, orgID, func(tx db.Tx) error {
+		rows, err := tx.Query(ctx, `
+                        SELECT id::text, result->>'summary', COALESCE(result::text,'{}')
+                        FROM agent_runs
+                        WHERE conversation_id = $1::uuid AND id <> $2::uuid
+                          AND status = 'succeeded' AND result ? 'summary'
+                        ORDER BY created_at DESC LIMIT $3`,
+			conversationID, excludeRunID, n)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var p PrevRunRow
+			if err := rows.Scan(&p.ID, &p.Summary, &p.Result); err != nil {
+				return err
+			}
+			out = append(out, p)
+		}
+		return rows.Err()
+	})
+	return out, err
+}
+
+// AuditTool writes the agent.tool audit row for one executed tool
+// (plan §6: tool name, path or argv[0], exit code, duration — never
+// the file content or command output). Best-effort: the run must not
+// fail on an audit error.
+func (s *Store) AuditTool(ctx context.Context, orgID, runID, tool, subject string, exitCode int, durationMs int64) {
+	meta, _ := json.Marshal(map[string]any{
+		"run_id": runID, "tool": tool, "subject": subject,
+		"exit_code": exitCode, "duration_ms": durationMs,
+	})
+	err := db.WithOrg(ctx, s.Pool, orgID, func(tx db.Tx) error {
+		return tenants.Audit(ctx, tx, "system", "agent", "agent.tool", runID, string(meta))
+	})
+	_ = err // audited by the caller's log when it matters
 }

@@ -9,11 +9,15 @@
 //	agent_runs_queued payload "<run_id>"        — a run is queued
 //	agent_cancel      payload "<run_id>"        — cancel was requested
 //
-// Subscribers get every notification and filter by payload (a Portal
-// at this scale has few concurrent runs; per-run subscriptions would
-// cost one LISTEN connection each). If LISTEN dies the connection is
-// redialled with a small backoff — and every consumer keeps its own
-// poll timer, so a notify blackout degrades latency, not correctness.
+// Subscribers can filter by run id: the broadcast drops messages for
+// other runs BEFORE they reach the channel, so one SSE follower (or
+// one run's heartbeat) is not woken by every event of every run — it
+// re-reads the table only when its own run has something new. A Portal
+// at this scale has few concurrent runs; per-run subscriptions still
+// cost nothing extra (they share the one LISTEN connection). If LISTEN
+// dies the connection is redialled with a small backoff — and every
+// consumer keeps its own poll timer, so a notify blackout degrades
+// latency, not correctness.
 package agent
 
 import (
@@ -47,9 +51,18 @@ type Notifier struct {
 	log *slog.Logger
 
 	mu     sync.Mutex
-	subs   map[int]chan NotifyMsg
+	subs   map[int]sub
 	nextID int
 	closed bool
+}
+
+// sub is one subscriber: its wake channel plus the optional run-id
+// filter ("" = receive every notification). Filtering here — at the
+// broadcast — keeps unrelated events from waking a subscriber that
+// would only re-read the table for its own run.
+type sub struct {
+	ch     chan NotifyMsg
+	runIDs map[string]bool // empty set = no filter
 }
 
 // NewNotifier opens its own connection, starts LISTEN and keeps it
@@ -57,43 +70,68 @@ type Notifier struct {
 // connection deliberately skips the pool's SET ROLE: LISTEN needs no
 // table privileges and must survive pool churn).
 func NewNotifier(ctx context.Context, log *slog.Logger, listenURL string) *Notifier {
-	n := &Notifier{log: log, subs: map[int]chan NotifyMsg{}}
+	n := &Notifier{log: log, subs: map[int]sub{}}
 	go n.loop(ctx, listenURL)
 	return n
 }
 
-// Subscribe returns a channel that receives notifications until the
-// returned cancel func is called (or the notifier's ctx ends). The
-// channel is buffered; a slow reader simply coalesces wakes — the
-// consumer always re-reads the table.
+// Subscribe returns a channel that receives EVERY notification until
+// the returned cancel func is called (or the notifier's ctx ends).
+// The claim loop uses this — queued runs carry any run id. The channel
+// is buffered; a slow reader simply coalesces wakes — the consumer
+// always re-reads the table.
 func (n *Notifier) Subscribe() (<-chan NotifyMsg, func()) {
+	return n.subscribe(nil)
+}
+
+// SubscribeRun returns a channel that receives only notifications for
+// the given run (payload "<run_id>" or "<run_id>:<seq>"). One SSE
+// follower of one run uses this: events of other runs no longer wake
+// it into a pointless re-read. Multiple run ids may be passed (e.g. a
+// follower of a whole conversation).
+func (n *Notifier) SubscribeRun(runIDs ...string) (<-chan NotifyMsg, func()) {
+	set := make(map[string]bool, len(runIDs))
+	for _, id := range runIDs {
+		if id != "" {
+			set[id] = true
+		}
+	}
+	return n.subscribe(set)
+}
+
+// subscribe registers one subscriber (runIDs nil = no filter).
+func (n *Notifier) subscribe(runIDs map[string]bool) (<-chan NotifyMsg, func()) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	id := n.nextID
 	n.nextID++
 	ch := make(chan NotifyMsg, 64)
-	n.subs[id] = ch
+	n.subs[id] = sub{ch: ch, runIDs: runIDs}
 	return ch, func() {
 		n.mu.Lock()
 		defer n.mu.Unlock()
-		if c, ok := n.subs[id]; ok {
+		if s, ok := n.subs[id]; ok {
 			delete(n.subs, id)
-			close(c)
+			close(s.ch)
 		}
 	}
 }
 
-// broadcast delivers msg to every subscriber; a full subscriber
-// channel drops the wake (poll fallback covers it).
+// broadcast delivers msg to every subscriber whose run filter (if
+// any) matches; a full subscriber channel drops the wake (poll
+// fallback covers it).
 func (n *Notifier) broadcast(msg NotifyMsg) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if n.closed {
 		return
 	}
-	for _, ch := range n.subs {
+	for _, s := range n.subs {
+		if len(s.runIDs) > 0 && !s.runIDs[msg.RunID] {
+			continue // another run's event: do not wake this subscriber
+		}
 		select {
-		case ch <- msg:
+		case s.ch <- msg:
 		default:
 		}
 	}
@@ -114,8 +152,8 @@ func (n *Notifier) close() {
 		return
 	}
 	n.closed = true
-	for id, ch := range n.subs {
-		close(ch)
+	for id, s := range n.subs {
+		close(s.ch)
 		delete(n.subs, id)
 	}
 }

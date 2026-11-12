@@ -152,9 +152,13 @@ func run() error {
 	var notifier *agent.Notifier
 	if cfg.AgentWorkers > 0 {
 		notifier = agent.NewNotifier(ctx, log, cfg.DatabaseURL)
+		// A3.2: the workers execute tools through the same sandboxd
+		// gateway the HTTP surface uses; without it every run answers
+		// sandbox_unavailable (the agent cannot work honestly without a
+		// sandbox backend).
 		workers = agent.StartPool(ctx, log, pool, notifier,
-			agent.ConfigSource{Pool: pool, Fallback: chat}, cfg.AgentWorkers)
-		log.Info("agent workers enabled", "workers", cfg.AgentWorkers)
+			agent.ConfigSource{Pool: pool, Fallback: chat}, sandboxdClient, cfg.AgentWorkers)
+		log.Info("agent workers enabled", "workers", cfg.AgentWorkers, "sandboxd", sandboxdClient != nil)
 	} else {
 		log.Info("agent workers disabled (PORTAL_AGENT_WORKERS=0)")
 	}
@@ -256,10 +260,14 @@ func runWorkerOnly() error {
 	if n == 0 {
 		n = 2 // the dedicated process defaults to two workers
 	}
+	var sandboxdClient *sandboxd.Client
+	if cfg.SandboxdURL != "" {
+		sandboxdClient = sandboxd.New(cfg.SandboxdURL, cfg.SandboxdAPIKey, cfg.SandboxdTimeout)
+	}
 	notifier := agent.NewNotifier(ctx, log, cfg.DatabaseURL)
 	workers := agent.StartPool(ctx, log, pool, notifier,
-		agent.ConfigSource{Pool: pool}, n)
-	log.Info("agent worker process started", "workers", n)
+		agent.ConfigSource{Pool: pool}, sandboxdClient, n)
+	log.Info("agent worker process started", "workers", n, "sandboxd", sandboxdClient != nil)
 
 	<-ctx.Done()
 	for _, w := range workers {

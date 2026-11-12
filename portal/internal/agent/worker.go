@@ -28,6 +28,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/tastyeffectco/sandboxd/portal/internal/llm"
+	"github.com/tastyeffectco/sandboxd/portal/internal/sandboxd"
 )
 
 // Worker defaults (plan §2-3/§7, decision §2-8).
@@ -44,22 +45,23 @@ const (
 	DefaultShutdownGrace = 20 * time.Second
 )
 
-// StartPool wires N workers onto one pool/notifier and starts them.
-// Worker ids are "<process>-<n>" — unique per pod because the lease
-// owner text is what the sweeper keys off (any unique string works;
-// the pid suffix disambiguates two pools in one test process).
-func StartPool(ctx context.Context, log *slog.Logger, pool *pgxpool.Pool, notify *Notifier, src LLMSource, n int) []*Worker {
+// StartPool wires N workers onto one pool/notifier/sandboxd and
+// starts them. Worker ids are "<process>-<n>" — unique per pod because
+// the lease owner text is what the sweeper keys off (any unique string
+// works; the pid suffix disambiguates two pools in one test process).
+func StartPool(ctx context.Context, log *slog.Logger, pool *pgxpool.Pool, notify *Notifier, src LLMSource, sbx *sandboxd.Client, n int) []*Worker {
 	if n < 1 {
 		n = 1
 	}
 	out := make([]*Worker, 0, n)
 	for i := 0; i < n; i++ {
 		w := &Worker{
-			ID:     fmt.Sprintf("portal-%d-%d", os.Getpid(), i),
-			Log:    log,
-			Store:  NewStore(pool),
-			LLM:    src,
-			Notify: notify,
+			ID:       fmt.Sprintf("portal-%d-%d", os.Getpid(), i),
+			Log:      log,
+			Store:    NewStore(pool),
+			LLM:      src,
+			Sandboxd: sbx,
+			Notify:   notify,
 		}
 		w.Start(ctx)
 		out = append(out, w)
@@ -73,6 +75,10 @@ type Worker struct {
 	Log   *slog.Logger
 	Store *Store
 	LLM   LLMSource
+	// Sandboxd is the client the tools execute through (A3.2). nil →
+	// every run fails sandbox_unavailable: without a sandbox backend
+	// the agent cannot work honestly.
+	Sandboxd *sandboxd.Client
 	// Notify wakes the claim loop (agent_runs_queued) and the active
 	// runs (agent_cancel); nil = poll-only (still correct).
 	Notify *Notifier
@@ -289,7 +295,9 @@ func (w *Worker) heartbeatLoop(runCtx context.Context, claimed ClaimedRun, heart
 	var notify <-chan NotifyMsg
 	var stopNotify func()
 	if w.Notify != nil {
-		notify, stopNotify = w.Notify.Subscribe()
+		// Filter by run id in the notifier (A3.2 review): one run's
+		// heartbeat is not woken by other runs' events.
+		notify, stopNotify = w.Notify.SubscribeRun(claimed.ID)
 		defer stopNotify()
 	}
 	for {
@@ -381,12 +389,14 @@ type EnvSource struct {
 // ErrNoLLM — the run cannot proceed without any model connection.
 var ErrNoLLM = fmt.Errorf("no llm connection configured for this org")
 
-// Client implements LLMSource.
-func (e EnvSource) Client(_ context.Context, run Run) (*llm.Client, error) {
+// Client implements LLMSource. The env client has no model metadata:
+// tools are assumed supported (the fallback flip covers a provider
+// that disagrees).
+func (e EnvSource) Client(_ context.Context, run Run) (LLMChoice, error) {
 	if e.Fallback == nil {
-		return nil, ErrNoLLM
+		return LLMChoice{}, ErrNoLLM
 	}
 	c := *e.Fallback
 	c.Model = run.Model
-	return &c, nil
+	return LLMChoice{Client: &c, SupportsTools: true}, nil
 }

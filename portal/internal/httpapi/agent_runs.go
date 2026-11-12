@@ -291,10 +291,14 @@ type modelErr struct {
 }
 
 // resolveRunModel picks the connection + model for a run: the org's
-// effective connection, the requested model validated against the
-// allowed list, and the SupportsTools gate (plan §9.1 400
-// model_no_tools). Falls back to the env client when no DB
-// connection exists (the worker's EnvSource mirrors this).
+// effective connection and the requested model validated against the
+// allowed list. A model declared supports_tools=false is ACCEPTED:
+// the flag only means "the admin has not probed it (or probed it as
+// tool-less)" — A3.2 review decision. The run starts in the fallback
+// (JSON-in-text) tool mode instead of being blocked with 400
+// model_no_tools (plan §5: the mode is decided once per run and
+// recorded in a status event). Falls back to the env client when no
+// DB connection exists (the worker's EnvSource mirrors this).
 func (s *Server) resolveRunModel(ctx context.Context, orgID, requested string) (connectionID, model string, status int, merr modelErr, ok bool) {
 	k, err := llmconfig.ResolveEffective(ctx, s.Pool, orgID)
 	switch {
@@ -316,10 +320,8 @@ func (s *Server) resolveRunModel(ctx context.Context, orgID, requested string) (
 	}
 	for _, m := range k.Models {
 		if m.ID == requested {
-			if !m.SupportsTools {
-				return "", "", http.StatusBadRequest,
-					modelErr{"model_no_tools", "model " + requested + " is declared without tool support"}, false
-			}
+			// supports_tools=false no longer blocks the run (A3.2): the
+			// worker runs it in fallback mode — see resolveRunModel.
 			return k.Connection.ID, requested, 0, modelErr{}, true
 		}
 	}
@@ -666,7 +668,9 @@ func (s *Server) streamAgentEvents(w http.ResponseWriter, r *http.Request, orgID
 	var wake <-chan agent.NotifyMsg
 	var stopWake func()
 	if s.AgentNotify != nil {
-		wake, stopWake = s.AgentNotify.Subscribe()
+		// Filter by run id IN the notifier (A3.2 review): an event of any
+		// other run must not wake this follower into a re-read.
+		wake, stopWake = s.AgentNotify.SubscribeRun(runID)
 		defer stopWake()
 	}
 	ping := time.NewTicker(15 * time.Second)
@@ -708,7 +712,9 @@ func (s *Server) streamAgentEvents(w http.ResponseWriter, r *http.Request, orgID
 				wake = nil // notifier died: polling continues
 				continue
 			}
-			_ = msg // any wake re-reads the table; filtering happens in SQL
+			// The notifier already filtered by run id; a wake here means
+			// THIS run has a new event — re-read the table.
+			_ = msg.RunID
 		}
 	}
 }
