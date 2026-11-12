@@ -372,8 +372,11 @@ func (s *Server) handleSendChatMessage(w http.ResponseWriter, r *http.Request) {
 	// A2: resolve the effective LLM connection for this org. Falls
 	// back to s.LLM (env-based) when no DB connection is configured.
 	chatClient, err := s.resolveChatClient(r.Context(), orgID)
-	if err != nil {
-		chatClient = s.LLM // may be nil; the nil check above guards
+	if err != nil && s.LLM != nil {
+		// Copy: the model override below must not change the shared
+		// env client other requests use.
+		c := *s.LLM
+		chatClient = &c
 	}
 	if chatClient == nil {
 		writeErr(w, http.StatusServiceUnavailable, "chat_not_configured",
@@ -455,7 +458,7 @@ func (s *Server) resolveChatClient(ctx context.Context, orgID string) (*llm.Clie
 		APIKey:  k.APIKey, // plaintext; never logged
 		Model:   k.DefaultModel,
 		Flavor:  k.Flavor,
-		HTTP:    s.LLMHTTP,
+		HTTP:    s.llmHTTPFor(k.OrgID, 0),
 	}, nil
 }
 

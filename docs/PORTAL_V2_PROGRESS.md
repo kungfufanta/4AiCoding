@@ -12,11 +12,9 @@ File theo dõi cho kế hoạch [`docs/PORTAL_PLAN_V2.md`](PORTAL_PLAN_V2.md). C
 | **P2** | API key + agent token (S2 + UI) | ✅ Xong | #37 + #38 | Merged; #38 là fix bảo mật của Claude |
 | P3 | Tag tenant + webhook ở sandboxd (S3a) | ✅ Xong | #40 | Merged; CI 7/7 xanh |
 | P4 | Gateway sandboxd + trang Sandboxes (S3 + UI) | ✅ Xong | #41 + #46 (merge qua #47) | gateway /v1 + webhook + UI list/detail + preview có sandboxd thật; review fix symlink escape, pinned-key 404 chéo project, stream/exec dùng Stream client, stdin string |
-| P5 | Quota + rate limit + trang Usage (S4 + UI) | ✅ Xong | #50 + #52 | Quota + rate limit + trang Usage; review #52 fix: usage membership, quota trên mọi đường run, billing vcpu_seconds, stream replay; P5b (#53) áp plan limits (vCPU/TTL/egress/monthly-vCPU) + per-bucket rate limit |
-| P5b | Áp plan limits + per-bucket rate limit | 🟨 Đang review | #53 | Branch `portal-p5b-plan-limits` — CheckPlanLimits (vCPU/TTL/egress/monthly-vCPU) trong admitRun; TakeKind 5 bucket (create/exec/files/action/stream); service key docs thêm `sandboxes:files` |
-| P6 | SDK + MCP + trang Quickstart (S5 + UI) | ⬜ | | Cần P4 |
-| P5 | Quota + rate limit + trang Usage (S4 + UI) | 🟨 Đang review | #50 | Branch `portal-p5-quota-usage` (z.ai) — plans + usage_events + quota check trước create (advisory lock theo org) + token bucket theo key + GET /v1/usage + trang Usage UI |
-| P6 | SDK + MCP + trang Quickstart (S5 + UI) | 🟨 Đang review | #55 | Branch `portal-p6-sdk-mcp-quickstart` — portal/openapi.yaml + SDK Python (17 tests) + SDK TypeScript (20 tests) + MCP server 6 tools (9 tests) + trang Quickstart + docs/portal-quickstart.md |
+| P5 | Quota + rate limit + trang Usage (S4 + UI) | ✅ Xong | #50 + #52 | Quota + rate limit + trang Usage; review #52 fix: usage membership, quota trên mọi đường run, billing vcpu_seconds, stream replay |
+| P5b | Áp plan limits + per-bucket rate limit | 🟨 Review xong, gộp trong PR tổng | #53 | CheckPlanLimits (vCPU/TTL/egress/monthly-vCPU) trong admitRun; TakeKind 5 bucket; review fix: TTL/egress bỏ trống thì gửi giá trị của plan xuống sandboxd |
+| P6 | SDK + MCP + trang Quickstart (S5 + UI) | 🟨 Review xong, gộp trong PR tổng | #55 | portal/openapi.yaml + SDK Python/TS + MCP server 6 tools + trang Quickstart; review fix: notification MCP trả 202, lỗi Portal trả về dạng `isError` |
 | Chat MVP | Trang Chat (stream SSE qua WebHub glm-4.6, chưa tool/sandbox) | ✅ Xong | #45 | Merged; A2/A3 sẽ gắn model connection + agent vào chính trang này |
 
 ### Kế hoạch AGENT (`docs/AGENT_PLAN.md`, PR #39 — A0–A7 + T1–T3)
@@ -25,12 +23,7 @@ File theo dõi cho kế hoạch [`docs/PORTAL_PLAN_V2.md`](PORTAL_PLAN_V2.md). C
 |---|---|---|---|---|
 | A0 | sandboxd: exec v2 + files API (chỉ control-plane) | ✅ Xong | #41 + #46 (merge qua #47) | exec v2 (`timeout_s`/`cwd`/`env`/`stdin`/`max_output_bytes`/`?stream=ndjson`/policy `exec.max_timeout_s`) + files API 5 route + scope `sandboxes:files`; review fix: `noSymlinkComponents` chạy trước MkdirAll/chown, `chownNewParents` Lstat/Lchown + bỏ qua symlink, `execNDJSON` khóa mutex 2 goroutine |
 | A1 | Portal gateway cho exec v2 + files | ✅ Xong | #51 + #52 | Gateway files + exec v2; review #52 fix: stream replay 409 idempotency_key_used, audit chỉ ghi khi sandboxd chấp nhận |
-| A2 | Model connections (Portal) | ⬜ | | Cần P2 (đủ); song song A0/A1 — WebHub free mặc định `glm-4.6` (§5.2.1); spike đầu A2: tool calling khi streaming |
-| A2 | Model connections (Portal) | 🟨 Phase 1 đang review | #57 | Branch `portal-a2-llm-connections` — migration 0008 + llmconfig (crypto AES-GCM + SSRF guard + resolver); phase 2 (API + Chat refactor + UI) chờ cron tiếp tục |
-| A1 | Portal gateway cho exec v2 + files | 🟨 Đang review | #51 | Branch `portal-a1-gateway-files` (z.ai) — proxy 5 route files qua `keyOwnsSandbox` + scope Portal `sandboxes:files`; client Stream cho exec (timeout_s/cwd/env/stdin/max_output_bytes truyền thẳng, `?stream=ndjson` relay SSE); test chéo org → 404 |
-| A2 | Model connections (Portal) | 🟨 Phase 1+2 đang review | #57 | Branch `portal-a2-llm-connections` — migration 0008 + llmconfig (crypto AES-GCM + SSRF + resolver) + API BFF + Chat refactor + WebHub X-WebHub-Memory=0 + 7 e2e tests; phase 3 (UI) chờ cron tiếp tục |
-| A1 | Portal gateway cho exec v2 + files | 🟨 Đang review | #51 | Branch `portal-a1-gateway-files` (z.ai) — proxy 5 route files qua `keyOwnsSandbox` + scope Portal `sandboxes:files`; client Stream cho exec (timeout_s/cwd/env/stdin/max_output_bytes truyền thẳng, `?stream=ndjson` relay SSE); test chéo org → 404 |
-| A2 | Model connections (Portal) | 🟨 Đang review (phase 1+2+3) | #57 | Branch `portal-a2-llm-connections` — migration 0008 + llmconfig (AES-GCM + SSRF + resolver) + API BFF 12 route + Chat refactor (`resolveChatClient` + model picker) + UI (Admin LLM + Org Models) + WebHub `X-WebHub-Memory: 0` + 7 e2e tests |
+| A2 | Model connections (Portal) | 🟨 Review xong, gộp trong PR tổng | #57 | migration 0008 + llmconfig + API BFF + Chat model picker + UI Admin LLM/Org Models; review fix: migration 0009 (org không sửa/xóa được platform connection), dialer chặn IP private khi gọi connection của org |
 | A3 | Agent runtime + API | ⬜ | | Cần A0+A1+A2 |
 | A4 | UI Agent + Files | ⬜ | | Cần A3 |
 | A5 | Quota/usage/MCP cho agent | ⬜ | | Cần A3, P5, P6 |

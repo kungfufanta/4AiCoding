@@ -132,7 +132,23 @@ func (s *Server) handleToolCall(ctx context.Context, token string, req *rpcReque
 	}
 	result, mcpErr := s.callTool(ctx, token, params.Name, args)
 	if mcpErr != nil {
-		return rpcErr(req.ID, mcpErr.Code, mcpErr.Message, mcpErr.Data)
+		// Protocol problems (unknown tool, bad arguments) are JSON-RPC
+		// errors. A refusal from the Portal (HTTP status as the code)
+		// is a tool execution error: MCP wants it in the result with
+		// isError so the model sees the message and can react to it.
+		if mcpErr.Code < 0 {
+			return rpcErr(req.ID, mcpErr.Code, mcpErr.Message, mcpErr.Data)
+		}
+		return &rpcResponse{
+			JSONRPC: "2.0",
+			ID:      req.ID,
+			Result: map[string]any{
+				"content": []map[string]string{
+					{"type": "text", "text": fmt.Sprintf("HTTP %d: %s", mcpErr.Code, mcpErr.Message)},
+				},
+				"isError": true,
+			},
+		}
 	}
 	// MCP tool result: {content: [{type:"text", text:…}], isError:false}
 	return &rpcResponse{

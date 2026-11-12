@@ -48,7 +48,7 @@ var orgRunLocks sync.Map // org id → *sync.Mutex
 // req carries the create request fields the plan limits apply to. It
 // is built by the caller from its createSandboxBody so this package
 // does not depend on httpapi types.
-func (s *Server) admitRun(ctx context.Context, orgID string, req quota.CreateRequest) (func(), error) {
+func (s *Server) admitRun(ctx context.Context, orgID string, req *quota.CreateRequest) (func(), error) {
 	if !s.QuotaEnabled {
 		return func() {}, nil
 	}
@@ -74,7 +74,11 @@ func (s *Server) admitRun(ctx context.Context, orgID string, req quota.CreateReq
 	// tx with the advisory lock; CheckPlanLimits opens a second tx
 	// (the monthly vCPU sum is read-only and does not need the lock,
 	// but the lock above still gates the create that follows).
-	if err := quota.CheckPlanLimits(ctx, s.Pool, orgID, plan, req); err != nil {
+	// An omitted TTL or egress mode would otherwise fall through to
+	// sandboxd's defaults, which the plan never sees; pin them to the
+	// plan's values so the caller forwards them to sandboxd.
+	quota.ApplyPlanDefaults(plan, req)
+	if err := quota.CheckPlanLimits(ctx, s.Pool, orgID, plan, *req); err != nil {
 		mu.Unlock()
 		if lv, ok := quota.IsLimitViolation(err); ok {
 			return nil, lv
@@ -154,4 +158,22 @@ func (s *Server) rateLimit(w http.ResponseWriter, key apikeys.Key, kind ratelimi
 	writeErr(w, http.StatusTooManyRequests, "rate_limited",
 		"too many requests on the "+string(kind)+" bucket; retry after the backoff")
 	return false
+}
+
+// admitReq builds the plan-limit request from a create body and, via
+// the returned pointer, lets admitRun write the plan defaults (TTL,
+// egress mode) back into it before the body reaches sandboxd.
+func admitReq(body *createSandboxBody) *quota.CreateRequest {
+	return &quota.CreateRequest{
+		CPUs:       body.Resources.CPUs,
+		TTLSeconds: body.TTLSeconds,
+		EgressMode: body.Egress.Mode,
+	}
+}
+
+// applyAdmitted copies the plan defaults admitRun filled in back into
+// the create body.
+func applyAdmitted(body *createSandboxBody, req *quota.CreateRequest) {
+	body.TTLSeconds = req.TTLSeconds
+	body.Egress.Mode = req.EgressMode
 }

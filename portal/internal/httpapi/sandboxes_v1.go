@@ -99,15 +99,13 @@ func (s *Server) handleV1CreateSandbox(w http.ResponseWriter, r *http.Request) {
 				// P5: admission inside the idempotent closure, so a
 				// replay returns the stored 201 even at the ceiling
 				// and the lock spans create + index insert.
-				release, err := s.admitRun(r.Context(), key.OrgID, quota.CreateRequest{
-					CPUs:       body.Resources.CPUs,
-					TTLSeconds: body.TTLSeconds,
-					EgressMode: body.Egress.Mode,
-				})
+				req := admitReq(&body)
+				release, err := s.admitRun(r.Context(), key.OrgID, req)
 				if err != nil {
 					return 0, nil, err
 				}
 				defer release()
+				applyAdmitted(&body, req)
 				sb, err := s.gatewayCreate(r.Context(), key.OrgID, projectID, "api_key", key.KeyID, body)
 				if err != nil {
 					return 0, nil, err
@@ -426,7 +424,7 @@ func (s *Server) handleV1SandboxAction(w http.ResponseWriter, r *http.Request) {
 		var action, err = r.URL.Path, error(nil)
 		switch {
 		case r.Method == http.MethodPost && endsWith(action, "/start"):
-			release, aerr := s.admitRun(r.Context(), key.OrgID, quota.CreateRequest{})
+			release, aerr := s.admitRun(r.Context(), key.OrgID, &quota.CreateRequest{})
 			if s.writeAdmitErr(w, key.OrgID, aerr) {
 				return
 			}

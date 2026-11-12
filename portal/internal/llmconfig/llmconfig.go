@@ -29,9 +29,13 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"strings"
+	"sync"
+	"syscall"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -200,6 +204,7 @@ func resolveKey(ctx context.Context, tx pgx.Tx, c Connection, orgID string) (str
 // Argon2id from PORTAL_SECRETS_KEY so a short passphrase is still
 // safe; a 32-byte raw key skips the KDF.
 var (
+	masterKeyMu   sync.Mutex
 	masterKey     []byte
 	masterKeyInit bool
 )
@@ -212,6 +217,9 @@ var (
 // The result is cached for the process lifetime; rotating the env
 // requires a restart.
 func MasterKey() ([]byte, error) {
+	// Concurrent requests decrypt keys; guard the lazy init.
+	masterKeyMu.Lock()
+	defer masterKeyMu.Unlock()
 	if masterKeyInit {
 		return masterKey, nil
 	}
@@ -288,8 +296,9 @@ func Decrypt(ciphertext []byte) ([]byte, error) {
 //
 // The check resolves DNS and walks every returned IP. A URL whose
 // hostname resolves to a public IP but redirects to a private IP is
-// caught at the HTTP client level (the llm.Client uses a custom
-// DialContext that re-runs this check on every dial).
+// caught at the HTTP client level: org connections are called through
+// GuardedHTTPClient, whose dialer re-runs the IP check on every dial
+// (redirects and DNS rebinding included).
 func IsPrivateBaseURL(baseURL string) bool {
 	u, err := url.Parse(baseURL)
 	if err != nil {
@@ -318,7 +327,13 @@ func IsPrivateBaseURL(baseURL string) bool {
 
 // isPrivateIP reports whether ip is in a private/reserved range.
 func isPrivateIP(ip net.IP) bool {
-	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+		ip.IsUnspecified() || ip.IsMulticast() {
+		return true
+	}
+	// 100.64.0.0/10 (carrier-grade NAT, also used by some cluster
+	// overlays) is not covered by IsPrivate.
+	if v4 := ip.To4(); v4 != nil && v4[0] == 100 && v4[1]&0xc0 == 64 {
 		return true
 	}
 	if ip.IsPrivate() { // 10/8, 172.16/12, 192.168/16, fc00::/7
@@ -374,3 +389,39 @@ func hexNibble(c byte) (byte, bool) {
 
 // Suppress "unused" when strings is only used in helpers.go.
 var _ = strings.TrimSpace
+
+// errPrivateDial is returned by the guarded dialer.
+var errPrivateDial = errors.New("llm connection target resolves to a private/loopback address")
+
+// GuardedHTTPClient returns an HTTP client for calls to an org-supplied
+// base_url. Its dialer checks the IP actually being connected to, so a
+// hostname that passed IsPrivateBaseURL at save time cannot later be
+// pointed (DNS rebinding) or redirected at the cluster's internal
+// network. timeout 0 means no overall timeout (streams); the response
+// header timeout still applies.
+func GuardedHTTPClient(timeout time.Duration) *http.Client {
+	dialer := &net.Dialer{
+		Timeout: 10 * time.Second,
+		Control: func(network, address string, _ syscall.RawConn) error {
+			host, _, err := net.SplitHostPort(address)
+			if err != nil {
+				return err
+			}
+			ip := net.ParseIP(host)
+			if ip == nil || isPrivateIP(ip) {
+				return errPrivateDial
+			}
+			return nil
+		},
+	}
+	return &http.Client{
+		Timeout: timeout,
+		Transport: &http.Transport{
+			// No proxy: a proxy would make the dial check see the
+			// proxy's address instead of the provider's.
+			DialContext:           dialer.DialContext,
+			ResponseHeaderTimeout: 60 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+		},
+	}
+}

@@ -283,14 +283,27 @@ func TestPortalErrorPropagates(t *testing.T) {
 		"name":      "sandbox_create",
 		"arguments": map[string]any{"image": "ubuntu:24.04"},
 	})
-	if resp.Error == nil {
-		t.Fatalf("expected error, got result: %+v", resp.Result)
+	// A Portal refusal is a tool execution error: a result with
+	// isError, so the model sees the message (MCP tools spec).
+	if resp.Error != nil {
+		t.Fatalf("got JSON-RPC error, want isError result: %+v", resp.Error)
 	}
-	if resp.Error.Code != http.StatusTooManyRequests {
-		t.Errorf("error code = %d, want 429", resp.Error.Code)
+	res, _ := json.Marshal(resp.Result)
+	if !strings.Contains(string(res), `"isError":true`) {
+		t.Errorf("result = %s, want isError true", res)
 	}
-	if !strings.Contains(resp.Error.Message, "quota_exceeded") {
-		t.Errorf("error message = %q, want to contain quota_exceeded", resp.Error.Message)
+	if !strings.Contains(string(res), "HTTP 429") || !strings.Contains(string(res), "quota_exceeded") {
+		t.Errorf("result = %s, want HTTP 429 and quota_exceeded", res)
+	}
+}
+
+func TestNotificationGetsNoBody(t *testing.T) {
+	s := &Server{PortalURL: "http://unused"}
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"jsonrpc":"2.0","method":"notifications/initialized"}`))
+	rec := httptest.NewRecorder()
+	s.Handle(rec, req)
+	if rec.Code != http.StatusAccepted || rec.Body.Len() != 0 {
+		t.Errorf("notification: status %d body %q, want 202 with no body", rec.Code, rec.Body.String())
 	}
 }
 

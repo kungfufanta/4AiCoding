@@ -85,14 +85,12 @@ func (s *Server) handleBFFCreateSandbox(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	userID := db.UserID(r.Context())
-	release, err := s.admitRun(r.Context(), orgID, quota.CreateRequest{
-		CPUs:       body.Resources.CPUs,
-		TTLSeconds: body.TTLSeconds,
-		EgressMode: body.Egress.Mode,
-	})
+	req := admitReq(&body)
+	release, err := s.admitRun(r.Context(), orgID, req)
 	if s.writeAdmitErr(w, orgID, err) {
 		return
 	}
+	applyAdmitted(&body, req)
 	sb, err := s.gatewayCreate(r.Context(), orgID, projectID, "user", userID, body)
 	release()
 	if err != nil {
@@ -238,7 +236,7 @@ func (s *Server) handleBFFSandboxAction(w http.ResponseWriter, r *http.Request) 
 	action := ""
 	switch {
 	case r.Method == http.MethodPost && endsWith(r.URL.Path, "/start"):
-		release, aerr := s.admitRun(r.Context(), orgID, quota.CreateRequest{})
+		release, aerr := s.admitRun(r.Context(), orgID, &quota.CreateRequest{})
 		if s.writeAdmitErr(w, orgID, aerr) {
 			return
 		}

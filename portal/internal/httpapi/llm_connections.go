@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -187,12 +188,22 @@ func (s *Server) handleDeleteLLMConnection(w http.ResponseWriter, r *http.Reques
 			return
 		}
 	}
+	// Scope the delete to the caller's layer: an org admin must not
+	// reach a platform row (org_id NULL), which RLS lets every org read.
+	var deleted int64
 	err := s.withLLMTx(r.Context(), nonEmptyOrg(orgID), func(tx db.Tx) error {
-		_, err := tx.Exec(r.Context(), `DELETE FROM model_connections WHERE id = $1::uuid`, cid)
+		tag, err := tx.Exec(r.Context(), `
+			DELETE FROM model_connections
+			WHERE id = $1::uuid AND `+llmScopeSQL, cid, orgID)
+		deleted = tag.RowsAffected()
 		return err
 	})
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", "could not delete connection")
+		return
+	}
+	if deleted == 0 {
+		writeErr(w, http.StatusNotFound, "not_found", "connection not found")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -220,7 +231,7 @@ func (s *Server) handleTestLLMConnection(w http.ResponseWriter, r *http.Request)
 	}
 	client := &llm.Client{
 		BaseURL: conn.BaseURL, APIKey: key, Model: conn.DefaultModel,
-		Flavor: conn.Flavor, HTTP: s.testHTTPClient(),
+		Flavor: conn.Flavor, HTTP: s.llmHTTPFor(conn.OrgID, 10*time.Second),
 	}
 	result := client.Test(r.Context(), conn.DefaultModel)
 	writeJSON(w, http.StatusOK, result)
@@ -249,7 +260,7 @@ func (s *Server) handleListLLMModels(w http.ResponseWriter, r *http.Request) {
 	}
 	client := &llm.Client{
 		BaseURL: conn.BaseURL, APIKey: key, Model: conn.DefaultModel,
-		Flavor: conn.Flavor, HTTP: s.testHTTPClient(),
+		Flavor: conn.Flavor, HTTP: s.llmHTTPFor(conn.OrgID, 10*time.Second),
 	}
 	models, err := client.ListModels(r.Context())
 	if err != nil {
@@ -283,13 +294,31 @@ func (s *Server) requirePlatformAdmin(w http.ResponseWriter, r *http.Request) bo
 	return true
 }
 
-// testHTTPClient returns the HTTP client used for LLM test/models
-// calls. The default 10s timeout fits a quick probe.
-func (s *Server) testHTTPClient() *http.Client {
+// llmHTTPFor returns the HTTP client for calls to a connection's
+// base_url. Org connections (connOrgID != "") point at a URL an org
+// admin typed, so they go through the guarded dialer that refuses
+// private addresses at connect time. Platform connections may point
+// at an internal gateway. Tests override both with s.LLMHTTP.
+func (s *Server) llmHTTPFor(connOrgID string, timeout time.Duration) *http.Client {
 	if s.LLMHTTP != nil {
 		return s.LLMHTTP
 	}
-	return &http.Client{Timeout: 10 * time.Second}
+	if connOrgID != "" {
+		return llmconfig.GuardedHTTPClient(timeout)
+	}
+	if timeout == 0 {
+		return nil // llm.Client default (streaming, no overall timeout)
+	}
+	return &http.Client{Timeout: timeout}
+}
+
+// llmScopeSQL limits a write to the caller's layer: $2 = "" is the
+// platform admin (org_id NULL rows), anything else is that org.
+const llmScopeSQL = `(($2::text = '' AND org_id IS NULL) OR ($2::text <> '' AND org_id = NULLIF($2::text, '')::uuid))`
+
+// llmScopeSQLAt is llmScopeSQL with the org parameter at position n.
+func llmScopeSQLAt(n int) string {
+	return strings.ReplaceAll(llmScopeSQL, "$2", fmt.Sprintf("$%d", n))
 }
 
 // loadConnectionForKeyedTest loads one connection + its decrypted key.
@@ -501,11 +530,12 @@ func (s *Server) upsertLLMConnection(ctx context.Context, orgID, actorID string,
                                         name = $2, protocol = $3, flavor = $4, base_url = $5, default_model = $6,
                                         models = $7, key_mode = $8, timeout_s = $9, max_tokens = $10,
                                         enabled = $11, is_default = $12, updated_at = now()
-                                WHERE id = $1::uuid
+                                WHERE id = $1::uuid AND `+llmScopeSQLAt(13)+`
                                 RETURNING id, COALESCE(org_id::text,''), name, protocol, flavor, base_url,
                                           default_model, models, key_mode, timeout_s, max_tokens, enabled, is_default`,
 				cid, body.Name, body.Protocol, body.Flavor, body.BaseURL, body.DefaultModel,
-				modelsJSON, body.KeyMode, body.TimeoutS, body.MaxTokens, body.Enabled, body.IsDefault).Scan(
+				modelsJSON, body.KeyMode, body.TimeoutS, body.MaxTokens, body.Enabled, body.IsDefault,
+				orgID).Scan(
 				&conn.ID, &conn.OrgID, &conn.Name, &conn.Protocol, &conn.Flavor, &conn.BaseURL,
 				&conn.DefaultModel, &modelsJSON, &conn.KeyMode, &conn.TimeoutS, &conn.MaxTokens,
 				&conn.Enabled, &conn.IsDefault)
@@ -577,7 +607,7 @@ func (s *Server) writeLLMStoreErr(w http.ResponseWriter, err error) {
 		writeErr(w, http.StatusNotFound, "not_found", "connection not found")
 		return
 	}
-	writeErr(w, http.StatusInternalServerError, "internal", "could not store connection: "+err.Error())
+	writeErr(w, http.StatusInternalServerError, "internal", "could not store connection")
 }
 
 // validateLLMConnection answers 400 itself and returns false when the
@@ -615,7 +645,9 @@ func validateLLMConnection(w http.ResponseWriter, b *llmConnectionJSON, platform
 // other orgs' rows).
 func (s *Server) withLLMTx(ctx context.Context, orgID string, fn func(db.Tx) error) error {
 	if orgID == "" {
-		return db.WithTx(ctx, s.Pool, fn)
+		// Explicitly no org: the 0009 policies only allow writes to
+		// platform rows when app.org_id is empty.
+		return db.WithTx(db.WithOrgID(ctx, ""), s.Pool, fn)
 	}
 	return db.WithOrg(ctx, s.Pool, orgID, fn)
 }

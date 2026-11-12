@@ -55,6 +55,12 @@ func (s *Server) Handle(w http.ResponseWriter, r *http.Request) {
 		writeRPCError(w, nil, -32700, "parse error: "+err.Error())
 		return
 	}
+	// A notification (no id, e.g. notifications/initialized) gets no
+	// JSON-RPC response; Streamable HTTP answers it with 202.
+	if len(req.ID) == 0 || string(req.ID) == "null" {
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
 	// The caller's Bearer token rides in the Authorization header;
 	// forward it to every Portal API call.
 	token := r.Header.Get("Authorization")

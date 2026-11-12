@@ -39,6 +39,20 @@ type CreateRequest struct {
 	EgressMode string
 }
 
+// ApplyPlanDefaults fills the fields the caller left empty with the
+// plan's values. Without it a create that omits ttl_seconds gets
+// sandboxd's instance idle timeout (which can exceed the plan's
+// max_ttl_seconds) and an omitted egress mode gets sandboxd's default.
+// The caller copies the filled values back into the create body.
+func ApplyPlanDefaults(plan Plan, req *CreateRequest) {
+	if req.TTLSeconds == 0 && plan.MaxTTLSeconds > 0 {
+		req.TTLSeconds = plan.MaxTTLSeconds
+	}
+	if req.EgressMode == "" {
+		req.EgressMode = plan.EgressMode
+	}
+}
+
 // CheckPlanLimits applies the four per-sandbox ceilings inside the
 // org's RLS context. It runs in the same transaction that
 // CheckConcurrentSandboxes uses (the caller holds the advisory lock),
@@ -60,11 +74,9 @@ func CheckPlanLimits(ctx context.Context, pool *pgxpool.Pool, orgID string, plan
 		return &LimitViolation{Field: "vcpu_per_sandbox", Limit: plan.MaxVcpuPerSandbox, Used: requestedCPU}
 	}
 
-	// 2. TTL seconds. The plan's max_ttl_seconds is the upper bound
-	// for the sandbox's lifetime. A 0-TTL request means "use the
-	// sandboxd default"; the sandboxd default (1h) is below the free
-	// plan ceiling (30m), so 0 always passes for known plans. We
-	// still check the explicit value.
+	// 2. TTL seconds. The plan's max_ttl_seconds caps the sandbox's
+	// idle timeout. ApplyPlanDefaults turns an omitted TTL into the
+	// plan maximum, so only an explicit larger value is refused here.
 	if plan.MaxTTLSeconds > 0 && req.TTLSeconds > plan.MaxTTLSeconds {
 		return &LimitViolation{Field: "ttl_seconds", Limit: plan.MaxTTLSeconds, Used: req.TTLSeconds}
 	}
