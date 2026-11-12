@@ -1,0 +1,26 @@
+{
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are a coding agent."
+    },
+    {
+      "role": "system",
+      "content": "## Tool calling protocol\n\nYou can call tools by replying with EXACTLY ONE fenced block:\n\n```tool\n{\"name\": \"\u003ctool name\u003e\", \"arguments\": {\u003cjson arguments\u003e}}\n```\n\nRules:\n- \"name\" must be one of the tools listed below; \"arguments\" must be a\n  JSON object matching that tool's schema.\n- Put any prose before or after the block, never inside it.\n- When no tool call is needed, reply with plain text only — no block.\n- Never write two blocks in one reply.\n\nAvailable tools:\n{\"name\":\"get_weather\",\"description\":\"Get current weather\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"},\"unit\":{\"type\":\"string\"}},\"required\":[\"city\"]}}\n"
+    },
+    {
+      "role": "user",
+      "content": "Weather in Hanoi?"
+    },
+    {
+      "role": "assistant",
+      "content": "```tool\n{\"name\":\"get_weather\",\"arguments\":{\"city\":\"Hanoi\"}}\n```"
+    },
+    {
+      "role": "user",
+      "content": "[tool_result id=call_a name=get_weather]\nsunny, 28C"
+    }
+  ],
+  "model": "glm-4.6",
+  "stream": true
+}

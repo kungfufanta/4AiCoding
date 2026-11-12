@@ -62,6 +62,13 @@ type Client struct {
 	// (network error / 429 / 5xx). Nil means the default 1s, 3s,
 	// 9s; tests set zero durations. Max retries = len(RetryBackoff).
 	RetryBackoff []time.Duration
+	// StreamOptions controls whether the request carries
+	// stream_options.include_usage (the only way to get token
+	// counts from a stream). Nil means auto: on for non-webhub
+	// flavors, off for webhub — the hub never sends a usage chunk
+	// anyway (spike A3.0) and some proxies 400 on the field.
+	// A non-nil value overrides the flavor default.
+	StreamOptions *bool
 }
 
 // ErrUpstream wraps a non-2xx answer from the provider. The provider's
@@ -69,9 +76,11 @@ type Client struct {
 var ErrUpstream = errors.New("llm upstream error")
 
 // ErrToolsUnsupported is returned when the upstream rejects the
-// request because it carries a "tools" field (HTTP 400). The agent
-// loop catches it and switches the run to fallback (JSON-in-text)
-// mode — AGENT_PLAN_A3 §5, decided once per run.
+// request with a 400 whose body blames the tools (mentions tool or
+// function — a 400 about context length or an unknown model reads
+// the same status and stays ErrUpstream). The agent loop catches it
+// and switches the run to fallback (JSON-in-text) mode —
+// AGENT_PLAN_A3 §5, decided once per run.
 var ErrToolsUnsupported = errors.New("llm upstream does not support tools")
 
 // ErrBadToolBlock is returned by the fallback (JSON-in-text) parser
@@ -96,6 +105,17 @@ func (c *Client) httpClient() *http.Client {
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 	}}
+}
+
+// sendStreamOptions reports whether chat requests should carry
+// stream_options.include_usage. Explicit StreamOptions wins; without
+// it the flavor decides (webhub never returns usage — spike A3.0 —
+// and some proxies reject the field).
+func (c *Client) sendStreamOptions() bool {
+	if c.StreamOptions != nil {
+		return *c.StreamOptions
+	}
+	return c.Flavor != "webhub"
 }
 
 // Stream sends req and calls onDelta for every content fragment as it
@@ -327,12 +347,169 @@ type ToolCall struct {
 }
 
 // Msg is one chat turn for the agent loop — Message plus the tool
-// fields of the OpenAI protocol.
+// fields of the OpenAI protocol. This is the INTERNAL shape (what the
+// loop and the persisted history use); the wire shape is wireMsg and
+// friends below — the OpenAI spec differs from it in three ways that
+// broke strict providers (vLLM, LiteLLM, OpenAI itself):
+//   - tools are wrapped: {"type":"function","function":{...}}, not
+//     the bare {"name",...} of Tool;
+//   - assistant tool_calls carry {"id","type","function":{"name",
+//     "arguments":"<json as a STRING>"}}, not {"name","arguments":{...}};
+//   - "content" must always be present, even when empty (a role:tool
+//     message without it is rejected by some providers).
 type Msg struct {
 	Role       string     `json:"role"` // system | user | assistant | tool
 	Content    string     `json:"content,omitempty"`
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`   // assistant
 	ToolCallID string     `json:"tool_call_id,omitempty"` // tool
+}
+
+// --- wire shapes (OpenAI chat completion spec) -------------------------
+
+// wireTool is the on-the-wire form of Tool.
+type wireTool struct {
+	Type     string           `json:"type"` // always "function"
+	Function wireToolFunction `json:"function"`
+}
+
+type wireToolFunction struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	Parameters  json.RawMessage `json:"parameters"`
+}
+
+// wireToolCall is the on-the-wire form of an assistant ToolCall.
+type wireToolCall struct {
+	ID       string               `json:"id"`
+	Type     string               `json:"type"` // "function"
+	Function wireToolCallFunction `json:"function"`
+}
+
+type wireToolCallFunction struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"` // the JSON object, as a string
+}
+
+// wireMsg is the on-the-wire form of Msg. Content has no omitempty:
+// every message carries the field, empty or not.
+type wireMsg struct {
+	Role       string         `json:"role"`
+	Content    string         `json:"content"`
+	ToolCalls  []wireToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string         `json:"tool_call_id,omitempty"`
+}
+
+// wireTool converts one internal tool. A nil schema becomes {} — the
+// field is required by the spec.
+func wireToolOf(t Tool) wireTool {
+	params := t.Parameters
+	if len(params) == 0 {
+		params = json.RawMessage("{}")
+	}
+	return wireTool{
+		Type: "function",
+		Function: wireToolFunction{
+			Name:        t.Name,
+			Description: t.Description,
+			Parameters:  params,
+		},
+	}
+}
+
+// wireToolCalls converts internal tool calls for an assistant history
+// message. Arguments become a JSON-encoded string; empty arguments
+// become "{}".
+func wireToolCallsOf(calls []ToolCall) []wireToolCall {
+	if len(calls) == 0 {
+		return nil
+	}
+	out := make([]wireToolCall, 0, len(calls))
+	for _, call := range calls {
+		args := string(call.Arguments)
+		if strings.TrimSpace(args) == "" {
+			args = "{}"
+		}
+		out = append(out, wireToolCall{
+			ID:   call.ID,
+			Type: "function",
+			Function: wireToolCallFunction{
+				Name:      call.Name,
+				Arguments: args,
+			},
+		})
+	}
+	return out
+}
+
+// wireMessages converts history for native mode: every field keeps
+// its OpenAI role and shape, content is always present.
+func wireMessages(msgs []Msg) []wireMsg {
+	out := make([]wireMsg, 0, len(msgs))
+	for _, m := range msgs {
+		out = append(out, wireMsg{
+			Role:       m.Role,
+			Content:    m.Content,
+			ToolCalls:  wireToolCallsOf(m.ToolCalls),
+			ToolCallID: m.ToolCallID,
+		})
+	}
+	return out
+}
+
+// fallbackMessages converts history for fallback mode (provider has
+// no native tool calling, so role:"tool" and tool_calls would be
+// rejected outright):
+//   - an assistant message with tool calls becomes plain text holding
+//     the same ```tool fence block(s) the protocol prompt defines;
+//   - a tool result becomes a user message "[tool_result id=… name=…]
+//     \n<output>" — the name is looked up from the tool_calls that
+//     preceded it (unknown ids degrade to name=unknown).
+func fallbackMessages(msgs []Msg) []wireMsg {
+	out := make([]wireMsg, 0, len(msgs))
+	callNames := map[string]string{}
+	for _, m := range msgs {
+		switch {
+		case m.Role == "assistant" && len(m.ToolCalls) > 0:
+			var b strings.Builder
+			if m.Content != "" {
+				b.WriteString(m.Content)
+				b.WriteString("\n")
+			}
+			for i, call := range m.ToolCalls {
+				callNames[call.ID] = call.Name
+				if i > 0 {
+					b.WriteString("\n")
+				}
+				args := call.Arguments
+				if len(args) == 0 {
+					args = json.RawMessage("{}")
+				}
+				block, err := json.Marshal(struct {
+					Name      string          `json:"name"`
+					Arguments json.RawMessage `json:"arguments"`
+				}{call.Name, args})
+				if err != nil {
+					block = []byte(`{"name":"` + call.Name + `","arguments":{}}`)
+				}
+				b.WriteString("```tool\n")
+				b.Write(block)
+				b.WriteString("\n```")
+			}
+			out = append(out, wireMsg{Role: "assistant", Content: b.String()})
+		case m.Role == "tool":
+			name := callNames[m.ToolCallID]
+			if name == "" {
+				name = "unknown"
+			}
+			out = append(out, wireMsg{
+				Role:    "user",
+				Content: "[tool_result id=" + m.ToolCallID + " name=" + name + "]\n" + m.Content,
+			})
+		default:
+			out = append(out, wireMsg{Role: m.Role, Content: m.Content})
+		}
+	}
+	return out
 }
 
 // Usage is token accounting for one call. When the stream carries no
@@ -400,7 +577,9 @@ func estimateUsage(inputBytes, outputBytes int) Usage {
 // messagesHaveToolRole reports whether any message carries tool output
 // (role "tool"). WebHub calls with tool output must set
 // X-WebHub-Memory: 0 so the hub does not persist file contents or
-// command output as long-term memory (AGENT_PLAN §5.2.1).
+// command output as long-term memory (AGENT_PLAN §5.2.1). It looks at
+// the INTERNAL history, so it still fires in fallback mode where the
+// wire has no role:"tool" but the user messages carry tool output.
 func messagesHaveToolRole(msgs []Msg) bool {
 	for _, m := range msgs {
 		if m.Role == "tool" {
@@ -410,23 +589,41 @@ func messagesHaveToolRole(msgs []Msg) bool {
 	return false
 }
 
+// errorBodyMentionsTools reports whether an error body points at the
+// tools field. Only such a 400 means "provider has no tool support";
+// a 400 about an over-long context or an unknown model reads the same
+// status but must not flip the run into fallback mode. Match on the
+// usual provider phrasings (case-insensitive substring).
+func errorBodyMentionsTools(body []byte) bool {
+	s := strings.ToLower(string(body))
+	return strings.Contains(s, "tool") || strings.Contains(s, "function")
+}
+
 // toolRequestBody marshals the wire body for one StreamTools attempt.
-// Native mode sends tools + tool_choice + stream_options; fallback
-// mode injects the fence protocol into the system block instead.
+// Native mode sends tools (OpenAI wrapper shape) + tool_choice +
+// stream_options; fallback mode converts the tool history to plain
+// text (a provider without tool support rejects role:"tool" and
+// tool_calls) and injects the fence protocol into the system block
+// instead.
 func toolRequestBody(c *Client, req ToolRequest) ([]byte, error) {
 	msgs := req.Messages
+	wireMsgs := wireMessages(msgs)
 	body := map[string]any{
 		"model":    c.Model,
-		"messages": msgs,
+		"messages": wireMsgs,
 		"stream":   true,
-		"stream_options": map[string]any{
+	}
+	if c.sendStreamOptions() {
+		body["stream_options"] = map[string]any{
 			"include_usage": true,
-		},
+		}
 	}
 	if req.Fallback {
 		// No tools field on the wire (a provider that rejected
 		// tools would 400 again); the registry rides in the
-		// protocol prompt instead.
+		// protocol prompt instead, and the history loses its
+		// tool roles.
+		wireMsgs = fallbackMessages(msgs)
 		protocol := fallbackProtocol
 		for i, t := range req.Tools {
 			desc, _ := json.Marshal(t)
@@ -440,13 +637,17 @@ func toolRequestBody(c *Client, req ToolRequest) ([]byte, error) {
 		for insert < len(msgs) && msgs[insert].Role == "system" {
 			insert++
 		}
-		with := make([]Msg, 0, len(msgs)+1)
-		with = append(with, msgs[:insert]...)
-		with = append(with, Msg{Role: "system", Content: protocol})
-		with = append(with, msgs[insert:]...)
+		with := make([]wireMsg, 0, len(wireMsgs)+1)
+		with = append(with, wireMsgs[:insert]...)
+		with = append(with, wireMsg{Role: "system", Content: protocol})
+		with = append(with, wireMsgs[insert:]...)
 		body["messages"] = with
 	} else if len(req.Tools) > 0 {
-		body["tools"] = req.Tools
+		tools := make([]wireTool, 0, len(req.Tools))
+		for _, t := range req.Tools {
+			tools = append(tools, wireToolOf(t))
+		}
+		body["tools"] = tools
 		body["tool_choice"] = "auto"
 	}
 	if c.Flavor != "webhub" && req.UserID != "" {
@@ -545,11 +746,15 @@ func (c *Client) attemptStreamTools(ctx context.Context, req ToolRequest, raw []
 	}
 	defer res.Body.Close()
 	if res.StatusCode/100 != 2 {
-		_, _ = io.Copy(io.Discard, io.LimitReader(res.Body, 64<<10))
+		body, _ := io.ReadAll(io.LimitReader(res.Body, 64<<10))
 		switch {
-		case res.StatusCode == http.StatusBadRequest && !req.Fallback && len(req.Tools) > 0:
-			// Provider rejected the tools field: the loop
-			// switches to fallback mode (no retry).
+		case res.StatusCode == http.StatusBadRequest && !req.Fallback &&
+			len(req.Tools) > 0 && errorBodyMentionsTools(body):
+			// The provider rejected the request BECAUSE of
+			// the tools field: the loop switches to fallback
+			// mode (no retry). A 400 about anything else —
+			// over-long context, unknown model — must not
+			// trigger that switch; it surfaces as ErrUpstream.
 			return Turn{}, false, false, ErrToolsUnsupported
 		case res.StatusCode == http.StatusTooManyRequests || res.StatusCode/100 == 5:
 			return Turn{}, false, true, fmt.Errorf("%w: status %d", ErrUpstream, res.StatusCode)

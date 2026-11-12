@@ -165,7 +165,7 @@ func (c *Client) StreamTools(ctx context.Context, req ToolRequest, onText func(s
 - WebHub: mọi call từ step 2 trở đi (đã có tool output) gửi `X-WebHub-Memory: 0`. User là `u_<user_uuid>` hoặc `k_<key_id>`, session là `s_<conversation_id|run_id>`.
 - **Spike bắt buộc đầu A3.0** (ghi kết quả vào mô tả PR): `glm-4.6` qua WebHub có trả `tool_calls` khi `stream:true` không, có trả `usage` không, context window thực tế. Kết quả quyết định mode mặc định cho WebHub.
 
-**Kết quả spike (đã chạy 2026-11-12, script `scripts/a3_spike_webhub.sh`, demo key public docs):**
+**Kết quả spike (đã chạy 2026-11-12, script `scripts/a3_spike_webhub.sh` — key đọc từ env `WEBHUB_KEY`, file không chứa key):**
 
 1. **Native tool calling hoạt động với `stream:true`**: `glm-4.6` (hub map sang `glm-4-plus`) trả `delta.tool_calls` đúng spec OpenAI — `index`, `id`, `function.name`, `function.arguments`. Thứ tự chunk: text delta trước → tool_calls delta → `finish_reason:"tool_calls"`.
 2. **Parallel tool calls hoạt động**: 2 call trả trong các chunk riêng với `index:0` và `index:1`.

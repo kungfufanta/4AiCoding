@@ -6,6 +6,7 @@ package llmtest
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -15,6 +16,12 @@ import (
 type Scenario struct {
 	// Status is the HTTP status written before streaming (0 = 200).
 	Status int
+	// Body is the raw response body for a non-2xx status. Empty
+	// means the default {"error":{"message":"scripted"}}. Tests
+	// set it to control how the client classifies the error (a 400
+	// that mentions tools is ErrToolsUnsupported; any other 400 is
+	// ErrUpstream).
+	Body string
 	// Chunks are raw SSE data payloads: full chunk objects such as
 	// {"choices":[{"delta":{...}}]} or a final {"usage":{...}}.
 	Chunks []any
@@ -31,6 +38,9 @@ type Recorded struct {
 	Path   string
 	Header http.Header
 	Body   map[string]any
+	// RawBody is the request body exactly as sent — golden tests
+	// compare it byte for byte.
+	RawBody []byte
 }
 
 // Server is the scripted fake.
@@ -48,9 +58,10 @@ func NewServer(scenarios ...Scenario) *Server {
 	s := &Server{queue: scenarios}
 	s.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
-		rec := Recorded{Method: r.Method, Path: r.URL.Path, Header: r.Header.Clone()}
+		raw, _ := io.ReadAll(r.Body)
+		rec := Recorded{Method: r.Method, Path: r.URL.Path, Header: r.Header.Clone(), RawBody: raw}
 		var body map[string]any
-		_ = json.NewDecoder(r.Body).Decode(&body)
+		_ = json.Unmarshal(raw, &body)
 		rec.Body = body
 		s.Requests = append(s.Requests, rec)
 		var sc Scenario
@@ -63,7 +74,11 @@ func NewServer(scenarios ...Scenario) *Server {
 
 		if sc.Status != 0 && sc.Status != http.StatusOK {
 			w.WriteHeader(sc.Status)
-			_, _ = w.Write([]byte(`{"error":{"message":"scripted"}}`))
+			payload := sc.Body
+			if payload == "" {
+				payload = `{"error":{"message":"scripted"}}`
+			}
+			_, _ = w.Write([]byte(payload))
 			return
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
