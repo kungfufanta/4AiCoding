@@ -87,7 +87,9 @@ func (s *Server) handleV1PutFile(w http.ResponseWriter, r *http.Request) {
 				"file body exceeds the 8 MiB cap")
 			return
 		}
-		s.proxyFiles(w, r, id, http.MethodPut, "/files/content", body, "application/octet-stream")
+		if !s.proxyFiles(w, r, id, http.MethodPut, "/files/content", body, "application/octet-stream") {
+			return
+		}
 		s.auditSandbox(r.Context(), key.OrgID, "api_key", key.KeyID, "sandbox.file.write", id,
 			map[string]any{"path": r.URL.Query().Get("path"), "bytes": len(body)})
 	})
@@ -104,7 +106,9 @@ func (s *Server) handleV1DeleteFile(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusNotFound, "not_found", "sandbox not found")
 			return
 		}
-		s.proxyFiles(w, r, id, http.MethodDelete, "/files", nil, "")
+		if !s.proxyFiles(w, r, id, http.MethodDelete, "/files", nil, "") {
+			return
+		}
 		s.auditSandbox(r.Context(), key.OrgID, "api_key", key.KeyID, "sandbox.file.delete", id,
 			map[string]any{"path": r.URL.Query().Get("path")})
 	})
@@ -128,7 +132,9 @@ func (s *Server) handleV1MoveFile(w http.ResponseWriter, r *http.Request) {
 				"move body exceeds the 64 KiB cap")
 			return
 		}
-		s.proxyFiles(w, r, id, http.MethodPost, "/files/move", body, "application/json")
+		if !s.proxyFiles(w, r, id, http.MethodPost, "/files/move", body, "application/json") {
+			return
+		}
 		s.auditSandbox(r.Context(), key.OrgID, "api_key", key.KeyID, "sandbox.file.move", id, nil)
 	})
 }
@@ -139,7 +145,7 @@ func (s *Server) handleV1MoveFile(w http.ResponseWriter, r *http.Request) {
 // read does not buffer twice. Errors from sandboxd are decoded into
 // the shared APIError envelope (status preserved) so a 400/404 from
 // sandboxd surfaces with the same code the caller would see directly.
-func (s *Server) proxyFiles(w http.ResponseWriter, r *http.Request, id, method, suffix string, body []byte, contentType string) {
+func (s *Server) proxyFiles(w http.ResponseWriter, r *http.Request, id, method, suffix string, body []byte, contentType string) bool {
 	path := "/v1/sandboxes/" + url.PathEscape(id) + suffix
 	if r.URL.RawQuery != "" {
 		path += "?" + r.URL.RawQuery
@@ -147,7 +153,7 @@ func (s *Server) proxyFiles(w http.ResponseWriter, r *http.Request, id, method, 
 	res, err := s.Sandboxd.Raw(r.Context(), method, path, body, contentType)
 	if err != nil {
 		s.writeSandboxdErr(w, err)
-		return
+		return false
 	}
 	defer res.Body.Close()
 	// Relay the headers sandboxd set (Content-Type for JSON responses;
@@ -165,6 +171,7 @@ func (s *Server) proxyFiles(w http.ResponseWriter, r *http.Request, id, method, 
 		// The client may have disconnected mid-stream; nothing to do.
 		_ = err
 	}
+	return true
 }
 
 // itoa is a tiny helper for the audit metadata; not exported.

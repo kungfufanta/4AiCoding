@@ -76,6 +76,10 @@ func LoadPlan(ctx context.Context, pool *pgxpool.Pool, orgID string) (Plan, erro
 // both pass: the second waits for the first to commit, then sees the
 // new row. Returns ErrExceeded when the next create would overflow.
 //
+// NOTE: the advisory lock only lasts for this count; it does NOT cover
+// the create that follows. httpapi.admitRun holds a per-org lock across
+// check + create + index insert, which is what makes the ceiling hold.
+//
 // The advisory lock is scoped to the transaction (pg_advisory_xact_lock,
 // released on commit/rollback), keyed by a stable hash of org_id so
 // concurrent creates of the SAME org serialise while other orgs are

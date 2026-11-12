@@ -7,13 +7,16 @@
 package httpapi
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strconv"
 	"time"
@@ -21,7 +24,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/tastyeffectco/sandboxd/portal/internal/db"
-	"github.com/tastyeffectco/sandboxd/portal/internal/usage"
 )
 
 // webhookMaxSkew is the anti-replay window (plan: timestamp ±5m). A
@@ -129,53 +131,33 @@ func (s *Server) handleSandboxdWebhook(w http.ResponseWriter, r *http.Request) {
 	// sandbox_seconds + vcpu_seconds usage_events row for the elapsed
 	// window (idempotent on source_event_id).
 	var applied string
-	var billedUsage *usage.Record
-	var billSandboxID, billOrgID, billProjectID string
 	err = db.WithOrg(r.Context(), s.Pool, orgID, func(tx db.Tx) error {
-		switch ev.Event {
-		case "deleted":
-			// Bill the window from started_at to now before the row
-			// goes away (we cannot read it after DELETE).
-			var startedAt, stoppedAt *time.Time
-			var vcpu float64
-			var sbOrgID, sbProjectID *string
-			_ = tx.QueryRow(r.Context(), `
-                                SELECT started_at, stopped_at, vcpu, org_id::text, COALESCE(project_id::text,'')
+		// P5 billing window: started_at opens it (create or start),
+		// the first stop or delete while it is open closes it and
+		// bills sandbox_seconds + vcpu_seconds. stopped_at IS NULL
+		// marks an open window, so stop-then-delete bills once.
+		var (
+			startedAt, stoppedAt *time.Time
+			vcpu                 float64
+			projectID            string
+		)
+		if ev.Event == "stopped" || ev.Event == "deleted" {
+			err := tx.QueryRow(r.Context(), `
+                                SELECT started_at, stopped_at, vcpu, COALESCE(project_id::text, '')
                                 FROM sandboxes WHERE id = $1`, ev.SandboxID).Scan(
-				&startedAt, &stoppedAt, &vcpu, &sbOrgID, &sbProjectID)
-			if startedAt != nil {
-				end := occurred
-				if stoppedAt != nil && stoppedAt.After(*startedAt) {
-					end = *stoppedAt
-				}
-				if end.Before(*startedAt) {
-					end = occurred
-				}
-				delta := int64(end.Sub(*startedAt).Seconds())
-				if delta < 0 {
-					delta = 0
-				}
-				billedUsage = &usage.Record{
-					SandboxID:     ev.SandboxID,
-					Kind:          "sandbox_seconds",
-					Quantity:      delta,
-					SourceEventID: ev.ID,
-					OccurredAt:    occurred,
-				}
-				if sbOrgID != nil {
-					billOrgID = *sbOrgID
-				}
-				if sbProjectID != nil {
-					billProjectID = *sbProjectID
-				}
-				billSandboxID = ev.SandboxID
-				if vcpu > 0 {
-					// Bill vcpu_seconds as a separate row with a
-					// derived source_event_id so the sandbox_seconds
-					// UNIQUE(source_event_id) still holds.
-					_ = billedUsage // placeholder; we bill both below
+				&startedAt, &stoppedAt, &vcpu, &projectID)
+			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				return err
+			}
+			if startedAt != nil && stoppedAt == nil {
+				if err := billWindow(r.Context(), tx, orgID, projectID, ev.SandboxID, ev.ID,
+					*startedAt, occurred, vcpu); err != nil {
+					return err
 				}
 			}
+		}
+		switch ev.Event {
+		case "deleted":
 			tag, err := tx.Exec(r.Context(), `DELETE FROM sandboxes WHERE id = $1`, ev.SandboxID)
 			if err != nil {
 				return err
@@ -193,64 +175,47 @@ func (s *Server) handleSandboxdWebhook(w http.ResponseWriter, r *http.Request) {
 			if ev.Event == "failed" {
 				errorMessage = "sandbox failed (see sandboxd logs)"
 			}
-			// On 'started', stamp started_at to open the billing
-			// window. On 'stopped', read the prior started_at so we
-			// can bill below, then stamp stopped_at.
-			var priorStartedAt *time.Time
-			var vcpu float64
-			if ev.Event == "started" || ev.Event == "stopped" {
-				_ = tx.QueryRow(r.Context(),
-					`SELECT started_at, vcpu FROM sandboxes WHERE id = $1`,
-					ev.SandboxID).Scan(&priorStartedAt, &vcpu)
-			}
+			// created/started open a window (a create runs the
+			// sandbox; the gateway insert may already have opened
+			// it, hence COALESCE for created). stopped/failed close
+			// it.
 			tag, err := tx.Exec(r.Context(), `
                                 UPDATE sandboxes SET
                                         status = $2,
                                         error_message = NULLIF($3,''),
                                         vcpu = COALESCE($4, vcpu),
                                         memory_mb = COALESCE($5, memory_mb),
-                                        started_at = CASE WHEN $2 = 'running' THEN now() ELSE started_at END,
-                                        updated_at = now(),
-                                        stopped_at = CASE WHEN $2 IN ('stopped','exited') THEN COALESCE(stopped_at, now()) ELSE stopped_at END
+                                        started_at = CASE
+                                                WHEN $6 = 'started' THEN $7
+                                                WHEN $6 = 'created' THEN COALESCE(started_at, $7)
+                                                ELSE started_at END,
+                                        stopped_at = CASE
+                                                WHEN $6 IN ('created','started') THEN NULL
+                                                WHEN $6 IN ('stopped','failed') THEN COALESCE(stopped_at, $7)
+                                                ELSE stopped_at END,
+                                        updated_at = now()
                                 WHERE id = $1`,
 				ev.SandboxID, status, errorMessage,
-				webhookFloat(ev.Resources), webhookInt(ev.Resources))
+				webhookFloat(ev.Resources), webhookInt(ev.Resources), ev.Event, occurred)
 			if err != nil {
 				return err
 			}
 			if tag.RowsAffected() > 0 {
 				applied = status
 			}
-			// Bill on 'stopped': the window from started_at to now.
-			if ev.Event == "stopped" && priorStartedAt != nil {
-				delta := int64(occurred.Sub(*priorStartedAt).Seconds())
-				if delta < 0 {
-					delta = 0
-				}
-				billedUsage = &usage.Record{
-					SandboxID:     ev.SandboxID,
-					Kind:          "sandbox_seconds",
-					Quantity:      delta,
-					SourceEventID: ev.ID,
-					OccurredAt:    occurred,
-				}
-				billOrgID = orgID
-				billSandboxID = ev.SandboxID
-				_ = vcpu // vcpu_seconds billed as a sibling row below
-			}
 			return nil
 		default:
 			return nil // unknown event type: recorded, not acted on
 		}
 	})
-	if errors.Is(err, pgx.ErrNoRows) { // not reachable; kept for symmetry
-		applied = ""
-		err = nil
-	}
 	if err != nil {
 		s.Log.Error("webhook apply failed", "sandbox_id", ev.SandboxID, "error", err.Error())
-		// 500 makes sandboxd retry; the dedupe row above keeps that
-		// retry from double-applying once we do succeed.
+		// 500 makes sandboxd retry. The dedupe row was committed in
+		// its own tx above, so roll it back to let the retry apply.
+		_ = db.WithOrg(r.Context(), s.Pool, orgID, func(tx db.Tx) error {
+			_, derr := tx.Exec(r.Context(), `DELETE FROM webhook_events WHERE event_id = $1`, ev.ID)
+			return derr
+		})
 		writeErr(w, http.StatusInternalServerError, "internal", "could not apply webhook event")
 		return
 	}
@@ -259,22 +224,6 @@ func (s *Server) handleSandboxdWebhook(w http.ResponseWriter, r *http.Request) {
 		// acknowledge so sandboxd stops retrying.
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ignored"})
 		return
-	}
-	// P5: persist the usage_events row(s) outside the index tx so a
-	// failure here does not roll back the index update (the index is
-	// the user-facing state; usage is a best-effort ledger that can be
-	// reconciled later from sandboxd's audit). Idempotent on
-	// source_event_id: a webhook replay inserts zero rows.
-	if billedUsage != nil && billOrgID != "" {
-		rec := *billedUsage
-		rec.OrgID = billOrgID
-		rec.ProjectID = billProjectID
-		if err := usage.Append(r.Context(), s.Pool, rec); err != nil && !errors.Is(err, usage.ErrDuplicateSource) {
-			s.Log.Error("usage record failed", "sandbox_id", billSandboxID, "error", err.Error())
-			// Don't fail the webhook: sandboxd would retry the whole
-			// event, and the dedupe row above would absorb the
-			// duplicate apply, but the index update is already done.
-		}
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "applied", "event": ev.Event})
 }
@@ -297,4 +246,36 @@ func webhookInt(r *struct {
 		return nil
 	}
 	return &r.MemoryMB
+}
+
+// billWindow writes the usage_events rows for one closed run window:
+// sandbox_seconds, and vcpu_seconds (seconds × vCPUs, rounded) when the
+// sandbox has a vCPU size. Both are keyed by the closing event id
+// (vcpu with a ":vcpu" suffix), so a replayed event inserts nothing.
+func billWindow(ctx context.Context, tx db.Tx, orgID, projectID, sandboxID, eventID string, start, end time.Time, vcpu float64) error {
+	secs := int64(end.Sub(start).Seconds())
+	if secs < 0 {
+		secs = 0
+	}
+	rows := []struct {
+		kind, source string
+		qty          int64
+	}{{"sandbox_seconds", eventID, secs}}
+	if vcpu > 0 {
+		rows = append(rows, struct {
+			kind, source string
+			qty          int64
+		}{"vcpu_seconds", eventID + ":vcpu", int64(math.Round(float64(secs) * vcpu))})
+	}
+	for _, row := range rows {
+		if _, err := tx.Exec(ctx, `
+                        INSERT INTO usage_events
+                                (org_id, project_id, sandbox_id, kind, quantity, unit, source_event_id, occurred_at)
+                        VALUES ($1::uuid, NULLIF($2,'')::uuid, $3, $4, $5, 'seconds', $6, $7)
+                        ON CONFLICT (source_event_id) DO NOTHING`,
+			orgID, projectID, sandboxID, row.kind, row.qty, row.source, end); err != nil {
+			return fmt.Errorf("insert usage_event: %w", err)
+		}
+	}
+	return nil
 }

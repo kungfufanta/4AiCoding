@@ -7,7 +7,6 @@ package httpapi
 
 import (
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/tastyeffectco/sandboxd/portal/internal/apikeys"
@@ -116,25 +115,14 @@ func ifEmpty(s, fallback string) string {
 	return s
 }
 
-// resolveOrgID is the BFF-side org resolution: takes {orgID} from the
-// path, checks the session user is a member, returns the org UUID or
-// 404. It is the same gate every other /api/orgs/{orgID} route uses;
-// reproduced here so the Usage handler is self-contained.
+// resolveOrgID is the BFF-side org resolution: {orgID} from the path,
+// gated by a membership check. RLS cannot do this on its own — the
+// handler sets app.org_id FROM the path, so every row of the requested
+// org would be visible to any signed-in user. Non-members get 404.
 func (s *Server) resolveOrgID(w http.ResponseWriter, r *http.Request) (string, bool) {
-	orgID := r.PathValue("orgID")
-	if _, err := strconv.ParseInt(orgID, 10, 64); err == nil {
-		// not a uuid (numeric) — reject before the DB round trip
-	}
-	if orgID == "" {
-		writeErr(w, http.StatusNotFound, "not_found", "org not found")
+	orgID := pathOrgID(r)
+	if _, ok := s.requireMember(w, r, orgID); !ok {
 		return "", false
 	}
-	// The membership check happens implicitly via RLS: a non-member
-	// gets zero rows back, so the usage response looks empty. That
-	// is acceptable for usage (a non-member should not be able to
-	// guess an org's usage volume by counting empty days either, but
-	// a 404 here would also require a separate query, so we accept
-	// the empty response and rely on the withSession middleware to
-	// have already authenticated the user).
 	return orgID, true
 }

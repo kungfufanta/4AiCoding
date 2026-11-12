@@ -84,7 +84,12 @@ func (s *Server) handleBFFCreateSandbox(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	userID := db.UserID(r.Context())
+	release, err := s.admitRun(r.Context(), orgID)
+	if s.writeAdmitErr(w, orgID, err) {
+		return
+	}
 	sb, err := s.gatewayCreate(r.Context(), orgID, projectID, "user", userID, body)
+	release()
 	if err != nil {
 		s.writeSandboxdErr(w, err)
 		return
@@ -228,7 +233,15 @@ func (s *Server) handleBFFSandboxAction(w http.ResponseWriter, r *http.Request) 
 	action := ""
 	switch {
 	case r.Method == http.MethodPost && endsWith(r.URL.Path, "/start"):
+		release, aerr := s.admitRun(r.Context(), orgID)
+		if s.writeAdmitErr(w, orgID, aerr) {
+			return
+		}
 		action, err = "sandbox.start", s.Sandboxd.Start(r.Context(), id)
+		if err == nil {
+			s.markRunning(r.Context(), orgID, id)
+		}
+		release()
 	case r.Method == http.MethodPost:
 		action, err = "sandbox.stop", s.Sandboxd.Stop(r.Context(), id)
 	default:

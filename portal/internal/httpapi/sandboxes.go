@@ -102,11 +102,11 @@ func (s *Server) syncSandboxRow(ctx context.Context, orgID, projectID string, sb
 				memory_mb     = EXCLUDED.memory_mb,
 				ports         = EXCLUDED.ports,
 				error_message = EXCLUDED.error_message,
-				updated_at    = now(),
-				stopped_at    = CASE
-					WHEN EXCLUDED.status IN ('stopped','exited') THEN COALESCE(sandboxes.stopped_at, now())
-					ELSE NULL
-				END`,
+				updated_at    = now()
+				-- started_at/stopped_at are NOT touched here: they are
+				-- the P5 billing window, opened and closed only by the
+				-- lifecycle webhook. A read that saw "stopped" first and
+				-- set stopped_at would make the webhook skip the bill.`,
 			sb.ID, orgID, projectID, sb.Status, sb.Image,
 			sb.Resources.CPUs, sb.Resources.MemoryMB, sb.Ports, sb.ErrorMessage,
 			parseRFC3339OrNow(sb.CreatedAt))

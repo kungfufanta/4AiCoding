@@ -84,32 +84,6 @@ func (s *Server) handleV1CreateSandbox(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		// P5 quota: refuse when the org's running-sandbox count is at
-		// the plan ceiling. ErrExceeded → 429 quota_exceeded.
-		if s.QuotaEnabled {
-			plan, err := quota.LoadPlan(r.Context(), s.Pool, key.OrgID)
-			if err != nil && !errors.Is(err, quota.ErrUnknownPlan) {
-				s.Log.Error("quota plan load failed", "org_id", key.OrgID, "error", err.Error())
-				writeErr(w, http.StatusInternalServerError, "internal", "could not load plan")
-				return
-			}
-			if err == nil {
-				if err := quota.CheckConcurrentSandboxes(r.Context(), s.Pool, key.OrgID, plan); err != nil {
-					if errors.Is(err, quota.ErrExceeded) {
-						writeErr(w, http.StatusTooManyRequests, "quota_exceeded",
-							"org has reached its concurrent sandbox quota; stop a sandbox or upgrade the plan")
-						return
-					}
-					s.Log.Error("quota check failed", "org_id", key.OrgID, "error", err.Error())
-					writeErr(w, http.StatusInternalServerError, "internal", "could not check quota")
-					return
-				}
-			}
-			// ErrUnknownPlan: fall through with no quota check
-			// (the org predates the plans seed, or a custom plan
-			// id is missing from the catalogue). Usage recording
-			// still works; only the ceiling is skipped.
-		}
 		r.Body = http.MaxBytesReader(w, r.Body, 65536)
 		var body createSandboxBody
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -137,6 +111,14 @@ func (s *Server) handleV1CreateSandbox(w http.ResponseWriter, r *http.Request) {
 		idem := requestHash(http.MethodPost, "/v1/sandboxes", raw)
 		status, payload, err := s.idempotent(r.Context(), key.OrgID, r.Header.Get("Idempotency-Key"), idem,
 			func() (int, []byte, error) {
+				// P5: admission inside the idempotent closure, so a
+				// replay returns the stored 201 even at the ceiling
+				// and the lock spans create + index insert.
+				release, err := s.admitRun(r.Context(), key.OrgID)
+				if err != nil {
+					return 0, nil, err
+				}
+				defer release()
 				sb, err := s.gatewayCreate(r.Context(), key.OrgID, projectID, "api_key", key.KeyID, body)
 				if err != nil {
 					return 0, nil, err
@@ -152,6 +134,9 @@ func (s *Server) handleV1CreateSandbox(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, errIDConflict) {
 			writeErr(w, http.StatusConflict, "idempotency_in_progress",
 				"an identical request with this Idempotency-Key is still in progress")
+			return
+		}
+		if s.writeAdmitErr(w, key.OrgID, err) {
 			return
 		}
 		if err != nil {
@@ -200,8 +185,10 @@ func (s *Server) gatewayCreate(ctx context.Context, orgID, projectID, actorType,
 		if _, err := tx.Exec(ctx, `
                         INSERT INTO sandboxes
                                 (id, org_id, project_id, created_by_key, created_by_user, status, image,
-                                 vcpu, memory_mb, ports, created_at, updated_at)
-                        VALUES ($1, $2::uuid, NULLIF($3,'')::uuid, $4, $5::uuid, $6, $7, $8, $9, $10, $11, now())`,
+                                 vcpu, memory_mb, ports, created_at, updated_at, started_at)
+                        VALUES ($1, $2::uuid, NULLIF($3,'')::uuid, $4, $5::uuid, $6, $7, $8, $9, $10, $11, now(),
+                                -- P5: a created sandbox is running, so its billing window opens now
+                                CASE WHEN $6 IN ('running','created','starting','pending') THEN now() END)`,
 			sb.ID, orgID, projectID, createdByKey, createdByUser,
 			sb.Status, sb.Image, sb.Resources.CPUs, sb.Resources.MemoryMB, sb.Ports,
 			parseRFC3339OrNow(sb.CreatedAt),
@@ -309,10 +296,12 @@ func (s *Server) handleV1ExecSandbox(w http.ResponseWriter, r *http.Request) {
 			// Idempotency-Key: refuse a conflicting replay before
 			// opening the stream (otherwise two concurrent streams
 			// would both run).
+			fresh := false
 			_, _, err := s.idempotent(r.Context(), key.OrgID, r.Header.Get("Idempotency-Key"), idem,
 				func() (int, []byte, error) {
 					// The closure runs only once per Idempotency-Key;
 					// the actual streaming happens below.
+					fresh = true
 					return http.StatusOK, []byte(`{}`), nil
 				})
 			if errors.Is(err, errKeyReuse) {
@@ -327,6 +316,13 @@ func (s *Server) handleV1ExecSandbox(w http.ResponseWriter, r *http.Request) {
 			}
 			if err != nil {
 				s.writeSandboxdErr(w, err)
+				return
+			}
+			// A stream cannot be stored, so a replayed key must not
+			// run the command a second time: refuse it instead.
+			if !fresh {
+				writeErr(w, http.StatusConflict, "idempotency_key_used",
+					"this Idempotency-Key already ran a streamed exec; a stream cannot be replayed")
 				return
 			}
 			// Open the stream from sandboxd and relay lines.
@@ -426,7 +422,14 @@ func (s *Server) handleV1SandboxAction(w http.ResponseWriter, r *http.Request) {
 		var action, err = r.URL.Path, error(nil)
 		switch {
 		case r.Method == http.MethodPost && endsWith(action, "/start"):
-			err = s.Sandboxd.Start(r.Context(), id)
+			release, aerr := s.admitRun(r.Context(), key.OrgID)
+			if s.writeAdmitErr(w, key.OrgID, aerr) {
+				return
+			}
+			if err = s.Sandboxd.Start(r.Context(), id); err == nil {
+				s.markRunning(r.Context(), key.OrgID, id)
+			}
+			release()
 		case r.Method == http.MethodPost:
 			err = s.Sandboxd.Stop(r.Context(), id)
 		default:
