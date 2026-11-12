@@ -36,7 +36,7 @@ const SCENARIOS = [
   },
   {
     name: "run_command",
-    args: { cmd: "cat hello.txt" },
+    args: { command: "cat hello.txt" },
   },
   {
     name: "finish",

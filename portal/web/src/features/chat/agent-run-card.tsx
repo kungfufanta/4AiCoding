@@ -90,9 +90,9 @@ function argSummary(name: string, argsJson: string): string {
     case "list_files":
       return String(a.path ?? ".");
     case "search":
-      return String(a.query ?? a.pattern ?? "");
+      return String(a.pattern ?? a.query ?? "");
     case "run_command":
-      return String(a.cmd ?? "");
+      return String(a.command ?? a.cmd ?? "");
     case "check_preview":
       return String(a.path ?? "/");
     case "finish":
