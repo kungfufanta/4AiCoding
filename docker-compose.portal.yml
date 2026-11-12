@@ -133,7 +133,15 @@ services:
       SANDBOXD_WEBHOOK_SECRET: ${PORTAL_SANDBOXD_WEBHOOK_SECRET:-dev-webhook-secret}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - sandboxd_data:/data
+      # /data MUST be the SAME PATH on the host and in this container:
+      # sandboxd asks the docker daemon to mount /data/workspaces/<id>
+      # into sandbox containers, and the daemon resolves that path on
+      # the HOST. A named volume would make the two views diverge (the
+      # files API writes inside the sandboxd container's volume while
+      # every exec sees an empty host dir) — the exact bug the A3.4
+      # preview hit: cat hello.txt exit 1, git diff vs the checkpoint
+      # empty. A same-path bind mount keeps one filesystem view.
+      - /data:/data
     ports:
       - "127.0.0.1:9191:9191"
 
@@ -178,4 +186,3 @@ services:
 
 volumes:
   portal_pgdata:
-  sandboxd_data:
