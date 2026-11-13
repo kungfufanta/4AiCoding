@@ -90,6 +90,7 @@ healthy() { curl -s -m2 "$API/healthz" | grep -q ok; }
 pod_logged() { kubectl -n "$NS" logs "$POD" --tail=200 2>/dev/null | grep -q "$1"; }
 active_twice() { [ "$(kubectl -n "$NS" logs "$POD" --tail=500 2>/dev/null | grep -c 'worker is active')" -ge 2 ]; }
 worker_logs() { kubectl -n "$NS" logs -l "app.kubernetes.io/instance=$REL" --tail=200 2>/dev/null; }
+worker_logged() { worker_logs | grep -q "$1"; }
 
 # --- cluster -----------------------------------------------------------------
 kubectl wait --for=condition=Ready node --all --timeout=120s >/dev/null || fail "k3s node not Ready"
@@ -149,7 +150,9 @@ wait_for 60 is_status "$K8S_NODE" online || fail "node $K8S_NODE never came onli
 [ "$(node_field "$K8S_NODE" capacity.cpus)" = "3" ] || fail "capacity.cpus: $(nodes_json)"
 [ "$(node_field "$K8S_NODE" capacity.memory_mb)" = "6144" ] || fail "capacity.memory_mb: $(nodes_json)"
 [ "$(node_count)" = "2" ] || fail "want 2 nodes (local + k3s): $(nodes_json)"
-worker_logs | grep -q "worker registered" || fail "no register line in the worker log"
+# The node can be online before kubelet serves the container's log (seen
+# after a first CreateContainerConfigError retry), so poll for the line.
+wait_for 15 worker_logged "worker registered" || fail "no register line in the worker log"
 log "worker online ✓"
 
 # 5. Drain reaches the pod; undrain too.

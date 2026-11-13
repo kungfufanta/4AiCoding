@@ -1,0 +1,105 @@
+# Resets the Zitadel console admin password and/or configures SMTP on
+# https://auth.devhub.io.vn, with the iam-admin PAT from the cluster, so
+# it works even when the current admin password is lost.
+#
+# Admin login: admin@devhub.auth.devhub.io.vn (user "admin", org DevHub).
+#
+# Secrets, under GitHub → Settings → Environments → k3s-1:
+#   ZITADEL_ADMIN_PASSWORD  the new admin password (8+ chars, upper,
+#                           lower, digit, symbol). Same secret the deploy
+#                           workflow uses, so the two stay in sync.
+#   ZITADEL_SMTP_HOST       host:port, e.g. smtp.gmail.com:587
+#   ZITADEL_SMTP_USER       SMTP login (leave unset for an open relay)
+#   ZITADEL_SMTP_PASSWORD   SMTP password or app password
+#   ZITADEL_SMTP_FROM       sender address, e.g. no-reply@devhub.io.vn
+#   ZITADEL_SMTP_FROM_NAME  optional sender name (default "DevHub")
+#   ZITADEL_SMTP_REPLY_TO   optional reply-to address
+#
+# Run: Actions → zitadel-admin-smtp → Run workflow. Safe to re-run: the
+# SMTP provider is matched by its description and updated in place.
+
+name: zitadel-admin-smtp
+
+on:
+  workflow_dispatch:
+    inputs:
+      reset_admin_password:
+        description: Set the admin password to ZITADEL_ADMIN_PASSWORD
+        type: boolean
+        default: false
+      configure_smtp:
+        description: Create/update and activate SMTP from ZITADEL_SMTP_*
+        type: boolean
+        default: true
+      smtp_tls:
+        description: Use TLS for SMTP (STARTTLS on 587, TLS on 465)
+        type: boolean
+        default: true
+      smtp_test_to:
+        description: Optional address to send a test mail to
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zitadel-admin-smtp
+  cancel-in-progress: false
+
+env:
+  ISSUER: https://auth.devhub.io.vn
+  NAMESPACE: 4aicoding
+
+jobs:
+  configure:
+    runs-on: ubuntu-latest
+    environment: k3s-1
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Configure scoped kubeconfig
+        env:
+          KUBECONFIG_B64: ${{ secrets.K3S_4AICODING_KUBECONFIG_B64 }}
+        run: |
+          set -eu
+          test -n "$KUBECONFIG_B64"
+          echo "$KUBECONFIG_B64" | base64 --decode > "$RUNNER_TEMP/kubeconfig"
+          chmod 600 "$RUNNER_TEMP/kubeconfig"
+          echo "KUBECONFIG=$RUNNER_TEMP/kubeconfig" >> "$GITHUB_ENV"
+
+      - name: Read the iam-admin PAT from the cluster
+        run: |
+          set -eu
+          kubectl -n "$NAMESPACE" get secret iam-admin-pat -o jsonpath='{.data.pat}' | base64 --decode > "$RUNNER_TEMP/zitadel-pat"
+          chmod 600 "$RUNNER_TEMP/zitadel-pat"
+          test "$(wc -c < "$RUNNER_TEMP/zitadel-pat")" -gt 10
+
+      - name: Reset admin password / configure SMTP
+        env:
+          ZITADEL_SETUP_PAT_FILE: ${{ runner.temp }}/zitadel-pat
+          DO_RESET_PASSWORD: ${{ inputs.reset_admin_password }}
+          DO_CONFIGURE_SMTP: ${{ inputs.configure_smtp }}
+          SMTP_TLS: ${{ inputs.smtp_tls }}
+          SMTP_TEST_TO: ${{ inputs.smtp_test_to }}
+          ZITADEL_ADMIN_PASSWORD: ${{ secrets.ZITADEL_ADMIN_PASSWORD }}
+          ZITADEL_SMTP_HOST: ${{ secrets.ZITADEL_SMTP_HOST }}
+          ZITADEL_SMTP_USER: ${{ secrets.ZITADEL_SMTP_USER }}
+          ZITADEL_SMTP_PASSWORD: ${{ secrets.ZITADEL_SMTP_PASSWORD }}
+          ZITADEL_SMTP_FROM: ${{ secrets.ZITADEL_SMTP_FROM }}
+          ZITADEL_SMTP_FROM_NAME: ${{ secrets.ZITADEL_SMTP_FROM_NAME }}
+          ZITADEL_SMTP_REPLY_TO: ${{ secrets.ZITADEL_SMTP_REPLY_TO }}
+        run: python3 scripts/zitadel_admin_smtp.py
+
+      - name: Keep the cluster copy of the admin password in sync
+        # deploy-k3s-zitadel rebuilds zitadel-env from the same secret;
+        # this just avoids a stale copy until the next deploy.
+        if: inputs.reset_admin_password
+        env:
+          ZITADEL_ADMIN_PASSWORD: ${{ secrets.ZITADEL_ADMIN_PASSWORD }}
+        run: |
+          set -eu
+          b64="$(printf '%s' "$ZITADEL_ADMIN_PASSWORD" | base64 -w0)"
+          printf '{"data":{"ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORD":"%s"}}' "$b64" > "$RUNNER_TEMP/patch.json"
+          kubectl -n "$NAMESPACE" patch secret zitadel-env --type merge --patch-file "$RUNNER_TEMP/patch.json"
+          rm -f "$RUNNER_TEMP/patch.json"
