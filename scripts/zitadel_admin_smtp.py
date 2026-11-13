@@ -38,7 +38,9 @@ SMTP_DESCRIPTION = "devhub-smtp"
 
 
 def env(name, default=""):
-    return os.environ.get(name, default).strip()
+    # GitHub passes an unset secret as an empty string, so an empty
+    # value falls back to the default too.
+    return os.environ.get(name, "").strip() or default
 
 
 def truthy(name):
