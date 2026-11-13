@@ -3,7 +3,7 @@
 Yêu cầu gốc (Doan, 2026-11-12):
 > *"giờ cần lên plan để RLS cho đúng, Devhub Solutions là orgs nền tảng, quản lý các orgs và người đăng ký khác, người dùng trong Devhub Solutions có thể quản lý cấp tài nguyên, gói, hạn mức, còn người dùng của nền tảng nhận gói tạo agent và sử dụng"*
 
-Tài liệu này chỉ là kế hoạch, chưa có code. Nó bổ sung cho `docs/PORTAL_PLAN.md` (mục 3.1 vai trò, 3.4 RLS) và `docs/AGENT_PLAN_A3.md`. Migration đầu tiên của kế hoạch này sẽ là `0011_platform_org.sql`.
+Tài liệu này chỉ là kế hoạch, chưa có code. Nó bổ sung cho `docs/PORTAL_PLAN.md` (mục 3.1 vai trò, 3.4 RLS) và `docs/AGENT_PLAN_A3.md`. Migration đầu tiên của kế hoạch này là `0012_rls_hardening.sql` (R0), vì `0011_agent_usage.sql` đã dùng số 0011 (A3.3, PR #71). Mỗi phase sau lấy số kế tiếp còn trống.
 
 ---
 
@@ -101,7 +101,7 @@ Dòng cuối để trống là có chủ ý: đổi gói chỉ qua nền tảng.
 
 ---
 
-## 4. Thay đổi schema — `0011_platform_org.sql`
+## 4. Thay đổi schema (chia theo phase R1–R4, mỗi phase một migration)
 
 ### 4.1 Loại org và trạng thái
 
@@ -355,6 +355,15 @@ Mỗi phase là một PR, có test RLS chạy trên Postgres thật (`PORTAL_TES
 - Các trang ở mục 6.2. Drop `orgs.plan_id`, bỏ alias `/api/admin/llm/*`, bỏ `BootstrapAdminID` khỏi `Server`. Cập nhật `docs/PORTAL_PLAN.md` mục 3.1 và 3.4 cùng `openapi.yaml`.
 
 Thứ tự bắt buộc: R0 → R1 → (R2, R3) → R4 → R5. R2 và R3 có thể làm song song nếu chia người.
+
+### 7.1 Ảnh hưởng tới tiến độ agent (cập nhật 2026-11-13, main @ `f58badd`, sau A3.3)
+
+- **A3.4 (UI agent trong Chat) và A3.5 (hardening): không bị ảnh hưởng.** Agent chạy hoàn toàn trong `WithOrg(run.OrgID)` và không ghi `orgs`/`memberships`. R0 chỉ đổi policy `orgs`, `memberships`, `invites` và `model_connections` (dòng nền tảng), nên làm song song được.
+- **Revert (A3.3)** kiểm tra "người tạo hoặc admin" bằng `requireMember` trong Go. R0 không đổi luồng này.
+- **Usage**: A3.3 đã ghi `agent_tokens`/`agent_steps` vào `usage_events`. R3 dùng luôn các dòng này để tính `monthly_llm_tokens`/`monthly_agent_runs`, nên không cần thêm bảng đếm riêng.
+- **A5 (quota tháng)**: phải xây trên `org_effective_limits()` của R2/R3, không đọc thẳng `plans`. Nếu A5 làm trước R2/R3 thì phần đọc hạn mức sẽ phải viết lại. Thứ tự đề xuất: A3.4 → A3.5 → R0 → R1 → R2/R3 → A5 → R4.
+- **Worker agent** (`agent_claim_next`, `ConfigSource` resolve LLM): R3 (`plan_llm_connections`) và R4 (org bị khóa thì không claim run) chạm vào hai chỗ này. Hai thay đổi đều nhỏ, và có test sẵn ở `internal/agent`.
+- **Admin LLM** (`/api/admin/llm/*`): R1 đổi điều kiện từ "bootstrap admin" sang "platform admin". Với người dùng hiện tại thì không có gì khác, vì bootstrap admin trở thành platform owner.
 
 ---
 
