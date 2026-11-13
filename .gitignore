@@ -48,6 +48,3 @@ portal/sdk/typescript/dist/
 portal/sdk/python/*.egg-info/
 portal/sdk/python/.pytest_cache/
 portal/sdk/python/__pycache__/
-
-# sandboxd dev data dir (docker-compose.portal.yml symmetric mount)
-.sandboxd-data/

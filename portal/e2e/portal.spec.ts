@@ -327,10 +327,12 @@ test.describe.serial("portal preview", () => {
     // 4. The result card: summary, the changed-file chip, tokens.
     const result = page.getByTestId("agent-result");
     await expect(result).toBeVisible({ timeout: 60_000 });
+    // Screenshot BEFORE the strict asserts — whatever the card shows on
+    // a failure lands in the artifact and makes the run diagnosable.
+    await shot(page, "27-agent-result");
     await expect(result.getByLabel("Files changed").getByText("hello.txt", { exact: true })).toBeVisible();
     await expect(result.getByText("Hoàn thành")).toBeVisible();
     await expect(result.getByText(/token/)).toBeVisible();
-    await shot(page, "27-agent-result");
 
     // 5. A tool card opens to show its output preview.
     await page.getByRole("button", { name: /Tool run_command/ }).click();
