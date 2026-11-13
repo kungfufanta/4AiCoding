@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/tastyeffectco/sandboxd/portal/internal/agent/sandboxtest"
 	"github.com/tastyeffectco/sandboxd/portal/internal/db"
 	"github.com/tastyeffectco/sandboxd/portal/internal/llm"
 	"github.com/tastyeffectco/sandboxd/portal/internal/tenants"
@@ -178,19 +179,24 @@ func (f *slowLLM) client() *llm.Client {
 
 type fixedSource struct{ c *llm.Client }
 
-func (s fixedSource) Client(_ context.Context, run Run) (*llm.Client, error) {
+func (s fixedSource) Client(_ context.Context, run Run) (LLMChoice, error) {
 	c := *s.c
 	c.Model = run.Model
-	return &c, nil
+	return LLMChoice{Client: &c, SupportsTools: true}, nil
 }
 
-// newWorker builds a worker with test-fast timings.
-func newWorker(st *Store, src LLMSource, notify *Notifier) *Worker {
+// newWorker builds a worker with test-fast timings, wired to a fake
+// sandboxd rooted at a fresh temp dir (the A3.2 loop needs a sandbox
+// backend to prep, checkpoint and postcheck against).
+func newWorker(t *testing.T, st *Store, src LLMSource, notify *Notifier) (*Worker, *sandboxtest.Server) {
+	sbx := sandboxtest.New(t.TempDir())
+	t.Cleanup(sbx.Close)
 	return &Worker{
 		ID:         fmt.Sprintf("test-%d", time.Now().UnixNano()%100000),
 		Log:        testLogger(),
 		Store:      st,
 		LLM:        src,
+		Sandboxd:   sbx.Client(),
 		Notify:     notify,
 		Lease:      3 * time.Second,
 		Heartbeat:  300 * time.Millisecond,
@@ -198,7 +204,7 @@ func newWorker(st *Store, src LLMSource, notify *Notifier) *Worker {
 		CancelPoll: 200 * time.Millisecond,
 		SweepEvery: 250 * time.Millisecond,
 		SweepGrace: time.Second,
-	}
+	}, sbx
 }
 
 // waitForStatus polls until the run reaches a terminal state.
@@ -235,7 +241,7 @@ func TestRunLifecycle(t *testing.T) {
 	fake := newSlowLLM(t, []string{"Xin ", "chào, ", "đã xong."}, 10*time.Millisecond)
 	notify := NewNotifier(context.Background(), testLogger(), handle.URL)
 	defer func() { _ = notify }()
-	w := newWorker(st, fixedSource{fake.client()}, notify)
+	w, _ := newWorker(t, st, fixedSource{fake.client()}, notify)
 	ctx, cancel := context.WithCancel(context.Background())
 	w.Start(ctx)
 	defer func() { cancel(); w.Shutdown(0); w.Wait() }()
@@ -428,7 +434,7 @@ func TestCancelWithin5s(t *testing.T) {
 	// ~6 s of stream so the cancel lands mid-stream.
 	fake := newSlowLLM(t, makeChunks(30, "đoạn "), 200*time.Millisecond)
 	notify := NewNotifier(context.Background(), testLogger(), handle.URL)
-	w := newWorker(st, fixedSource{fake.client()}, notify)
+	w, _ := newWorker(t, st, fixedSource{fake.client()}, notify)
 	ctx, cancel := context.WithCancel(context.Background())
 	w.Start(ctx)
 	defer func() { cancel(); w.Shutdown(0); w.Wait() }()
@@ -480,6 +486,61 @@ func TestCancelWithin5s(t *testing.T) {
 	}
 }
 
+// TestCancelDuringPrep — a cancel landing while the run is still in
+// sandbox prep (Get/keep-alive/probe in flight) must end cancelled,
+// not failed(sandbox_unavailable): the classification follows runCtx,
+// not the exec error the cancellation wore (plan §7: done
+// {status:cancelled} within the 5 s budget). The hook holds the probe
+// exec for 1.2 s so RequestCancel (notify + the 200 ms poll) lands
+// mid-probe with certainty.
+func TestCancelDuringPrep(t *testing.T) {
+	handle := setupDB(t)
+	st := NewStore(handle.Pool)
+	orgID, _, sandboxID := seedOrg(t, st, "cancel-prep")
+
+	fake := newSlowLLM(t, makeChunks(30, "đoạn "), 200*time.Millisecond)
+	notify := NewNotifier(context.Background(), testLogger(), handle.URL)
+	w, sbx := newWorker(t, st, fixedSource{fake.client()}, notify)
+	sbx.Hook = func(rec sandboxtest.ExecRecord) (map[string]any, bool) {
+		if len(rec.Cmd) == 3 && strings.Contains(rec.Cmd[2], "command -v git") {
+			time.Sleep(1200 * time.Millisecond) // hold the probe exec
+		}
+		return nil, false
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	w.Start(ctx)
+	defer func() { cancel(); w.Shutdown(0); w.Wait() }()
+
+	run, _, err := st.CreateRun(ctx, CreateIn{
+		OrgID: orgID, SandboxID: sandboxID, Prompt: "viết dài", Model: "glm-4.6", MaxSteps: 30,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Cancel as soon as the run is claimed-running (prep in flight).
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		r, _ := st.GetRun(ctx, orgID, run.ID)
+		if r.Status == StatusRunning {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	start := time.Now()
+	if _, err := st.RequestCancel(ctx, orgID, run.ID); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	fin := waitForStatus(t, st, orgID, run.ID, 6*time.Second)
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("cancel took %s, want <= 5s", elapsed)
+	}
+	if fin.Status != StatusCancelled {
+		t.Fatalf("status = %s (%s), want cancelled", fin.Status, fin.ErrorCode)
+	}
+}
+
 // TestWorkerLostSwept — criterion 4: a worker that dies mid-run
 // (claim without ever renewing) is reaped failed/worker_lost within
 // the sweep budget, with its done event.
@@ -501,7 +562,7 @@ func TestWorkerLostSwept(t *testing.T) {
 	}
 
 	// A healthy worker's sweeper reaps the stale lease (grace 0.5 s).
-	w := newWorker(st, fixedSource{newSlowLLM(t, []string{"hi"}, 5*time.Millisecond).client()}, nil)
+	w, _ := newWorker(t, st, fixedSource{newSlowLLM(t, []string{"hi"}, 5*time.Millisecond).client()}, nil)
 	wctx, wcancel := context.WithCancel(ctx)
 	w.Start(wctx)
 	defer func() { wcancel(); w.Shutdown(0); w.Wait() }()

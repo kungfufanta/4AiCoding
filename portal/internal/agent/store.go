@@ -17,6 +17,7 @@ import (
 
 	"github.com/tastyeffectco/sandboxd/portal/internal/db"
 	"github.com/tastyeffectco/sandboxd/portal/internal/llm"
+	"github.com/tastyeffectco/sandboxd/portal/internal/tenants"
 )
 
 // Run statuses (migration 0010 CHECK constraint).
@@ -39,13 +40,14 @@ func Terminal(status string) bool {
 
 // Error codes (plan §4 error_code column + §7 flow).
 const (
-	ErrWorkerLost  = "worker_lost"
-	ErrShutdown    = "worker_shutdown"
-	ErrTimeout     = "timeout"
-	ErrMaxSteps    = "max_steps"
-	ErrTokenBudget = "token_budget"
-	ErrLLM         = "llm_error"
-	ErrInternal    = "internal"
+	ErrWorkerLost         = "worker_lost"
+	ErrShutdown           = "worker_shutdown"
+	ErrTimeout            = "timeout"
+	ErrMaxSteps           = "max_steps"
+	ErrTokenBudget        = "token_budget"
+	ErrLLM                = "llm_error"
+	ErrSandboxUnavailable = "sandbox_unavailable"
+	ErrInternal           = "internal"
 )
 
 // Store is the durable state of agent runs, events and LLM history.
@@ -75,6 +77,14 @@ var (
 	// ErrSandboxLocked — the chat already has runs, its sandbox can no
 	// longer change (decision §13-3). 409.
 	ErrSandboxLocked = errors.New("agent: chat sandbox is locked")
+	// ErrNotLatestRun — revert targets the newest run of the sandbox
+	// only (plan §8); the run is older. 409 not_latest_run.
+	ErrNotLatestRun = errors.New("agent: run is not the latest of its sandbox")
+	// ErrAlreadyReverted — reverted_at is already set. 409 already_reverted.
+	ErrAlreadyReverted = errors.New("agent: run already reverted")
+	// ErrNoCheckpoint — the run has checkpoint_ref NULL (image without
+	// git, or checkpoint failed): nothing to restore from. 409 no_checkpoint.
+	ErrNoCheckpoint = errors.New("agent: run has no checkpoint")
 )
 
 // Run is one agent task (row of agent_runs).
@@ -99,6 +109,7 @@ type Run struct {
 	InputTokens     int64
 	OutputTokens    int64
 	CancelRequested bool
+	RevertedAt      time.Time // epoch = not reverted
 	IdempotencyKey  string
 	CreatedAt       time.Time
 	StartedAt       time.Time
@@ -109,17 +120,23 @@ const runColumns = `id::text, org_id::text, sandbox_id, COALESCE(conversation_id
         COALESCE(created_by_user::text,''), COALESCE(created_by_key,''), prompt,
         COALESCE(connection_id::text,''), model, max_steps, timeout_s, max_tokens,
         status, COALESCE(error_code,''), COALESCE(checkpoint_ref,''), COALESCE(result::text,'{}'),
-        steps, input_tokens, output_tokens, cancel_requested, COALESCE(idempotency_key,''),
+        steps, input_tokens, output_tokens, cancel_requested, COALESCE(reverted_at, 'epoch'), COALESCE(idempotency_key,''),
         created_at, COALESCE(started_at, 'epoch'), COALESCE(finished_at, 'epoch')`
 
-func scanRun(row pgx.Row) (Run, error) {
-	var r Run
-	err := row.Scan(&r.ID, &r.OrgID, &r.SandboxID, &r.ConversationID,
+// runScanFields returns the scan destinations matching runColumns —
+// shared by scanRun and PrepareRevert.
+func runScanFields(r *Run) []any {
+	return []any{&r.ID, &r.OrgID, &r.SandboxID, &r.ConversationID,
 		&r.CreatedByUser, &r.CreatedByKey, &r.Prompt,
 		&r.ConnectionID, &r.Model, &r.MaxSteps, &r.TimeoutS, &r.MaxTokens,
 		&r.Status, &r.ErrorCode, &r.CheckpointRef, &r.Result,
-		&r.Steps, &r.InputTokens, &r.OutputTokens, &r.CancelRequested, &r.IdempotencyKey,
-		&r.CreatedAt, &r.StartedAt, &r.FinishedAt)
+		&r.Steps, &r.InputTokens, &r.OutputTokens, &r.CancelRequested, &r.RevertedAt, &r.IdempotencyKey,
+		&r.CreatedAt, &r.StartedAt, &r.FinishedAt}
+}
+
+func scanRun(row pgx.Row) (Run, error) {
+	var r Run
+	err := row.Scan(runScanFields(&r)...)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Run{}, ErrNotFound
 	}
@@ -213,12 +230,7 @@ func (s *Store) CreateRun(ctx context.Context, in CreateIn) (run Run, replayed b
 			in.OrgID, in.SandboxID, in.ConversationID, in.CreatedByUser, in.CreatedByKey,
 			in.Prompt, in.Model, in.MaxSteps, in.TimeoutS, in.MaxTokens, in.IdempotencyKey,
 			in.ConnectionID).
-			Scan(&run.ID, &run.OrgID, &run.SandboxID, &run.ConversationID,
-				&run.CreatedByUser, &run.CreatedByKey, &run.Prompt,
-				&run.ConnectionID, &run.Model, &run.MaxSteps, &run.TimeoutS, &run.MaxTokens,
-				&run.Status, &run.ErrorCode, &run.CheckpointRef, &run.Result,
-				&run.Steps, &run.InputTokens, &run.OutputTokens, &run.CancelRequested, &run.IdempotencyKey,
-				&run.CreatedAt, &run.StartedAt, &run.FinishedAt)
+			Scan(runScanFields(&run)...)
 		if err != nil {
 			return createRunErr(ctx, tx, in, err, &run, &replayed)
 		}
@@ -489,6 +501,7 @@ type FinalState struct {
 	Status       string
 	ErrorCode    string
 	Result       json.RawMessage
+	SandboxID    string // usage_events rows (plan §11 A3.3)
 	Steps        int
 	InputTokens  int64
 	OutputTokens int64
@@ -531,8 +544,26 @@ func (s *Store) SetFinal(ctx context.Context, orgID, runID string, f FinalState)
 				done["error_code"] = f.ErrorCode
 			}
 		}
-		_, err = appendEventTx(ctx, tx, runID, orgID, "done", done)
-		return err
+		if _, err := appendEventTx(ctx, tx, runID, orgID, "done", done); err != nil {
+			return err
+		}
+		// Usage ledger (plan §11 A3.3): one agent_tokens + one
+		// agent_steps row per run, INSIDE the same transaction as the
+		// terminal write — the ledger can never miss (or double-apply,
+		// source_event_id UNIQUE) a run the row says finished.
+		if f.SandboxID != "" {
+			if _, err := tx.Exec(ctx, `
+                        INSERT INTO usage_events
+                                (org_id, sandbox_id, kind, quantity, unit, source_event_id, occurred_at)
+                        VALUES ($1::uuid, $2, 'agent_tokens', $3, 'tokens', $4, now()),
+                               ($1::uuid, $2, 'agent_steps', $5, 'steps', $6, now())
+                        ON CONFLICT (source_event_id) DO NOTHING`,
+				orgID, f.SandboxID, f.InputTokens+f.OutputTokens,
+				"agent_tokens:"+runID, f.Steps, "agent_steps:"+runID); err != nil {
+				return fmt.Errorf("insert agent usage_events: %w", err)
+			}
+		}
+		return nil
 	})
 }
 
@@ -655,4 +686,188 @@ func (s *Store) SaveSummary(ctx context.Context, orgID, runID, conversationID, u
 			`UPDATE chat_conversations SET updated_at = now() WHERE id = $1::uuid`, conversationID)
 		return err
 	})
+}
+
+// SetCheckpoint records the run's checkpoint ref (plan §7 step 3).
+// Best-effort by the caller: a lost write only means a later
+// files_changed query finds nothing to diff against.
+func (s *Store) SetCheckpoint(ctx context.Context, orgID, runID, ref string) error {
+	return db.WithOrg(ctx, s.Pool, orgID, func(tx db.Tx) error {
+		_, err := tx.Exec(ctx, `
+                        UPDATE agent_runs SET checkpoint_ref = $2 WHERE id = $1::uuid`,
+			runID, ref)
+		return err
+	})
+}
+
+// PrevRunRow is one earlier run for the context block.
+type PrevRunRow struct {
+	ID      string
+	Summary string
+	Result  json.RawMessage
+}
+
+// RecentSummaries returns the ≤ n most recent succeeded runs of the
+// same conversation (excluding this run) with their summaries — the
+// "continue in the same chat" context (plan §7.4). Rows without a
+// result summary are skipped.
+func (s *Store) RecentSummaries(ctx context.Context, orgID, conversationID, excludeRunID string, n int) ([]PrevRunRow, error) {
+	if conversationID == "" {
+		return nil, nil
+	}
+	out := []PrevRunRow{}
+	err := db.WithOrg(ctx, s.Pool, orgID, func(tx db.Tx) error {
+		rows, err := tx.Query(ctx, `
+                        SELECT id::text, result->>'summary', COALESCE(result::text,'{}')
+                        FROM agent_runs
+                        WHERE conversation_id = $1::uuid AND id <> $2::uuid
+                          AND status = 'succeeded' AND result ? 'summary'
+                        ORDER BY created_at DESC LIMIT $3`,
+			conversationID, excludeRunID, n)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var p PrevRunRow
+			if err := rows.Scan(&p.ID, &p.Summary, &p.Result); err != nil {
+				return err
+			}
+			out = append(out, p)
+		}
+		return rows.Err()
+	})
+	return out, err
+}
+
+// AuditTool writes the agent.tool audit row for one executed tool
+// (plan §6: tool name, path or argv[0], exit code, duration — never
+// the file content or command output). Best-effort: the run must not
+// fail on an audit error.
+func (s *Store) AuditTool(ctx context.Context, orgID, runID, tool, subject string, exitCode int, durationMs int64) {
+	meta, _ := json.Marshal(map[string]any{
+		"run_id": runID, "tool": tool, "subject": subject,
+		"exit_code": exitCode, "duration_ms": durationMs,
+	})
+	err := db.WithOrg(ctx, s.Pool, orgID, func(tx db.Tx) error {
+		return tenants.Audit(ctx, tx, "system", "agent", "agent.tool", runID, string(meta))
+	})
+	_ = err // audited by the caller's log when it matters
+}
+
+// --- revert (plan §8, §11 A3.3) -----------------------------------------
+
+// PrepareRevert validates that runID can be reverted and returns the
+// row with its checkpoint ref (plan §8: only the LATEST run of the
+// sandbox, not yet reverted, terminal, with a checkpoint — and the
+// sandbox must have no active run). All checks run in one RLS-scoped
+// transaction; the exec + the reverted_at claim happen after it, and
+// ClaimRevert remains the atomic gate against a double revert.
+func (s *Store) PrepareRevert(ctx context.Context, orgID, runID string) (Run, error) {
+	var r Run
+	err := db.WithOrg(ctx, s.Pool, orgID, func(tx db.Tx) error {
+		err := tx.QueryRow(ctx,
+			`SELECT `+runColumns+` FROM agent_runs WHERE id = $1::uuid`, runID).
+			Scan(runScanFields(&r)...)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrNotFound
+			}
+			return err
+		}
+		if !Terminal(r.Status) {
+			// An active run is also the sandbox's one active
+			// run — same answer the create path gives. 409.
+			return ErrRunInProgress
+		}
+		// The column list COALESCEs reverted_at to 'epoch' (Unix 0) —
+		// the not-reverted sentinel, same style as started_at.
+		if r.RevertedAt.Unix() > 0 {
+			return ErrAlreadyReverted
+		}
+		if r.CheckpointRef == "" {
+			return ErrNoCheckpoint
+		}
+		// No queued/running run on this sandbox while its files
+		// are being rolled back.
+		var active int
+		if err := tx.QueryRow(ctx,
+			`SELECT count(*) FROM agent_runs
+                          WHERE sandbox_id = $1 AND status IN ('queued','running')`,
+			r.SandboxID).Scan(&active); err != nil {
+			return err
+		}
+		if active > 0 {
+			return ErrRunInProgress
+		}
+		// Latest run of the sandbox (created_at DESC, id DESC —
+		// the agent_runs_sandbox_recent index covers the read).
+		var latest string
+		if err := tx.QueryRow(ctx,
+			`SELECT id::text FROM agent_runs
+                          WHERE sandbox_id = $1
+                          ORDER BY created_at DESC, id DESC LIMIT 1`,
+			r.SandboxID).Scan(&latest); err != nil {
+			return err
+		}
+		if latest != r.ID {
+			return ErrNotLatestRun
+		}
+		return nil
+	})
+	return r, err
+}
+
+// ClaimRevert atomically sets reverted_at (plan §8). The WHERE clause
+// re-checks terminal + not-reverted so two racing reverts — or a
+// revert racing a second revert via the other API surface — answer
+// exactly one winner. false = someone else claimed it first.
+func (s *Store) ClaimRevert(ctx context.Context, orgID, runID string) (bool, error) {
+	var claimed bool
+	err := db.WithOrg(ctx, s.Pool, orgID, func(tx db.Tx) error {
+		tag, err := tx.Exec(ctx, `
+                        UPDATE agent_runs SET reverted_at = now()
+                        WHERE id = $1::uuid
+                          AND status IN ('succeeded','failed','cancelled')
+                          AND reverted_at IS NULL`, runID)
+		if err != nil {
+			return err
+		}
+		claimed = tag.RowsAffected() > 0
+		return nil
+	})
+	return claimed, err
+}
+
+// UnclaimRevert rolls a claim back after a failed revert exec, so the
+// run stays revertible.
+func (s *Store) UnclaimRevert(ctx context.Context, orgID, runID string) {
+	err := db.WithOrg(ctx, s.Pool, orgID, func(tx db.Tx) error {
+		_, err := tx.Exec(ctx,
+			`UPDATE agent_runs SET reverted_at = NULL WHERE id = $1::uuid`, runID)
+		return err
+	})
+	if err != nil {
+		// The caller logs the exec failure; a stuck claim only
+		// means the run answers already_reverted — recoverable
+		// by an operator, never data loss.
+		_ = err
+	}
+}
+
+// AppendRevertEvent records the reverted event (plan §9.3: after done;
+// files_restored / files_removed are counts, files_remaining is the
+// post-check list — empty when the revert fully restored the tree).
+func (s *Store) AppendRevertEvent(ctx context.Context, orgID, runID string,
+	filesRestored, filesRemoved int, filesRemaining []FileChange) error {
+	data := map[string]any{
+		"files_restored": filesRestored,
+		"files_removed":  filesRemoved,
+	}
+	if filesRemaining == nil {
+		filesRemaining = []FileChange{}
+	}
+	data["files_remaining"] = filesRemaining
+	_, err := s.AppendEvent(ctx, orgID, runID, "reverted", data)
+	return err
 }
