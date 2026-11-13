@@ -338,6 +338,11 @@ export const api = {
   revertAgentRun: (orgID: string, runID: string) =>
     call<AgentRun>("POST", `/api/orgs/${orgID}/agent/runs/${runID}/revert`),
   agentRunEventsUrl: (orgID: string, runID: string) => `/api/orgs/${orgID}/agent/runs/${runID}/events`,
+  // JSON replay of every event (?follow=false) — unlike the SSE stream
+  // it has no "stop after done" early return, so events the worker
+  // appends AFTER done (reverted) are only reachable through this.
+  agentRunEvents: (orgID: string, runID: string) =>
+    call<AgentEvent[]>("GET", `/api/orgs/${orgID}/agent/runs/${runID}/events?follow=false`),
   // A2: LLM model connections. The platform admin manages the
   // platform defaults at /api/admin/llm/connections; org owner/admin
   // manages org connections at /api/orgs/{orgID}/llm/connections.

@@ -167,5 +167,30 @@ export function useAgentRun(orgID: string, run: AgentRun | undefined, refreshKey
     return () => es?.close();
   }, [orgID, run?.id, refreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // refreshKey > 0: an out-of-band event (Revert) landed AFTER the
+  // stream closed — the SSE endpoint stops at done, so the only way
+  // to see the reverted event is the JSON replay (?follow=false).
+  useEffect(() => {
+    if (refreshKey === 0 || !run) return;
+    let cancelled = false;
+    api
+      .agentRunEvents(orgID, run.id)
+      .then((events) => {
+        if (cancelled) return;
+        setTimeline((prev) => {
+          let t = prev ?? freshTimeline(run);
+          for (const ev of events) t = reduce(t, { ...ev, data: ev.data ?? {} });
+          return t;
+        });
+      })
+      .catch(() => {
+        // Keep whatever the stream showed; the run row refetch still
+        // carries reverted_at for the badge.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
   return { timeline, live };
 }

@@ -349,7 +349,16 @@ test.describe.serial("portal preview", () => {
     await expect(revertDialog.getByText("Hoàn tác run này?")).toBeVisible();
     await shot(page, "29-agent-revert-confirm");
     await revertDialog.getByRole("button", { name: "Hoàn tác", exact: true }).click();
-    await expect(page.getByTestId("agent-reverted")).toBeVisible({ timeout: 60_000 });
+    // Capture the immediate aftermath (toast or card state) while the
+    // revert API call settles.
+    await page.waitForTimeout(2000);
+    await shot(page, "29b-agent-after-revert");
+    // The run row is the source of truth: reverted_at arrives through
+    // the runs refetch and shows as the badge on the result card.
+    await expect(result.getByText("Đã hoàn tác")).toBeVisible({ timeout: 60_000 });
+    // The reverted event itself reaches the UI through the JSON
+    // replay (?follow=false) — the SSE stream stops at done.
+    await expect(page.getByTestId("agent-reverted")).toBeVisible({ timeout: 30_000 });
 
     // Verify through the sandbox exec console (the files API path the
     // plan asks for): ls must not list hello.txt anymore.
