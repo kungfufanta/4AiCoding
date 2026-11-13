@@ -425,6 +425,58 @@ test.describe.serial("portal preview", () => {
     await shot(page, "31-agent-stopped");
   });
 
+  test("agent — rename a file, revert brings the old name back (A3.5)", async ({ page }) => {
+    test.setTimeout(180_000);
+    if (!agentChatUrl) throw new Error("agent chat not prepared by the previous test");
+    await page.goto(agentChatUrl);
+    // Mode is per mount — see the reload test.
+    await page.getByRole("button", { name: "Agent" }).click();
+    await expect(page.getByRole("button", { name: "Agent" })).toHaveAttribute("aria-pressed", "true");
+
+    // Run A creates a.txt. It must exist BEFORE the renaming run's
+    // checkpoint — that is what makes the rename visible as D+A (a
+    // file created and renamed inside ONE run only ever shows A b.txt).
+    await page.getByLabel("Message").fill("RENAME_INIT tạo file a.txt");
+    await page.getByRole("button", { name: "Send" }).click();
+    const first = page.getByTestId("agent-result");
+    await expect(first).toBeVisible({ timeout: 90_000 });
+    await expect(first.getByText("Hoàn thành")).toBeVisible();
+    await expect(first.getByLabel("Files changed").getByText("a.txt", { exact: true })).toBeVisible();
+
+    // Run B renames a.txt → b.txt. files_changed must carry the
+    // --no-renames split (D a.txt + A b.txt) — never one R row, which
+    // is what let the renamed file survive revert before A3.5.
+    await page.getByLabel("Message").fill("RENAME_DO đổi a.txt thành b.txt");
+    await page.getByRole("button", { name: "Send" }).click();
+    const result = page.getByTestId("agent-result");
+    await expect(result).toBeVisible({ timeout: 90_000 });
+    await expect(result.getByText("Hoàn thành")).toBeVisible();
+    await expect(result.getByLabel("Files changed").getByText("a.txt", { exact: true })).toBeVisible();
+    await expect(result.getByLabel("Files changed").getByText("b.txt", { exact: true })).toBeVisible();
+    await shot(page, "34-agent-rename-result");
+
+    // Revert run B: the D side rides the checkpoint restore, the A
+    // side is deleted — a.txt is back byte for byte, b.txt is gone.
+    await result.getByRole("button", { name: "Revert" }).click();
+    const revertDialog = page.getByRole("dialog");
+    await expect(revertDialog.getByText("Hoàn tác run này?")).toBeVisible();
+    await revertDialog.getByRole("button", { name: "Hoàn tác", exact: true }).click();
+    await expect(result.getByText("Đã hoàn tác")).toBeVisible({ timeout: 60_000 });
+    await expect(page.getByTestId("agent-reverted")).toBeVisible({ timeout: 30_000 });
+    await shot(page, "35-agent-rename-after-revert");
+
+    // The plan's own verification path: ls through the exec console —
+    // the old name is back, the new one is nowhere.
+    const slug = new URL(agentChatUrl).pathname.split("/")[2];
+    await page.goto(`/orgs/${slug}/sandboxes/${agentSandboxId}`);
+    await page.getByRole("tab", { name: "Exec" }).click();
+    await page.getByLabel("Command").fill("ls");
+    await page.getByRole("button", { name: "Run", exact: true }).click();
+    await expect(page.getByText("exit 0").first()).toBeVisible({ timeout: 60_000 });
+    await expect(page.getByText("a.txt").first()).toBeVisible();
+    await expect(page.getByText("b.txt")).toHaveCount(0);
+  });
+
   test("agent — dark mode and 390px shots (A3.4)", async ({ page }) => {
     if (!agentChatUrl) throw new Error("agent chat not prepared by the previous test");
     await page.goto(agentChatUrl);

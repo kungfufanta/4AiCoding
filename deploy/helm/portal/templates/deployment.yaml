@@ -31,6 +31,11 @@ spec:
       # The portal never talks to the Kubernetes API — do not mount the
       # ServiceAccount token (same hardening the worker chart applies).
       automountServiceAccountToken: false
+      # SIGTERM grace for in-flight agent runs: the worker's Shutdown
+      # gives runs a grace period to reach a terminal state (the run
+      # row must not stay running waiting for the sweeper when the pod
+      # rolls). Plan §11 A3.5: 30s.
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds | default 30 }}
       {{- with .Values.podSecurityContext }}
       securityContext:
         {{- toYaml . | nindent 8 }}

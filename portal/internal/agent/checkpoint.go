@@ -63,13 +63,20 @@ echo "$c"
 // read or written). -z makes git emit NUL-separated records and NEVER
 // C-quote paths: without it "tên file.txt" comes out as
 // "t\303\252n file.txt" — a path neither revert nor the UI can use.
+// --no-renames is the REVERT CONTRACT (the A3.3 rename bug): revert
+// deletes the status-A rows and lets `git checkout <ref> -- .`
+// restore everything the tree tracks — with rename detection a
+// renamed file collapses into ONE R row carrying only the NEW path,
+// so the new file lands in neither list (checkout restores the old
+// name, the A-list is empty) and survives the revert. Split into
+// D <old> + A <new>, the same rename composes back exactly.
 // The 500-entry cap moved into the parser (head -n cannot split on
 // NULs); git's own output stays bounded by MaxOutputBytes.
 const filesChangedScript = `set -euo pipefail
 idx=$(mktemp); rm -f "$idx"; trap 'rm -f "$idx"' EXIT
 export GIT_INDEX_FILE="$idx"
 git add -A
-git diff --cached --name-status -z "$CHECK_REF"
+git diff --cached --name-status -z --no-renames "$CHECK_REF"
 `
 
 // filesChangedMaxEntries is plan §8's cap on files_changed rows.
@@ -123,13 +130,16 @@ func FilesChanged(ctx context.Context, sbx *sandboxd.Client, sandboxID, projectD
 	return parseFilesChangedZ(res.Stdout), nil
 }
 
-// parseFilesChangedZ parses `git diff --cached --name-status -z`
-// output. Records are NUL-terminated: "status \0 path \0", while
-// renames/copies carry three fields ("R100 \0 old \0 new \0" — the NEW
-// path wins, same rule as before). Because every record ends with a
-// NUL, a stream that does not end in NUL was truncated mid-record
-// (MaxOutputBytes): the partial tail is dropped so a half path never
-// reaches the DB or the UI. Parsing stops at filesChangedMaxEntries.
+// parseFilesChangedZ parses `git diff --cached --name-status -z
+// --no-renames` output. Records are NUL-terminated: "status \0 path
+// \0". The rename/copy shape ("R100 \0 old \0 new \0" — NEW path wins)
+// can no longer occur — the script passes --no-renames — but the
+// parser keeps the three-field branch as defence: a half-parsed R
+// record must never swallow the NEXT row's status as the new path.
+// Because every record ends with a NUL, a stream that does not end in
+// NUL was truncated mid-record (MaxOutputBytes): the partial tail is
+// dropped so a half path never reaches the DB or the UI. Parsing
+// stops at filesChangedMaxEntries.
 func parseFilesChangedZ(out string) []FileChange {
 	if out != "" && !strings.HasSuffix(out, "\x00") {
 		if i := strings.LastIndexByte(out, '\x00'); i >= 0 {

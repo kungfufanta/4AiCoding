@@ -101,6 +101,40 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // The A3.5 rename scenario (two runs in one chat):
+  //   RENAME_INIT: write_file a.txt → finish   (run A creates the file)
+  //   RENAME_DO:   run_command mv a.txt b.txt → finish (run B renames it)
+  // Run A must come first: the file has to be tracked in run B's
+  // checkpoint tree for the rename to appear as D a.txt + A b.txt.
+  if (lastUser.includes("RENAME_INIT") || lastUser.includes("RENAME_DO")) {
+    const isInit = lastUser.includes("RENAME_INIT");
+    if (toolResults === 0) {
+      send(textChunk(isInit ? "Đang tạo file a.txt…" : "Đang đổi tên a.txt…"));
+      await sleep(pace);
+      send(
+        isInit
+          ? toolChunk("write_file", JSON.stringify({ path: "a.txt", content: "nội dung gốc\n" }))
+          : toolChunk("run_command", JSON.stringify({ command: "mv a.txt b.txt" })),
+      );
+    } else {
+      await sleep(pace);
+      send(
+        toolChunk(
+          "finish",
+          JSON.stringify({
+            summary: isInit
+              ? "Đã tạo a.txt với nội dung “nội dung gốc”."
+              : "Đã đổi tên a.txt thành b.txt — tên cũ đi, tên mới giữ nguyên nội dung.",
+          }),
+        ),
+      );
+    }
+    send(endChunk());
+    res.write("data: [DONE]\n\n");
+    res.end();
+    return;
+  }
+
   if (toolResults === 0) {
     send(textChunk("Đang tạo file hello.txt…"));
     await sleep(pace);

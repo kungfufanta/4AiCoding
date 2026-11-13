@@ -267,7 +267,12 @@ func (w *Worker) startRun(claimed ClaimedRun) {
 			w.heartbeatLoop(runCtx, claimed, t.heartbeat, t.lease, t.cancelPoll, cancel)
 		}()
 
-		res, err := w.executeRun(runCtx, claimed)
+		// The one-line metrics log for the finished run lives in
+		// executeRun (right after SetFinal — A3.5 plan §11): it is
+		// richer (org_id, duration_ms, tool_mode) and the "exactly
+		// one line per run" contract means there must not be a
+		// second one here.
+		_, err := w.executeRun(runCtx, claimed)
 		// Wait for the heartbeat goroutine before releasing the slot.
 		<-hbDone
 		if err != nil {
@@ -275,9 +280,6 @@ func (w *Worker) startRun(claimed ClaimedRun) {
 				"run_id", claimed.ID, "error", err.Error())
 			return
 		}
-		w.Log.Info("agent run finished", "run_id", claimed.ID,
-			"status", res.Status, "error_code", res.ErrorCode,
-			"steps", res.Steps, "tokens_in", res.InputTokens, "tokens_out", res.OutputTokens)
 	}()
 }
 

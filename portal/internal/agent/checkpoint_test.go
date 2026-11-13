@@ -147,23 +147,29 @@ func TestFilesChangedKeepsUnicodeAndSpaceNames(t *testing.T) {
 	}
 }
 
-// TestFilesChangedRenameKeepsNewPath — rename detection under -z: the
-// row keeps status R and the NEW path (the path revert must keep and
-// the UI must show).
-func TestFilesChangedRenameKeepsNewPath(t *testing.T) {
+// TestFilesChangedRenameSplitsToDeleteAndAdd — under --no-renames a
+// rename comes out as D <old> + A <new> instead of one R row keeping
+// only the NEW path (the A3.3 rename bug: under R the new file was in
+// neither revert list — checkout restores the old name, the A-list is
+// empty — so it survived the revert). The test closes the loop with a
+// real RevertChanges: old name back byte for byte, new name gone,
+// the post-revert diff against the ref empty.
+func TestFilesChangedRenameSplitsToDeleteAndAdd(t *testing.T) {
 	sbx, project := gitSandbox(t)
 	client := sbx.Client()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	if err := os.WriteFile(filepath.Join(project, "old name.txt"), []byte("renamed later\n"), 0o644); err != nil {
+	const oldName = "old name.txt"
+	const newName = "tên mới.txt" // non-ASCII new path, like the real UI shows
+	if err := os.WriteFile(filepath.Join(project, oldName), []byte("renamed later\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	ref, err := Checkpoint(ctx, client, sandboxtest.DefaultID, "/home/sandbox/workspace", "run-ren-1")
 	if err != nil {
 		t.Fatalf("checkpoint: %v", err)
 	}
-	if err := os.Rename(filepath.Join(project, "old name.txt"), filepath.Join(project, "tên mới.txt")); err != nil {
+	if err := os.Rename(filepath.Join(project, oldName), filepath.Join(project, newName)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -171,15 +177,41 @@ func TestFilesChangedRenameKeepsNewPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("files_changed: %v", err)
 	}
-	if len(changes) != 1 {
-		t.Fatalf("want exactly the rename row, got %v", changes)
+	if len(changes) != 2 {
+		t.Fatalf("want exactly 2 rows (D old + A new), got %v", changes)
 	}
-	c := changes[0]
-	if c.Status != "R" {
-		t.Errorf("status = %q (want R)", c.Status)
+	got := map[string]string{}
+	for _, c := range changes {
+		if c.Status == "R" {
+			t.Errorf("rename detection survived: row %v (want the --no-renames D+A split)", c)
+		}
+		got[c.Path] = c.Status
 	}
-	if c.Path != "tên mới.txt" {
-		t.Errorf("rename row kept path %q (want the NEW path %q)", c.Path, "tên mới.txt")
+	if got[oldName] != "D" {
+		t.Errorf("%s: got %q (want D)", oldName, got[oldName])
+	}
+	if got[newName] != "A" {
+		t.Errorf("%s: got %q (want A)", newName, got[newName])
+	}
+
+	// Revert with the A-list from the split rows: the D side rides the
+	// checkout restore, the A side is deleted — the old file must come
+	// back byte for byte and the new one must be gone.
+	if err := RevertChanges(ctx, client, sandboxtest.DefaultID, "/home/sandbox/workspace", ref, []string{newName}); err != nil {
+		t.Fatalf("revert: %v", err)
+	}
+	if b, err := os.ReadFile(filepath.Join(project, oldName)); err != nil || string(b) != "renamed later\n" {
+		t.Fatalf("%s after revert = %q, %v; want the original bytes back", oldName, b, err)
+	}
+	if _, err := os.Stat(filepath.Join(project, newName)); !os.IsNotExist(err) {
+		t.Fatalf("%s still exists after revert (err=%v)", newName, err)
+	}
+	left, err := FilesChanged(ctx, client, sandboxtest.DefaultID, "/home/sandbox/workspace", ref)
+	if err != nil {
+		t.Fatalf("post-revert files_changed: %v", err)
+	}
+	if len(left) != 0 {
+		t.Fatalf("files_changed after revert = %v; want empty", left)
 	}
 }
 
@@ -295,7 +327,7 @@ func TestParseFilesChangedZ(t *testing.T) {
 			t.Errorf("got %v, want %v", rows, want)
 		}
 	})
-	t.Run("rename keeps the NEW path", func(t *testing.T) {
+	t.Run("rename keeps the NEW path (defensive — --no-renames means git no longer emits R rows, but a half-parsed R record must never swallow the next row's status)", func(t *testing.T) {
 		rows := parseFilesChangedZ("R100\x00old name.txt\x00tên mới.txt\x00")
 		want := []FileChange{{Path: "tên mới.txt", Status: "R"}}
 		if !reflect.DeepEqual(rows, want) {
@@ -323,7 +355,8 @@ func TestParseFilesChangedZ(t *testing.T) {
 		}
 	})
 	t.Run("truncated rename dropped", func(t *testing.T) {
-		// "R100\0old\0" without the NEW path must not produce a row.
+		// "R100\0old\0" without the NEW path must not produce a row
+		// (same defensive branch as above).
 		rows := parseFilesChangedZ("R100\x00old.txt\x00")
 		if len(rows) != 0 {
 			t.Errorf("got %v, want no rows", rows)
