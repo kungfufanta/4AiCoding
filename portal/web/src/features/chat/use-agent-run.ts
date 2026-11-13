@@ -6,8 +6,14 @@
 // forever, so the hook closes it on done/reverted and treats
 // repeated connection errors as a broken stream (the timeline stays
 // at what arrived; the run row refetch settles the final state).
-// refreshKey forces a full replay — bumped by the caller when an
-// out-of-band event (Revert) appended rows after the stream closed.
+// refreshKey (bumped by the caller after an out-of-band event such as
+// Revert, whose rows land after the stream closed) does NOT reopen the
+// SSE stream — that would replay the same timeline a second time and
+// race the JSON rebuild below, duplicating every message/tool card
+// (caught on the preview screenshots: text and tool cards rendered 2×).
+// The JSON replay is the single refresh path: it fetches ALL events
+// (including rows appended after done) and rebuilds the timeline from
+// scratch, so it is idempotent no matter how often it runs.
 
 import { useEffect, useState } from "react";
 import { api, type AgentEvent, type AgentRun, type AgentRunResult } from "../../api";
@@ -165,11 +171,14 @@ export function useAgentRun(orgID: string, run: AgentRun | undefined, refreshKey
       }
     };
     return () => es?.close();
-  }, [orgID, run?.id, refreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [orgID, run?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // refreshKey > 0: an out-of-band event (Revert) landed AFTER the
   // stream closed — the SSE endpoint stops at done, so the only way
   // to see the reverted event is the JSON replay (?follow=false).
+  // Rebuild from a fresh timeline: the fetch returns the run's FULL
+  // event history, so appending it onto what the stream already
+  // rendered would double every delta and tool card.
   useEffect(() => {
     if (refreshKey === 0 || !run) return;
     let cancelled = false;
@@ -177,8 +186,8 @@ export function useAgentRun(orgID: string, run: AgentRun | undefined, refreshKey
       .agentRunEvents(orgID, run.id)
       .then((events) => {
         if (cancelled) return;
-        setTimeline((prev) => {
-          let t = prev ?? freshTimeline(run);
+        setTimeline(() => {
+          let t = freshTimeline(run);
           for (const ev of events) t = reduce(t, { ...ev, data: ev.data ?? {} });
           return t;
         });

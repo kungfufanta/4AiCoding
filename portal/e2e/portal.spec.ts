@@ -359,6 +359,13 @@ test.describe.serial("portal preview", () => {
     // The reverted event itself reaches the UI through the JSON
     // replay (?follow=false) — the SSE stream stops at done.
     await expect(page.getByTestId("agent-reverted")).toBeVisible({ timeout: 30_000 });
+    // Regression pin (caught on the 29b screenshot): the JSON rebuild
+    // after revert must REPLACE the timeline, not append onto it —
+    // reopening the SSE replay AND running the JSON rebuild rendered
+    // every message delta and tool card twice. The scenario has
+    // exactly 3 tool calls and one "Đang tạo file hello.txt…" delta.
+    await expect(page.getByLabel("Tool calls").locator("button")).toHaveCount(3);
+    await expect(page.getByText(/Đang tạo file hello\.txt…\s*Đang tạo/)).toHaveCount(0);
 
     // Verify through the sandbox exec console (the files API path the
     // plan asks for): ls must not list hello.txt anymore.
