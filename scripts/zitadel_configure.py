@@ -44,6 +44,7 @@ ADMIN_PASSWORD = os.environ["ZITADEL_ADMIN_PASSWORD"]
 # needs the admin PAT provided as GH_SETUP_TOKEN (repo secret).
 GH_TOKEN = os.environ.get("GH_SETUP_TOKEN") or os.environ["GITHUB_TOKEN"]
 GH_REPO = os.environ.get("GH_REPO", "kungfufanta/4AiCoding")
+DEPLOY_ENV = os.environ.get("DEPLOY_ENV", "k3s-1")
 
 REDIRECT_URI = "https://chat.devhub.io.vn/auth/callback"
 POST_LOGOUT_URI = "https://chat.devhub.io.vn"
@@ -331,14 +332,31 @@ def promote_owner(mgmt, pid):
             print(f"  {label} grant for {PROMOTE_USER} skipped: {str(e)[:120]}")
 
 
-def store_repo_secret(name, value):
-    pk = gh_api("GET", f"/repos/{GH_REPO}/actions/secrets/public-key")
+def _seal(pk, value):
     sealed = nacl.public.SealedBox(
         nacl.public.PublicKey(base64.b64decode(pk["key"])))
-    encrypted = base64.b64encode(sealed.encrypt(value.encode("utf-8"))).decode("ascii")
+    return base64.b64encode(sealed.encrypt(value.encode("utf-8"))).decode("ascii")
+
+
+def store_repo_secret(name, value):
+    pk = gh_api("GET", f"/repos/{GH_REPO}/actions/secrets/public-key")
     gh_api("PUT", f"/repos/{GH_REPO}/actions/secrets/{name}",
-           body={"encrypted_value": encrypted, "key_id": pk["key_id"]})
+           body={"encrypted_value": _seal(pk, value), "key_id": pk["key_id"]})
     print(f"  stored repo secret {name}")
+    # deploy-k3s-portal runs in the k3s-1 environment, where an
+    # environment secret of the same name wins over the repo secret. A
+    # stale env copy pointed the Portal at a deleted app
+    # (Errors.App.NotFound), so write the environment copy as well.
+    base = f"/repos/{GH_REPO}/environments/{DEPLOY_ENV}/secrets"
+    try:
+        epk = gh_api("GET", f"{base}/public-key")
+        gh_api("PUT", f"{base}/{name}",
+               body={"encrypted_value": _seal(epk, value), "key_id": epk["key_id"]})
+        print(f"  stored {DEPLOY_ENV} environment secret {name}")
+    except RuntimeError as e:
+        print(f"::warning::could not write {name} to environment {DEPLOY_ENV} "
+              f"({str(e)[:160]}); if that environment has its own {name}, "
+              "it overrides the repo secret — delete it or update it by hand")
 
 
 def main():
