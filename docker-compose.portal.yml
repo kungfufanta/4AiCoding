@@ -115,7 +115,16 @@ services:
       SANDBOXD_WEBHOOK_SECRET: ${PORTAL_SANDBOXD_WEBHOOK_SECRET:-dev-webhook-secret}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - sandboxd_data:/data
+      # Symmetric data-dir mount — the SAME contract as docker-compose.yml:
+      # the path sandboxd writes must also be a valid HOST path, because the
+      # sibling `docker run -v <workspace>:/home/sandbox` (sandboxspec) is
+      # resolved by the HOST daemon. A named volume here silently breaks the
+      # symmetry: the files API writes inside the sandboxd container's volume
+      # while every sandbox mounts a fresh, empty host directory — files
+      # written by the agent were invisible to exec (the A3.4 browser test
+      # caught this: write_file ok, `cat` → No such file or directory).
+      # Relative host path = relative to this compose file's directory.
+      - ${SANDBOXD_DATA_HOST_DIR:-.sandboxd-data}:/data
     ports:
       - "127.0.0.1:9191:9191"
 
@@ -155,4 +164,3 @@ services:
 
 volumes:
   portal_pgdata:
-  sandboxd_data:

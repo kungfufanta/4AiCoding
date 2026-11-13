@@ -324,10 +324,10 @@ test.describe.serial("portal preview", () => {
     await expect(page.getByText("write_file").first()).toBeVisible({ timeout: 30_000 });
     await expect(page.getByText("run_command").first()).toBeVisible({ timeout: 30_000 });
 
-    // 4. The result card: summary, the file chip, tokens.
+    // 4. The result card: summary, the changed-file chip, tokens.
     const result = page.getByTestId("agent-result");
     await expect(result).toBeVisible({ timeout: 60_000 });
-    await expect(result.getByText("hello.txt")).toBeVisible();
+    await expect(result.getByLabel("Files changed").getByText("hello.txt", { exact: true })).toBeVisible();
     await expect(result.getByText("Hoàn thành")).toBeVisible();
     await expect(result.getByText(/token/)).toBeVisible();
     await shot(page, "27-agent-result");
@@ -370,7 +370,7 @@ test.describe.serial("portal preview", () => {
     await expect(page.getByText("write_file").first()).toBeVisible({ timeout: 30_000 });
     const result = page.getByTestId("agent-result");
     await expect(result).toBeVisible({ timeout: 90_000 });
-    await expect(result.getByText("hello.txt")).toBeVisible();
+    await expect(result.getByLabel("Files changed").getByText("hello.txt", { exact: true })).toBeVisible();
     await shot(page, "30-agent-reload-mid-run");
   });
 
