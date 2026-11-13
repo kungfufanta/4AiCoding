@@ -334,9 +334,13 @@ test.describe.serial("portal preview", () => {
     await expect(result.getByText("Hoàn thành")).toBeVisible();
     await expect(result.getByText(/token/)).toBeVisible();
 
-    // 5. A tool card opens to show its output preview.
+    // 5. A tool card opens to show its output preview. The output
+    // lives in the "Kết quả tool" <pre> — the summary below also
+    // mentions the content, so the bare text would match twice.
     await page.getByRole("button", { name: /Tool run_command/ }).click();
-    await expect(page.getByText("hello from agent")).toBeVisible();
+    const preview = page.getByLabel("Kết quả tool");
+    await expect(preview).toBeVisible();
+    await expect(preview).toContainText("hello from agent");
     await shot(page, "28-agent-tool-output");
 
     // 6. Revert through the confirm dialog → the file is gone.
