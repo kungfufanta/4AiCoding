@@ -31,7 +31,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Check the portal pod's agent wiring (env names only)
+      - name: Check the portal Deployment's agent wiring (booleans only)
         env:
           KUBECONFIG_B64: ${{ secrets.K3S_4AICODING_KUBECONFIG_B64 }}
         run: |
@@ -40,13 +40,27 @@ jobs:
           echo "$KUBECONFIG_B64" | base64 --decode > "$RUNNER_TEMP/kubeconfig"
           chmod 600 "$RUNNER_TEMP/kubeconfig"
           export KUBECONFIG="$RUNNER_TEMP/kubeconfig"
-          POD=$(kubectl -n 4aicoding get pods -l app.kubernetes.io/name=portal -o jsonpath='{.items[0].metadata.name}')
-          test -n "$POD" || { echo "::error::no portal pod in 4aicoding"; exit 1; }
-          echo "portal pod: $POD"
-          kubectl -n 4aicoding exec "$POD" -- sh -c \
-            'for v in PORTAL_SANDBOXD_URL PORTAL_AGENT_WORKERS PORTAL_DEFAULT_LLM_API_KEY PORTAL_DEFAULT_LLM_BASE_URL PORTAL_DEFAULT_LLM_MODEL; do if [ -n "${!v:-}" ]; then echo "$v: set"; else echo "$v: MISSING"; fi; done'
-          kubectl -n 4aicoding exec "$POD" -- sh -c 'test -n "${PORTAL_SANDBOXD_URL:-}"' || {
-            echo "::error::PORTAL_SANDBOXD_URL is not set on the portal pod — wire sandboxd.url (+ apiKey/webhookSecret) in deploy/k3s-1-portal-values.yaml and redeploy before running the acceptance; without sandboxd every run fails sandbox_unavailable by design."
+          DEPLOY=$(kubectl -n 4aicoding get deploy -l app.kubernetes.io/name=portal -o jsonpath='{.items[0].metadata.name}')
+          test -n "$DEPLOY" || { echo "::error::no portal Deployment in 4aicoding"; exit 1; }
+          echo "portal Deployment: $DEPLOY"
+          # The scoped deployer SA cannot pods/exec (by design) — read the
+          # rendered env from the Deployment object instead. Only the
+          # PRESENCE is printed, never a value.
+          kubectl -n 4aicoding get deploy "$DEPLOY" -o json > "$RUNNER_TEMP/deploy.json"
+          env_set() {
+            jq -e --arg n "$1" \
+              '(.spec.template.spec.containers[0].env[] | select(.name == $n)) as $e |
+               ($e.value != null and $e.value != "") or ($e.valueFrom != null)' \
+              "$RUNNER_TEMP/deploy.json" >/dev/null && echo "$1: set" || echo "$1: MISSING"
+          }
+          env_set PORTAL_SANDBOXD_URL
+          env_set PORTAL_AGENT_WORKERS
+          env_set PORTAL_DEFAULT_LLM_API_KEY
+          env_set PORTAL_DEFAULT_LLM_BASE_URL
+          env_set PORTAL_DEFAULT_LLM_MODEL
+          jq -e '(.spec.template.spec.containers[0].env[] | select(.name == "PORTAL_SANDBOXD_URL") | .value) != null and (.spec.template.spec.containers[0].env[] | select(.name == "PORTAL_SANDBOXD_URL") | .value) != ""' \
+            "$RUNNER_TEMP/deploy.json" >/dev/null || {
+            echo "::error::PORTAL_SANDBOXD_URL is not set on the portal Deployment — wire sandboxd.url (+ apiKey/webhookSecret) in deploy/k3s-1-portal-values.yaml and redeploy before running the acceptance; without sandboxd every run fails sandbox_unavailable by design."
             exit 1
           }
 
