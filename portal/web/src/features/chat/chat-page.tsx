@@ -66,7 +66,10 @@ export function ChatPage() {
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState<Pending | null>(null);
   const [listOpen, setListOpen] = useState(false);
-  const [mode, setMode] = useState<Mode>("chat");
+  // null = auto: a chat with a pinned sandbox and runs is mid-workflow
+  // and comes back in Agent mode after a reload; everything else
+  // starts in Chat. An explicit switch overrides for the session.
+  const [modeOverride, setModeOverride] = useState<Mode | null>(null);
   const [agentPending, setAgentPending] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -75,7 +78,7 @@ export function ChatPage() {
   useEffect(() => () => abortRef.current?.abort(), []);
   useEffect(() => {
     setListOpen(false);
-    setMode("chat"); // mode is per chat — a fresh chat starts in Chat
+    setModeOverride(null); // mode is per chat — auto on switch
   }, [chatId]);
 
   const chat = chats.data?.find((c) => c.id === chatId);
@@ -140,6 +143,8 @@ export function ChatPage() {
 
   const disabled = status.data?.enabled === false;
   const busy = pending !== null;
+  const mode: Mode = modeOverride ?? (attached && latestRun ? "agent" : "chat");
+  const setMode = (m: Mode) => setModeOverride(m);
   const agentBusy = mode === "agent" && (agentPending || ownActive);
   const composerLocked =
     disabled ||

@@ -374,9 +374,17 @@ test.describe.serial("portal preview", () => {
     test.setTimeout(180_000);
     if (!agentChatUrl) throw new Error("agent chat not prepared by the previous test");
     await page.goto(agentChatUrl);
+    // Mode is per mount — switch back to Agent before handing over a
+    // new job (in Chat mode this text would go to the LLM as a plain
+    // message and the asserts below would ride run 1's card).
+    await page.getByRole("button", { name: "Agent" }).click();
+    await expect(page.getByRole("button", { name: "Agent" })).toHaveAttribute("aria-pressed", "true");
 
     await page.getByLabel("Message").fill("SLOW tạo lại hello.txt");
     await page.getByRole("button", { name: "Send" }).click();
+    // The NEW run is the active one — its phase line proves it, not
+    // the previous run's cards.
+    await expect(page.getByTestId("agent-phase")).toBeVisible({ timeout: 30_000 });
     await expect(page.getByText("write_file").first()).toBeVisible({ timeout: 30_000 });
 
     // Reload while the run is still going: the runs list + the events
@@ -393,6 +401,8 @@ test.describe.serial("portal preview", () => {
     test.setTimeout(120_000);
     if (!agentChatUrl) throw new Error("agent chat not prepared by the previous test");
     await page.goto(agentChatUrl);
+    // Mode is per mount — see the reload test.
+    await page.getByRole("button", { name: "Agent" }).click();
 
     await page.getByLabel("Message").fill("HANG đừng làm gì cả");
     await page.getByRole("button", { name: "Send" }).click();
