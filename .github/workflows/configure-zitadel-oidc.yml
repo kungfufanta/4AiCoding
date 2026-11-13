@@ -10,7 +10,10 @@
 #
 # GITHUB_TOKEN cannot write repo Actions secrets (no administration
 # scope), so the secrets step uses PORTAL_OIDC_SETUP_GH_TOKEN — an
-# admin PAT stored as a repo secret for exactly this purpose. Delete it
+# admin PAT stored as a repo secret for exactly this purpose. It writes
+# both the repo secret and the k3s-1 environment copy (the environment
+# copy wins in deploy-k3s-portal), so the PAT needs Secrets and
+# Environments write. Delete it
 # once the run is green if it is no longer wanted.
 #
 # Safe to re-run: project/app/users are find-or-create; an existing
@@ -149,13 +152,18 @@ jobs:
           echo "$methods"
           echo "$methods" | grep -q '"sso":true'
           echo "--- GET $PORTAL_PUBLIC_URL/auth/login (expect 302 to Zitadel)"
-          curl -s -o /dev/null -w 'HTTP %{http_code}\n' \
-            "$(curl -s -o /dev/null -w '%{redirect_url}' --max-time 10 \
-              "$PORTAL_PUBLIC_URL/auth/login")"
           redirect="$(curl -s -o /dev/null -w '%{redirect_url}' --max-time 10 \
             "$PORTAL_PUBLIC_URL/auth/login")"
-          echo "$redirect"
           case "$redirect" in
-            "$ISSUER/oauth/v2/authorize?"*) echo "SSO redirect looks correct";;
-            *) echo "unexpected redirect" >&2; exit 1;;
+            "$ISSUER/oauth/v2/authorize?"*) echo "SSO redirect points at Zitadel";;
+            *) echo "unexpected redirect: $redirect" >&2; exit 1;;
           esac
+          # Zitadel must know the client: an unknown client_id answers
+          # 400 Errors.App.NotFound instead of redirecting to the login UI.
+          code="$(curl -s -o "$RUNNER_TEMP/authz.txt" -w '%{http_code}' --max-time 10 "$redirect")"
+          echo "authorize -> HTTP $code"
+          if [ "$code" != "302" ] && [ "$code" != "303" ]; then
+            head -c 300 "$RUNNER_TEMP/authz.txt" >&2; echo >&2
+            echo "Zitadel rejected the Portal's client_id; the deployed PORTAL_OIDC_CLIENT_ID is stale" >&2
+            exit 1
+          fi
