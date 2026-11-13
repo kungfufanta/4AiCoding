@@ -364,7 +364,10 @@ test.describe.serial("portal preview", () => {
     // reopening the SSE replay AND running the JSON rebuild rendered
     // every message delta and tool card twice. The scenario has
     // exactly 3 tool calls and one "Đang tạo file hello.txt…" delta.
-    await expect(page.getByLabel("Tool calls").locator("button")).toHaveCount(3);
+    // Count only the card toggle buttons (aria-expanded): an opened
+    // card also holds a copy button per CodeBlock (5 with run_command
+    // open), which is UI, not duplication.
+    await expect(page.getByLabel("Tool calls").locator("button[aria-expanded]")).toHaveCount(3);
     await expect(page.getByText(/Đang tạo file hello\.txt…\s*Đang tạo/)).toHaveCount(0);
 
     // Verify through the sandbox exec console (the files API path the
