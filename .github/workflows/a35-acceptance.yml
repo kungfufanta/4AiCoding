@@ -13,12 +13,19 @@ name: a35-acceptance
 #      workspace/index.html, screenshots of the run card.
 on:
   workflow_dispatch: {}
+  # GitHub only dispatches workflows indexed from the default branch —
+  # this file lives on the A3.5 branch until #74 merges. The labeled
+  # PR trigger runs it from the branch anyway: add the `a35-acceptance`
+  # label to PR #74 to fire it.
+  pull_request:
+    types: [labeled]
 
 permissions:
   contents: read
 
 jobs:
   acceptance:
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'a35-acceptance'
     runs-on: ubuntu-latest
     environment: k3s-1
     steps:
