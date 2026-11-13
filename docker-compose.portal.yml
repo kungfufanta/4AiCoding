@@ -119,6 +119,20 @@ services:
     ports:
       - "127.0.0.1:9191:9191"
 
+  fake-llm:
+    # A3.4 Playwright (profile `e2e`): a deterministic OpenAI-compatible
+    # SSE server (scripts/e2e/fake-llm) driving the fixed agent scenario
+    # write_file hello.txt → run_command cat → finish. The browser test
+    # creates a PLATFORM connection pointing at
+    # http://fake-llm:9999/v1 (platform connections may point
+    # internally — the SSRF guard only applies to org connections).
+    # Local: curl http://127.0.0.1:9999/healthz
+    build: ./scripts/e2e/fake-llm
+    image: fake-llm:dev
+    profiles: [e2e]
+    ports:
+      - "127.0.0.1:9999:9999"
+
   zitadel:
     image: ghcr.io/zitadel/zitadel:latest
     profiles: [idp]

@@ -43,17 +43,25 @@ const chatSystemPrompt = "You are the 4AiCoding assistant inside the Portal dash
 	"You cannot run code or open sandboxes yet; say so if asked."
 
 type chatConversationJSON struct {
-	ID        string    `json:"id"`
-	Title     string    `json:"title"`
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	// A3.4: the sandbox pinned to this chat (decision §13-3) — the
+	// Chat page needs it to restore the attach state after a reload
+	// when the chat has no runs yet.
+	SandboxID string    `json:"sandbox_id,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
 type chatMessageJSON struct {
-	ID        string    `json:"id"`
-	Role      string    `json:"role"`
-	Content   string    `json:"content"`
-	CreatedAt time.Time `json:"created_at"`
+	ID      string `json:"id"`
+	Role    string `json:"role"`
+	Content string `json:"content"`
+	// A3.4: assistant notes written by the worker (run summary,
+	// failed-run note). The Chat page hides them for the run it
+	// renders as a run card — the card shows the same content.
+	AgentRunID string    `json:"agent_run_id,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 // handleChatStatus tells the SPA whether chat is wired, which model
@@ -97,7 +105,7 @@ func (s *Server) handleListChats(w http.ResponseWriter, r *http.Request) {
 	out := []chatConversationJSON{}
 	err := db.WithOrg(r.Context(), s.Pool, orgID, func(tx db.Tx) error {
 		rows, err := tx.Query(r.Context(), `
-                        SELECT id::text, title, created_at, updated_at
+                        SELECT id::text, title, COALESCE(sandbox_id,''), created_at, updated_at
                         FROM chat_conversations
                         ORDER BY updated_at DESC
                         LIMIT 100`)
@@ -107,7 +115,7 @@ func (s *Server) handleListChats(w http.ResponseWriter, r *http.Request) {
 		defer rows.Close()
 		for rows.Next() {
 			var c chatConversationJSON
-			if err := rows.Scan(&c.ID, &c.Title, &c.CreatedAt, &c.UpdatedAt); err != nil {
+			if err := rows.Scan(&c.ID, &c.Title, &c.SandboxID, &c.CreatedAt, &c.UpdatedAt); err != nil {
 				return err
 			}
 			out = append(out, c)
@@ -195,7 +203,7 @@ func (s *Server) handleListChatMessages(w http.ResponseWriter, r *http.Request) 
 			return err
 		}
 		rows, err := tx.Query(r.Context(), `
-                        SELECT id::text, role, content, created_at
+                        SELECT id::text, role, content, COALESCE(agent_run_id::text,''), created_at
                         FROM chat_messages
                         WHERE conversation_id = $1::uuid
                         ORDER BY created_at, id`, id)
@@ -205,7 +213,7 @@ func (s *Server) handleListChatMessages(w http.ResponseWriter, r *http.Request) 
 		defer rows.Close()
 		for rows.Next() {
 			var m chatMessageJSON
-			if err := rows.Scan(&m.ID, &m.Role, &m.Content, &m.CreatedAt); err != nil {
+			if err := rows.Scan(&m.ID, &m.Role, &m.Content, &m.AgentRunID, &m.CreatedAt); err != nil {
 				return err
 			}
 			out = append(out, m)

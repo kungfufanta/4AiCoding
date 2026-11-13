@@ -257,4 +257,153 @@ test.describe.serial("portal preview", () => {
     await expect(page.getByText("Say pong").first()).toBeVisible({ timeout: 10_000 });
     await shot(page, "25-chat-user-bubble");
   });
+
+  // --- A3.4: agent mode in Chat (docs/AGENT_PLAN_A3.md §10-11) -------
+  // The fake-llm compose service (profile e2e) answers a fixed
+  // scenario: write_file hello.txt → run_command cat → finish. The
+  // platform connection points at the compose-internal hostname —
+  // platform connections may point internally (the SSRF guard only
+  // applies to org connections). Serial tests share the sandbox and
+  // chat created here.
+  let agentSandboxId = "";
+  let agentChatUrl = "";
+
+  test("agent — attach sandbox, run hello.txt, tool cards and result (A3.4)", async ({ page }) => {
+    test.setTimeout(240_000);
+    const slug = await gotoOrgBase(page);
+
+    // 0. One platform connection pointing at the fake-llm service,
+    //    and exactly one default (webhub-demo from the A2 test above
+    //    loses its default flag so the effective connection is
+    //    deterministic).
+    await page.goto(`/orgs/${slug}/admin/llm`);
+    await page.getByRole("button", { name: "New connection" }).click();
+    const llmDialog = page.getByRole("dialog");
+    await llmDialog.getByLabel("Name").fill("fake-llm");
+    await llmDialog.getByPlaceholder("https://h11hp9dd1y90-d.space-z.ai/v1").fill("http://fake-llm:9999/v1");
+    await llmDialog.getByPlaceholder("wh_… or sk_…").fill("sk_fake");
+    await llmDialog.getByPlaceholder("glm-4.6").fill("fake-model");
+    await llmDialog.getByRole("checkbox", { name: "Set as default" }).check();
+    await page.getByRole("button", { name: "Save connection" }).click();
+    await expect(page.getByText("fake-llm").first()).toBeVisible({ timeout: 10_000 });
+    const webhubRow = page.getByRole("row", { name: /webhub-demo/ });
+    if ((await webhubRow.count()) > 0) {
+      await webhubRow.getByRole("button", { name: "Edit webhub-demo" }).click();
+      const editDialog = page.getByRole("dialog");
+      await editDialog.getByRole("checkbox", { name: "Set as default" }).uncheck();
+      await page.getByRole("button", { name: "Save connection" }).click();
+      await expect(editDialog).toBeHidden({ timeout: 10_000 });
+    }
+
+    // 1. A sandbox to work in (same allowlisted e2e image as the
+    //    sandboxes test above).
+    await page.goto(`/orgs/${slug}/sandboxes`);
+    await page.getByRole("button", { name: "New sandbox" }).first().click();
+    const sbxDialog = page.getByRole("dialog");
+    await sbxDialog.getByPlaceholder("ubuntu:24.04").fill("sandboxd-e2e:ci");
+    await sbxDialog.getByRole("button", { name: "Create sandbox", exact: true }).click();
+    const sbxHeading = page.getByRole("heading", { name: /0[0-9A-Z]{10,}/ });
+    await expect(sbxHeading).toBeVisible({ timeout: 30_000 });
+    agentSandboxId = (await sbxHeading.textContent())!.match(/0[0-9A-Z]{10,}/)![0];
+    await expect(page.getByText("running").first()).toBeVisible({ timeout: 30_000 });
+
+    // 2. New chat → attach the sandbox via the header dropdown →
+    //    the attach lands the chat in Agent mode.
+    await page.goto(`/orgs/${slug}/chat`);
+    await page.getByRole("button", { name: "New chat" }).click();
+    await page.getByRole("button", { name: "Gắn sandbox" }).click();
+    await page.getByRole("menuitem", { name: new RegExp(agentSandboxId) }).click();
+    await expect(page).toHaveURL(/\/orgs\/.+\/chat\/[0-9a-f-]{36}/, { timeout: 15_000 });
+    agentChatUrl = page.url();
+    await expect(page.getByRole("button", { name: "Agent" })).toHaveAttribute("aria-pressed", "true");
+    await shot(page, "26-agent-attached");
+
+    // 3. Hand the task over; tool cards stream in one line each.
+    await page.getByLabel("Message").fill("tạo file hello.txt cho tôi");
+    await page.getByRole("button", { name: "Send" }).click();
+    await expect(page.getByText("write_file").first()).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText("run_command").first()).toBeVisible({ timeout: 30_000 });
+
+    // 4. The result card: summary, the file chip, tokens.
+    const result = page.getByTestId("agent-result");
+    await expect(result).toBeVisible({ timeout: 60_000 });
+    await expect(result.getByText("hello.txt")).toBeVisible();
+    await expect(result.getByText("Hoàn thành")).toBeVisible();
+    await expect(result.getByText(/token/)).toBeVisible();
+    await shot(page, "27-agent-result");
+
+    // 5. A tool card opens to show its output preview.
+    await page.getByRole("button", { name: /Tool run_command/ }).click();
+    await expect(page.getByText("hello from agent")).toBeVisible();
+    await shot(page, "28-agent-tool-output");
+
+    // 6. Revert through the confirm dialog → the file is gone.
+    await result.getByRole("button", { name: "Revert" }).click();
+    const revertDialog = page.getByRole("dialog");
+    await expect(revertDialog.getByText("Hoàn tác run này?")).toBeVisible();
+    await shot(page, "29-agent-revert-confirm");
+    await revertDialog.getByRole("button", { name: "Hoàn tác", exact: true }).click();
+    await expect(page.getByTestId("agent-reverted")).toBeVisible({ timeout: 60_000 });
+
+    // Verify through the sandbox exec console (the files API path the
+    // plan asks for): ls must not list hello.txt anymore.
+    await page.goto(`/orgs/${slug}/sandboxes/${agentSandboxId}`);
+    await page.getByRole("tab", { name: "Exec" }).click();
+    await page.getByLabel("Command").fill("ls");
+    await page.getByRole("button", { name: "Run", exact: true }).click();
+    await expect(page.getByText("exit 0").first()).toBeVisible({ timeout: 60_000 });
+    await expect(page.getByText("hello.txt")).toHaveCount(0);
+  });
+
+  test("agent — reload mid-run rebuilds the run view (A3.4)", async ({ page }) => {
+    test.setTimeout(180_000);
+    if (!agentChatUrl) throw new Error("agent chat not prepared by the previous test");
+    await page.goto(agentChatUrl);
+
+    await page.getByLabel("Message").fill("SLOW tạo lại hello.txt");
+    await page.getByRole("button", { name: "Send" }).click();
+    await expect(page.getByText("write_file").first()).toBeVisible({ timeout: 30_000 });
+
+    // Reload while the run is still going: the runs list + the events
+    // replay rebuild the timeline and the run still finishes here.
+    await page.reload();
+    await expect(page.getByText("write_file").first()).toBeVisible({ timeout: 30_000 });
+    const result = page.getByTestId("agent-result");
+    await expect(result).toBeVisible({ timeout: 90_000 });
+    await expect(result.getByText("hello.txt")).toBeVisible();
+    await shot(page, "30-agent-reload-mid-run");
+  });
+
+  test("agent — Stop cancels a running job (A3.4)", async ({ page }) => {
+    test.setTimeout(120_000);
+    if (!agentChatUrl) throw new Error("agent chat not prepared by the previous test");
+    await page.goto(agentChatUrl);
+
+    await page.getByLabel("Message").fill("HANG đừng làm gì cả");
+    await page.getByRole("button", { name: "Send" }).click();
+    await expect(page.getByTestId("agent-phase")).toBeVisible({ timeout: 30_000 });
+
+    await page.getByRole("button", { name: "Stop run" }).first().click();
+    const result = page.getByTestId("agent-result");
+    await expect(result.getByText("Đã dừng")).toBeVisible({ timeout: 30_000 });
+    await expect(result.getByText("Tiếp tục")).toBeVisible();
+    await shot(page, "31-agent-stopped");
+  });
+
+  test("agent — dark mode and 390px shots (A3.4)", async ({ page }) => {
+    if (!agentChatUrl) throw new Error("agent chat not prepared by the previous test");
+    await page.goto(agentChatUrl);
+    await expect(page.getByTestId("agent-result").first()).toBeVisible({ timeout: 30_000 });
+
+    await page.getByRole("button", { name: "Toggle dark mode" }).click();
+    await expect(page.locator("html")).toHaveClass(/dark/);
+    await page.waitForTimeout(300);
+    await shot(page, "32-agent-dark");
+    await page.getByRole("button", { name: "Toggle dark mode" }).click();
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(page.getByTestId("agent-result").first()).toBeVisible();
+    await shot(page, "33-agent-mobile-390");
+    await page.setViewportSize({ width: 1280, height: 800 });
+  });
 });

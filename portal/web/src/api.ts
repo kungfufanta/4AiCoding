@@ -41,8 +41,23 @@ export type ApiKeyCreateBody = {
 
 // Chat MVP: conversations are private to their author.
 export type ChatStatus = { enabled: boolean; model: string; models?: string[] };
-export type ChatConversation = { id: string; title: string; created_at: string; updated_at: string };
-export type ChatMessage = { id: string; role: "user" | "assistant"; content: string; created_at: string };
+export type ChatConversation = {
+  id: string;
+  title: string;
+  // A3.4: sandbox pinned to this chat ("" until one is attached).
+  sandbox_id?: string;
+  created_at: string;
+  updated_at: string;
+};
+export type ChatMessage = {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  // A3.4: worker-written note tied to an agent run (summary,
+  // failed-run note) — the page hides it where the run card renders.
+  agent_run_id?: string;
+  created_at: string;
+};
 
 export type ChatStreamHandlers = {
   onUser?: (m: ChatMessage) => void;
@@ -50,6 +65,46 @@ export type ChatStreamHandlers = {
   onDone: (m: ChatMessage, title: string) => void;
   onError: (code: string, message: string) => void;
 };
+
+// A3.4: agent runs in the Chat page (docs/AGENT_PLAN_A3.md §9-10).
+export type AgentFileChange = { path: string; status: string }; // A | M | D | R
+export type AgentRunResult = {
+  summary: string;
+  files_changed: AgentFileChange[];
+  build_status: "passed" | "failed" | "skipped";
+  build_command?: string;
+  preview_ok?: boolean;
+  steps: number;
+  input_tokens: number;
+  output_tokens: number;
+  usage_estimated?: boolean;
+  warning?: string;
+};
+export type AgentRunStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
+export type AgentRun = {
+  id: string;
+  org_id: string;
+  sandbox_id: string;
+  conversation_id?: string;
+  status: AgentRunStatus;
+  error_code?: string;
+  model: string;
+  prompt: string;
+  max_steps: number;
+  timeout_s: number;
+  steps: number;
+  input_tokens: number;
+  output_tokens: number;
+  result?: AgentRunResult;
+  cancel_requested?: boolean;
+  reverted_at?: string;
+  created_by?: string;
+  created_at: string;
+  started_at?: string;
+  finished_at?: string;
+};
+// One agent_events row as the SSE / ?follow=false replay delivers it.
+export type AgentEvent = { seq: number; type: string; data: Record<string, unknown>; created_at: string };
 
 // Sandboxes (PORTAL_PLAN_V2 P4): the live view comes from sandboxd via
 // the BFF gateway; project_id is the Portal-side pointer.
@@ -267,6 +322,22 @@ export const api = {
     call<ChatMessage[]>("GET", `/api/orgs/${orgID}/chats/${chatID}/messages`),
   sendChatMessage: (orgID: string, chatID: string, content: string, h: ChatStreamHandlers, opts?: { model?: string; signal?: AbortSignal }) =>
     streamChat(`/api/orgs/${orgID}/chats/${chatID}/messages`, content, h, opts),
+  // A3.4: agent runs. The events URL is consumed with native
+  // EventSource (GET + cookies) — it replays from ?since= and keeps
+  // the connection open until the run's done event.
+  attachChatSandbox: (orgID: string, chatID: string, sandboxID: string) =>
+    call<{ id: string; sandbox_id: string }>("PATCH", `/api/orgs/${orgID}/chats/${chatID}`, { sandbox_id: sandboxID }),
+  listChatAgentRuns: (orgID: string, chatID: string) =>
+    call<AgentRun[]>("GET", `/api/orgs/${orgID}/chats/${chatID}/agent/runs`),
+  listSandboxAgentRuns: (orgID: string, sandboxID: string) =>
+    call<AgentRun[]>("GET", `/api/orgs/${orgID}/sandboxes/${encodeURIComponent(sandboxID)}/agent/runs`),
+  createAgentRun: (orgID: string, chatID: string, body: { prompt: string; model?: string }) =>
+    call<AgentRun>("POST", `/api/orgs/${orgID}/chats/${chatID}/agent/runs`, body),
+  cancelAgentRun: (orgID: string, runID: string) =>
+    call<AgentRun>("POST", `/api/orgs/${orgID}/agent/runs/${runID}/cancel`),
+  revertAgentRun: (orgID: string, runID: string) =>
+    call<AgentRun>("POST", `/api/orgs/${orgID}/agent/runs/${runID}/revert`),
+  agentRunEventsUrl: (orgID: string, runID: string) => `/api/orgs/${orgID}/agent/runs/${runID}/events`,
   // A2: LLM model connections. The platform admin manages the
   // platform defaults at /api/admin/llm/connections; org owner/admin
   // manages org connections at /api/orgs/{orgID}/llm/connections.

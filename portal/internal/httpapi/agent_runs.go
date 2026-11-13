@@ -63,9 +63,13 @@ type runJSON struct {
 	Result          json.RawMessage `json:"result,omitempty"`
 	CancelRequested bool            `json:"cancel_requested,omitempty"`
 	RevertedAt      *time.Time      `json:"reverted_at,omitempty"`
-	CreatedAt       time.Time       `json:"created_at"`
-	StartedAt       *time.Time      `json:"started_at,omitempty"`
-	FinishedAt      *time.Time      `json:"finished_at,omitempty"`
+	// A3.4: who started the run ("" for /v1 runs) — the Chat page
+	// shows Revert only when the viewer may actually use it
+	// (creator or org admin, plan §2-6); the API still guards.
+	CreatedBy  string     `json:"created_by,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+	StartedAt  *time.Time `json:"started_at,omitempty"`
+	FinishedAt *time.Time `json:"finished_at,omitempty"`
 }
 
 func runToJSON(r agent.Run) runJSON {
@@ -85,6 +89,7 @@ func runToJSON(r agent.Run) runJSON {
 		OutputTokens:    r.OutputTokens,
 		Result:          r.Result,
 		CancelRequested: r.CancelRequested,
+		CreatedBy:       r.CreatedByUser,
 		CreatedAt:       r.CreatedAt,
 	}
 	if len(j.Result) == 2 && string(j.Result) == "{}" {
@@ -193,6 +198,31 @@ func (s *Server) handleBFFListAgentRuns(w http.ResponseWriter, r *http.Request) 
 	runs, err := agentStore(s).ListRunsByChat(r.Context(), orgID, chat)
 	if errors.Is(err, agent.ErrNotFound) {
 		writeErr(w, http.StatusNotFound, "not_found", "chat not found")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", "could not list runs")
+		return
+	}
+	out := make([]runJSON, 0, len(runs))
+	for _, run := range runs {
+		out = append(out, runToJSON(run))
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// handleBFFListSandboxAgentRuns — GET /api/orgs/{org}/sandboxes/{id}/agent/runs.
+// Recent runs of one sandbox, newest first. The Chat page uses it to
+// tell "the sandbox is already working — a run started from the API"
+// apart from its own runs and lock the composer (plan §10).
+func (s *Server) handleBFFListSandboxAgentRuns(w http.ResponseWriter, r *http.Request) {
+	orgID := pathOrgID(r)
+	if _, ok := s.requireMember(w, r, orgID); !ok {
+		return
+	}
+	runs, err := agentStore(s).ListRunsBySandbox(r.Context(), orgID, r.PathValue("id"))
+	if errors.Is(err, agent.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, "not_found", "sandbox not found")
 		return
 	}
 	if err != nil {
