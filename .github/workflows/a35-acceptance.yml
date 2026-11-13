@@ -43,6 +43,11 @@ jobs:
           DEPLOY=$(kubectl -n 4aicoding get deploy -l app.kubernetes.io/name=portal -o jsonpath='{.items[0].metadata.name}')
           test -n "$DEPLOY" || { echo "::error::no portal Deployment in 4aicoding"; exit 1; }
           echo "portal Deployment: $DEPLOY"
+          # Context for the wiring verdict: what else runs in the namespace.
+          echo "--- pods ---"
+          kubectl -n 4aicoding get pods -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.containers[0].image}{"\n"}{end}'
+          echo "--- services ---"
+          kubectl -n 4aicoding get svc -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.clusterIP}{"\t"}{range .spec.ports[*]}{.port}{end}{"\n"}{end}'
           # The scoped deployer SA cannot pods/exec (by design) — read the
           # rendered env from the Deployment object instead. Only the
           # PRESENCE is printed, never a value.
