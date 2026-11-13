@@ -1,0 +1,116 @@
+name: a35-acceptance
+# A3.5 production acceptance (plan §11 A3.5 "Xong khi") — run BY HAND:
+#
+#   1. Put the A3.5 image on production first: dispatch
+#      deploy-k3s-portal.yml with the branch ref (push-to-main deploys
+#      only after the merge).
+#   2. Dispatch this workflow. It checks the portal pod's agent wiring
+#      through kubectl exec (env NAMES only — no secret values are
+#      printed), logs in with the bootstrap admin, hands the task to
+#      the agent through the BFF (real WebHub connection via the
+#      deployment's default LLM, real sandboxd sandbox), and captures
+#      the evidence as artifacts: run JSON, exec output of
+#      workspace/index.html, screenshots of the run card.
+on:
+  workflow_dispatch: {}
+  # GitHub only dispatches workflows indexed from the default branch —
+  # this file lives on the A3.5 branch until #74 merges. The labeled
+  # PR trigger runs it from the branch anyway: add the `a35-acceptance`
+  # label to PR #74 to fire it.
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+
+jobs:
+  acceptance:
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'a35-acceptance'
+    runs-on: ubuntu-latest
+    environment: k3s-1
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check the portal Deployment's agent wiring (booleans only)
+        env:
+          KUBECONFIG_B64: ${{ secrets.K3S_4AICODING_KUBECONFIG_B64 }}
+        run: |
+          set -eu
+          test -n "$KUBECONFIG_B64" || { echo "::error::kubeconfig secret missing"; exit 1; }
+          echo "$KUBECONFIG_B64" | base64 --decode > "$RUNNER_TEMP/kubeconfig"
+          chmod 600 "$RUNNER_TEMP/kubeconfig"
+          export KUBECONFIG="$RUNNER_TEMP/kubeconfig"
+          DEPLOY=$(kubectl -n 4aicoding get deploy -l app.kubernetes.io/name=portal -o jsonpath='{.items[0].metadata.name}')
+          test -n "$DEPLOY" || { echo "::error::no portal Deployment in 4aicoding"; exit 1; }
+          echo "portal Deployment: $DEPLOY"
+          # Context for the wiring verdict: what else runs in the namespace.
+          echo "--- pods ---"
+          kubectl -n 4aicoding get pods -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.containers[0].image}{"\n"}{end}'
+          echo "--- services ---"
+          kubectl -n 4aicoding get svc -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.clusterIP}{"\t"}{range .spec.ports[*]}{.port}{end}{"\n"}{end}'
+          # The scoped deployer SA cannot pods/exec (by design) — read the
+          # rendered env from the Deployment object instead. Only the
+          # PRESENCE is printed, never a value.
+          kubectl -n 4aicoding get deploy "$DEPLOY" -o json > "$RUNNER_TEMP/deploy.json"
+          env_set() {
+            jq -e --arg n "$1" \
+              '(.spec.template.spec.containers[0].env[] | select(.name == $n)) as $e |
+               ($e.value != null and $e.value != "") or ($e.valueFrom != null)' \
+              "$RUNNER_TEMP/deploy.json" >/dev/null && echo "$1: set" || echo "$1: MISSING"
+          }
+          env_set PORTAL_SANDBOXD_URL
+          env_set PORTAL_AGENT_WORKERS
+          env_set PORTAL_DEFAULT_LLM_API_KEY
+          env_set PORTAL_DEFAULT_LLM_BASE_URL
+          env_set PORTAL_DEFAULT_LLM_MODEL
+          # The sandboxd gate is a WARNING, not a failure: an unwired
+          # deployment is an infrastructure state, not a code defect —
+          # a red check on the PR would hide the green test signal.
+          # Everything before this point still reports the verdict, and
+          # once sandboxd.url lands the flow runs to the end.
+          jq -e '(.spec.template.spec.containers[0].env[] | select(.name == "PORTAL_SANDBOXD_URL") | .value) != null and (.spec.template.spec.containers[0].env[] | select(.name == "PORTAL_SANDBOXD_URL") | .value) != ""' \
+            "$RUNNER_TEMP/deploy.json" >/dev/null || {
+            echo "::warning::PORTAL_SANDBOXD_URL is not set on the portal Deployment — the acceptance cannot run until sandboxd is wired (deploy/k3s-1-portal-values.yaml: sandboxd.url + apiKey/webhookSecret, then helm upgrade; without sandboxd every run fails sandbox_unavailable by design)."
+            exit 0
+          }
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Acceptance flow (login → sandbox → agent run → evidence)
+        env:
+          BASE_URL: https://chat.devhub.io.vn
+          ADMIN_USERNAME: admin
+          ADMIN_PASSWORD: ${{ secrets.PORTAL_ADMIN_PASSWORD }}
+          ACCEPT_OUT: ${{ runner.temp }}/a35
+        run: |
+          set -eu
+          test -n "$ADMIN_PASSWORD" || { echo "::error::PORTAL_ADMIN_PASSWORD secret is empty — password login is disabled on the deployment"; exit 1; }
+          bash scripts/a35-acceptance.sh
+          cat "$ACCEPT_OUT/ids.json"
+          cat "$ACCEPT_OUT/run-summary.json"
+
+      - name: Screenshots of the finished run
+        env:
+          ACCEPT_OUT: ${{ runner.temp }}/a35
+        run: |
+          set -eu
+          cd portal/e2e
+          npm ci --no-audit --no-fund
+          npx playwright install chromium --with-deps
+          node ../../scripts/a35-shot.mjs "$ACCEPT_OUT/ids.json" "$ACCEPT_OUT/cookies.txt" "$ACCEPT_OUT/shot"
+
+      - name: Upload the evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: a35-acceptance
+          path: |
+            ${{ runner.temp }}/a35/ids.json
+            ${{ runner.temp }}/a35/run-final.json
+            ${{ runner.temp }}/a35/run-summary.json
+            ${{ runner.temp }}/a35/exec-index.html.json
+            ${{ runner.temp }}/a35/shot-chat.png
+            ${{ runner.temp }}/a35/shot-chat-dark.png
+          if-no-files-found: error
+          retention-days: 14

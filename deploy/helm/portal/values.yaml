@@ -53,9 +53,16 @@ sandboxd:
 # Agent workers (A3.1): goroutines in the portal process that claim
 # runs from Postgres. Default 2 (the code default); 0 disables them
 # (e.g. the dedicated `portal agent-worker` Deployment owns the
-# queue).
+# queue). A3.5 keeps the workers INSIDE this Deployment — the split
+# into its own Deployment is A6.
 portal:
   agentWorkers: 2
+
+# SIGTERM grace (plan §11 A3.5): in-flight agent runs get 30s to reach
+# a terminal state before the pod dies, matching the worker's own
+# Shutdown grace. Rolled pods must not leave runs stuck in running
+# until the sweeper reaps them.
+terminationGracePeriodSeconds: 30
 
 # Bootstrap password login (user "admin"). Off unless the database
 # Secret above carries this key (min 12 chars); there is no default

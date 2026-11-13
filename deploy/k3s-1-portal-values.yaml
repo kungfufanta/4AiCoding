@@ -77,6 +77,17 @@ resources:
   limits:
     memory: 256Mi
 
+# Agent runs (plan §11 A3.5): the workers stay INSIDE this Deployment
+# (the split into a dedicated agent-worker Deployment is A6). With the
+# default of 2 they claim runs from Postgres and drive them through
+# sandboxd — which requires the gateway to be reachable from the pod:
+# set sandboxd.url (plus apiKey/webhookSecret per the chart README)
+# BEFORE turning agents on for real, otherwise every run fails with
+# sandbox_unavailable by design ("chạy mà không có backend là nói
+# dối" — plan §11 A3.2).
+portal:
+  agentWorkers: 2
+
 # The image runs as nonroot (distroless); keep the guardrails on.
 # The 4aicoding namespace enforces PodSecurity "restricted".
 podSecurityContext:

@@ -509,6 +509,38 @@ paths:
           description: not_latest_run / already_reverted / no_checkpoint / run_in_progress.
         "502": { $ref: "#/components/responses/Error", description: revert_failed or sandbox_unavailable — the git restore did not land. }
 
+  # ---- BFF (browser session) — the Chat page's own endpoints --------
+  # These serve the SPA with the login session cookie (member role,
+  # CSRF on writes); they are not part of the /v1 key contract and are
+  # listed here so the UI's data surface stays documented.
+  /api/orgs/{orgID}/sandboxes/{id}/agent/runs:
+    get:
+      operationId: bffListSandboxAgentRuns
+      tags: [agent]
+      summary: >-
+        Recent runs of one sandbox, newest first (BFF, session cookie,
+        member role). The Chat page uses it to tell "the sandbox is
+        already working — a run started from the API" apart from its
+        own runs and lock the composer (plan §10).
+      security: []
+      parameters:
+        - name: orgID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: Run list (same shape as the /v1 list).
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/AgentRun" }
+        "401": { $ref: "#/components/responses/Error", description: no session. }
+        "403": { $ref: "#/components/responses/Error", description: not an org member. }
+        "404": { $ref: "#/components/responses/Error", description: unknown sandbox in this org. }
+
 components:
   securitySchemes:
     bearerAuth:
