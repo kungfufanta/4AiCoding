@@ -104,10 +104,17 @@ services:
       SANDBOXD_IMAGE: sandboxd-e2e:ci
       SANDBOXD_IMAGE_ALLOWLIST: sandboxd-e2e:ci
       SANDBOXD_MAX_MEMORY_MB: "2048"
-      SANDBOXD_DATA_DIR: /data
-      SANDBOXD_LOG_DIR: /data/log
+      # Symmetric data dir (docker-compose.yml contract): the container
+      # path and the host path must be THE SAME, because sibling sandbox
+      # containers mount `<WorkspaceMnt>:/home/sandbox` and that mount is
+      # resolved by the HOST daemon. A named volume (or an asymmetric
+      # bind) hands every sandbox an empty directory — files written by
+      # the files API are invisible to exec (the A3.4 browser test
+      # caught this: write_file ok, `cat hello.txt` → No such file).
+      SANDBOXD_DATA_DIR: ${SANDBOXD_DATA_DIR:-/var/lib/sandboxd-portal}
+      SANDBOXD_LOG_DIR: ${SANDBOXD_DATA_DIR:-/var/lib/sandboxd-portal}/log
       SANDBOXD_MIGRATIONS: /usr/local/share/sandboxd/migrations
-      SANDBOXD_DB: /data/sandboxd.db
+      SANDBOXD_DB: ${SANDBOXD_DATA_DIR:-/var/lib/sandboxd-portal}/sandboxd.db
       SANDBOXD_USERNS: host
       SANDBOXD_IDLE_THRESHOLD_SECONDS: "3600"
       # Lifecycle webhook -> the Portal's receiver (P4): HMAC-signed.
@@ -115,9 +122,23 @@ services:
       SANDBOXD_WEBHOOK_SECRET: ${PORTAL_SANDBOXD_WEBHOOK_SECRET:-dev-webhook-secret}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - sandboxd_data:/data
+      - ${SANDBOXD_DATA_DIR:-/var/lib/sandboxd-portal}:${SANDBOXD_DATA_DIR:-/var/lib/sandboxd-portal}
     ports:
       - "127.0.0.1:9191:9191"
+
+  fake-llm:
+    # A3.4 Playwright (profile `e2e`): a deterministic OpenAI-compatible
+    # SSE server (scripts/e2e/fake-llm) driving the fixed agent scenario
+    # write_file hello.txt → run_command cat → finish. The browser test
+    # creates a PLATFORM connection pointing at
+    # http://fake-llm:9999/v1 (platform connections may point
+    # internally — the SSRF guard only applies to org connections).
+    # Local: curl http://127.0.0.1:9999/healthz
+    build: ./scripts/e2e/fake-llm
+    image: fake-llm:dev
+    profiles: [e2e]
+    ports:
+      - "127.0.0.1:9999:9999"
 
   zitadel:
     image: ghcr.io/zitadel/zitadel:latest
@@ -141,4 +162,3 @@ services:
 
 volumes:
   portal_pgdata:
-  sandboxd_data:

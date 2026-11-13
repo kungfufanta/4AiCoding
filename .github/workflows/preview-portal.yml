@@ -60,7 +60,7 @@ jobs:
           npx playwright --version
 
       - name: sandbox backend up (build sandboxd + e2e base image)
-        run: docker compose -f docker-compose.portal.yml --profile sandboxes up -d --build sandboxd
+        run: docker compose -f docker-compose.portal.yml --profile sandboxes --profile e2e up -d --build sandboxd fake-llm
 
       - name: wait for sandboxd health
         run: |
@@ -70,8 +70,16 @@ jobs:
           done
           curl -fsS http://127.0.0.1:9191/healthz
 
+      - name: wait for fake-llm health
+        run: |
+          for i in $(seq 1 60); do
+            curl -fsS http://127.0.0.1:9999/healthz && break
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:9999/healthz
+
       - name: compose stack up (postgres + portal)
-        run: docker compose -f docker-compose.portal.yml --profile sandboxes up -d --build postgres portal
+        run: docker compose -f docker-compose.portal.yml --profile sandboxes --profile e2e up -d --build postgres portal fake-llm
 
       - name: wait for portal health
         run: |
