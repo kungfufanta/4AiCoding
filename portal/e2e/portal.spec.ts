@@ -371,10 +371,12 @@ test.describe.serial("portal preview", () => {
     await expect(page.getByText(/Đang tạo file hello\.txt…\s*Đang tạo/)).toHaveCount(0);
 
     // Verify through the sandbox exec console (the files API path the
-    // plan asks for): ls must not list hello.txt anymore.
+    // plan asks for): the exec cwd is /home/sandbox and the project
+    // dir is workspace/ (no git source → no workspace/app), so ls the
+    // workspace itself — hello.txt must be gone after the revert.
     await page.goto(`/orgs/${slug}/sandboxes/${agentSandboxId}`);
     await page.getByRole("tab", { name: "Exec" }).click();
-    await page.getByLabel("Command").fill("ls");
+    await page.getByLabel("Command").fill("ls workspace");
     await page.getByRole("button", { name: "Run", exact: true }).click();
     await expect(page.getByText("exit 0").first()).toBeVisible({ timeout: 60_000 });
     await expect(page.getByText("hello.txt")).toHaveCount(0);
@@ -465,15 +467,16 @@ test.describe.serial("portal preview", () => {
     await expect(page.getByTestId("agent-reverted")).toBeVisible({ timeout: 30_000 });
     await shot(page, "35-agent-rename-after-revert");
 
-    // The plan's own verification path: ls through the exec console —
+    // The plan's own verification path: ls the workspace through the
+    // exec console (cwd is /home/sandbox, project dir is workspace/) —
     // the old name is back, the new one is nowhere.
     const slug = new URL(agentChatUrl).pathname.split("/")[2];
     await page.goto(`/orgs/${slug}/sandboxes/${agentSandboxId}`);
     await page.getByRole("tab", { name: "Exec" }).click();
-    await page.getByLabel("Command").fill("ls");
+    await page.getByLabel("Command").fill("ls workspace");
     await page.getByRole("button", { name: "Run", exact: true }).click();
     await expect(page.getByText("exit 0").first()).toBeVisible({ timeout: 60_000 });
-    await expect(page.getByText("a.txt").first()).toBeVisible();
+    await expect(page.getByText("a.txt").first()).toBeVisible({ timeout: 10_000 });
     await expect(page.getByText("b.txt")).toHaveCount(0);
   });
 
