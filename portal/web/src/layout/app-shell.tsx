@@ -76,7 +76,7 @@ export function AppShell() {
           </p>
           <Button
             className="mt-4"
-            onClick={() => navigate(`/orgs/${meData.orgs[0]?.slug ?? ""}/projects`)}
+            onClick={() => navigate(`/orgs/${meData.orgs[0]?.slug ?? ""}/chat`)}
           >
             Back to your org
           </Button>
@@ -158,20 +158,25 @@ function Shell({ me, org }: { me: Me; org: Org }) {
 function SidebarContent({ org, role }: { org: Org; role?: string }) {
   const base = `/orgs/${org.slug}`;
   const isOwnerOrAdmin = role === "owner" || role === "admin";
-  const items = [
-    { to: `${base}/chat`, label: "Chat", icon: MessageSquare },
+  // Z1 #81: Chat first. Everything a developer works with sits under
+  // the "Developer" label; the org-management pages follow under
+  // "Manage".
+  const chatItem = { to: `${base}/chat`, label: "Chat", icon: MessageSquare };
+  const devItems = [
     { to: `${base}/projects`, label: "Projects", icon: FolderKanban },
     { to: `${base}/sandboxes`, label: "Sandboxes", icon: Box },
-    { to: `${base}/usage`, label: "Usage", icon: Gauge },
-    { to: `${base}/quickstart`, label: "Quickstart", icon: BookOpen },
-    { to: `${base}/models`, label: "Models", icon: Cpu },
-    { to: `${base}/members`, label: "Members", icon: Users },
     { to: `${base}/api-keys`, label: "API keys", icon: KeyRound },
+    { to: `${base}/quickstart`, label: "Quickstart", icon: BookOpen },
+    { to: `${base}/usage`, label: "Usage", icon: Gauge },
+  ];
+  const manageItems = [
+    { to: `${base}/models`, label: "Models", icon: Cpu },
+    ...(isOwnerOrAdmin
+      ? [{ to: `${base}/admin/llm`, label: "Admin LLM", icon: SlidersHorizontal }]
+      : []),
+    { to: `${base}/members`, label: "Members", icon: Users },
     { to: `${base}/audit`, label: "Audit", icon: ScrollText },
   ];
-  if (isOwnerOrAdmin) {
-    items.splice(5, 0, { to: `${base}/admin/llm`, label: "Admin LLM", icon: SlidersHorizontal });
-  }
 
   return (
     <>
@@ -183,7 +188,13 @@ function SidebarContent({ org, role }: { org: Org; role?: string }) {
         <span className="ml-auto text-xs text-muted">sandboxes for agents</span>
       </div>
       <nav className="flex flex-col gap-0.5 px-2 py-2" aria-label="Main">
-        {items.map(({ to, label, icon: Icon }) => (
+        <NavLink key={chatItem.to} to={chatItem.to} label={chatItem.label} icon={<MessageSquare aria-hidden className="size-4" />} />
+        <SidebarGroup label="Developer" />
+        {devItems.map(({ to, label, icon: Icon }) => (
+          <NavLink key={to} to={to} label={label} icon={<Icon aria-hidden className="size-4" />} />
+        ))}
+        <SidebarGroup label="Manage" />
+        {manageItems.map(({ to, label, icon: Icon }) => (
           <NavLink key={to} to={to} label={label} icon={<Icon aria-hidden className="size-4" />} />
         ))}
       </nav>
@@ -191,6 +202,14 @@ function SidebarContent({ org, role }: { org: Org; role?: string }) {
         4AiCoding Portal
       </div>
     </>
+  );
+}
+
+function SidebarGroup({ label }: { label: string }) {
+  return (
+    <p className="px-2.5 pb-1 pt-3 text-[11px] font-medium tracking-wide text-muted uppercase">
+      {label}
+    </p>
   );
 }
 
@@ -224,7 +243,7 @@ function OrgSwitcher({ me, org }: { me: Me; org: Org }) {
       setCreating(false);
       await qc.invalidateQueries({ queryKey: ["me"] });
       toast("success", `Organisation “${created.name}” created`);
-      navigate(`/orgs/${created.slug}/projects`);
+      navigate(`/orgs/${created.slug}/chat`);
     },
     onError: (err) => {
       toast("error", err instanceof Error ? err.message : String(err));
@@ -246,7 +265,7 @@ function OrgSwitcher({ me, org }: { me: Me; org: Org }) {
         {me.orgs.map((o) => (
           <DropdownItem
             key={o.id}
-            onSelect={() => navigate(`/orgs/${o.slug}/projects`)}
+            onSelect={() => navigate(`/orgs/${o.slug}/chat`)}
           >
             <span className="flex-1 truncate">{o.name}</span>
             {o.id === org.id && <Check aria-hidden className="size-4 text-brand" />}

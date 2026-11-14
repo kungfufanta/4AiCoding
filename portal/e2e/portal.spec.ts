@@ -12,17 +12,18 @@ async function shot(page: Page, name: string) {
   await page.screenshot({ path: `${SHOTS}/${name}.png`, fullPage: true });
 }
 
-// "/" redirects to the first org's projects; return the slug for the
-// org-scoped pages.
+// "/" lands signed-in users in the first org's Chat (Z1 #81); take
+// the slug from that URL for the org-scoped pages.
 async function gotoOrgBase(page: Page): Promise<string> {
   await page.goto("/");
-  await expect(page).toHaveURL(/\/orgs\/([^/]+)\/projects/);
-  return page.url().match(/\/orgs\/([^/]+)\/projects/)![1];
+  await expect(page).toHaveURL(/\/orgs\/([^/]+)\/chat/);
+  return page.url().match(/\/orgs\/([^/]+)\/chat/)![1];
 }
 
 test.describe.serial("portal preview", () => {
   test("projects page and create-project dialog", async ({ page }) => {
     const slug = await gotoOrgBase(page);
+    await page.goto(`/orgs/${slug}/projects`);
     await expect(page.getByRole("heading", { name: "Projects" })).toBeVisible();
     await shot(page, "01-projects");
 
@@ -494,6 +495,35 @@ test.describe.serial("portal preview", () => {
     await page.setViewportSize({ width: 390, height: 844 });
     await expect(page.getByTestId("agent-result").first()).toBeVisible();
     await shot(page, "33-agent-mobile-390");
+    await page.setViewportSize({ width: 1280, height: 800 });
+  });
+
+  // Z1 #79: guests (no session) see the public landing at "/" instead
+  // of a redirect to /login — desktop + 390px shots for the PR, plus
+  // the no-horizontal-scroll check. Runs LAST: it clears the shared
+  // storage-state cookies.
+  test("landing page for guests (Z1 #79)", async ({ page }) => {
+    await page.context().clearCookies();
+
+    await page.goto("/");
+    await expect(page).toHaveURL(/\/$/);
+    await expect(page.getByRole("heading", { name: "Chat với AI agent. Agent làm việc cho bạn." })).toBeVisible();
+    await shot(page, "36-landing");
+
+    // The primary CTA carries the deep link: guests land on /login and
+    // come back after signing in.
+    await page.getByRole("link", { name: "Bắt đầu chat miễn phí" }).click();
+    await expect(page).toHaveURL(/\/login/);
+
+    // 390px: landing stays on one column with no horizontal overflow.
+    await page.goto("/");
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(page.getByRole("heading", { name: "Chat với AI agent. Agent làm việc cho bạn." })).toBeVisible();
+    const overflow = await page.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    );
+    expect(overflow).toBeLessThanOrEqual(0);
+    await shot(page, "37-landing-mobile-390");
     await page.setViewportSize({ width: 1280, height: 800 });
   });
 });
