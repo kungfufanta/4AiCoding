@@ -309,43 +309,56 @@ func CreateInvite(ctx context.Context, tx pgx.Tx, orgID, email, role, createdBy 
 }
 
 // AcceptInvite exchanges the plaintext token for a membership in
-// orgID (the handler pins app.org_id = orgID first; the invite link
-// carries the org id). The token alone is not enough: the invite
-// must have been sent to userEmail (case-insensitive), so a
-// forwarded or leaked link cannot be used by someone else.
+// orgID. The work is done by the SECURITY DEFINER SQL function
+// accept_invite(org, token_hash, user, email, OUT role, OUT error)
+// (migration 0012): it locks the invite row, checks the email match
+// (CITEXT, case insensitive), marks it accepted, and inserts the
+// membership. RLS on memberships does not apply inside the DEFINER,
+// so this is the only path that creates a membership from an
+// invite — the memberships INSERT policy only allows the first
+// owner of a brand new org (BootstrapTx).
+//
+// The token alone is not enough: the invite must also have been
+// sent to userEmail, so a forwarded or leaked link cannot be used
+// by someone else.
+//
+// The DEFINER returns errors via OUT parameters instead of raising
+// exceptions: raising would abort the surrounding transaction, so
+// even after the Go layer caught ErrNotFound the WithOrg callback
+// would fail to commit. OUT (o_role, o_error) keeps the transaction
+// usable; this function maps o_error to the existing sentinel
+// errors.
+//
+// Error codes (o_error):
+//
+//	not_found      -> ErrNotFound (token wrong, expired, or already used)
+//	email_mismatch -> ErrInviteEmailMismatch (sent to a different email)
+//	already_member -> ErrConflict (already a member)
 func AcceptInvite(ctx context.Context, tx pgx.Tx, orgID, token, userID, userEmail string) (string, error) {
-	var role, inviteEmail string
+	var role, errCode *string
 	err := tx.QueryRow(ctx, `
-                SELECT role, email::text FROM invites
-                WHERE org_id = $1 AND token_hash = $2
-                  AND accepted_at IS NULL AND expires_at > now()
-                FOR UPDATE`,
-		orgID, HashToken(token)).Scan(&role, &inviteEmail)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "", ErrNotFound
-	}
+		SELECT o_role, o_error FROM accept_invite(
+			$1::uuid, $2, $3::uuid, $4::citext
+		)`, orgID, HashToken(token), userID, userEmail).Scan(&role, &errCode)
 	if err != nil {
-		return "", fmt.Errorf("load invite: %w", err)
-	}
-	if !strings.EqualFold(inviteEmail, userEmail) {
-		return "", ErrInviteEmailMismatch
-	}
-	if _, err := tx.Exec(ctx, `
-                UPDATE invites SET accepted_at = now()
-                WHERE org_id = $1 AND token_hash = $2`,
-		orgID, HashToken(token)); err != nil {
 		return "", fmt.Errorf("accept invite: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `
-                INSERT INTO memberships (org_id, user_id, role) VALUES ($1, $2, $3)`,
-		orgID, userID, role); err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+	if errCode != nil && *errCode != "" {
+		switch *errCode {
+		case "not_found":
+			return "", ErrNotFound
+		case "email_mismatch":
+			return "", ErrInviteEmailMismatch
+		case "already_member":
 			return "", fmt.Errorf("%w: already a member", ErrConflict)
+		default:
+			return "", fmt.Errorf("accept invite: unknown error %q", *errCode)
 		}
-		return "", fmt.Errorf("insert membership: %w", err)
 	}
-	return role, nil
+	if role == nil {
+		return "", fmt.Errorf("accept invite: function returned no role")
+	}
+	return *role, nil
 }
 
 // CreateProject inserts a project into the current org context.
