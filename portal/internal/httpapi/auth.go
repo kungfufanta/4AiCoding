@@ -100,6 +100,13 @@ func cookieValue(r *http.Request, name string) string {
 // plan 3.1). Without an IdP configured it answers 503 so the SPA can
 // show a clear message. An optional ?next= path (same-origin, P1
 // invite deep links) rides along and is honoured by the callback.
+//
+// ?signup=1 (issue #80) flips the redirect to "create account" mode:
+// the OIDC URL gets prompt=create so Zitadel lands on the registration
+// screen. The flag is only honoured when Server.SignupEnabled is
+// true (PORTAL_SIGNUP_ENABLED); when disabled it is silently dropped,
+// so a deep link that still carries signup=1 keeps working but goes
+// to the regular sign-in screen.
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if s.OIDC == nil {
 		writeErr(w, http.StatusServiceUnavailable, "sso_not_configured",
@@ -119,7 +126,10 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.SetCookie(w, s.oidcCookie(base64.RawURLEncoding.EncodeToString(blob), 600))
-	http.Redirect(w, r, s.OIDC.AuthCodeURL(state, challenge, nonce), http.StatusFound)
+	// signup=1 only when the surface is enabled; otherwise the
+	// provider's regular sign-in screen shows.
+	signup := s.SignupEnabled && r.URL.Query().Get("signup") == "1"
+	http.Redirect(w, r, s.OIDC.AuthCodeURL(state, challenge, nonce, signup), http.StatusFound)
 }
 
 // sanitizeNext restricts the ?next= deep link to same-origin paths:
@@ -211,11 +221,14 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 
 // handleAuthMethods tells the SPA which sign-in surfaces to render:
 // SSO when an OIDC provider is configured, password when the local
-// login is enabled. Public (no session yet), no cookies needed.
+// login is enabled, and signup when SSO is configured AND
+// Server.SignupEnabled is true (issue #80). The SPA hides the "Đăng
+// ký" button when signup=false. Public (no session yet), no cookies.
 func (s *Server) handleAuthMethods(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{
 		"sso":      s.OIDC != nil,
 		"password": s.PasswordLogin,
+		"signup":   s.OIDC != nil && s.SignupEnabled,
 	})
 }
 

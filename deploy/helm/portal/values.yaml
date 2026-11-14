@@ -35,6 +35,17 @@ oidc:
   clientID: ""
   clientSecret: ""
 
+# Self-service signup surface (issue #80). When true (default), the
+# landing page renders the "Đăng ký" button; /auth/login?signup=1
+# adds prompt=create to the OIDC redirect so Zitadel lands on the
+# account-creation screen. When false, the button stays hidden and
+# the signup param is silently dropped — useful for an approval-only
+# or invite-only rollout where new accounts come through Devhub
+# Solutions staff. SSO must still be configured (oidc.issuer) for
+# either surface.
+signup:
+  enabled: true
+
 # Sandboxd gateway (PORTAL_PLAN_V2 P4 / PORTAL_PLAN 6/S3). An empty url
 # disables the whole sandbox surface (/v1/sandboxes* answers 503 and the
 # dashboard shows "backend not connected"). The api key is a sandboxd

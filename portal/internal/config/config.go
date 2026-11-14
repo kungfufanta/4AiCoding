@@ -93,6 +93,17 @@ type Config struct {
 	// the `portal agent-worker` subcommand runs them instead, A6 will
 	// move them to a separate Deployment). AGENT_PLAN_A3 decision §2-4.
 	AgentWorkers int
+
+	// SignupEnabled controls whether the SSO login button on the
+	// landing page exposes the "Đăng ký" surface (issue #80). When
+	// true (default), GET /auth/login?signup=1 adds prompt=create to
+	// the OIDC redirect so Zitadel lands on the account-creation
+	// screen, and GET /auth/methods reports signup=true so the SPA
+	// renders the button. When false the signup param is ignored and
+	// /auth/methods reports signup=false (the button stays hidden).
+	// SSO must still be configured (OIDCIssuer != "") for either
+	// surface to be useful.
+	SignupEnabled bool
 }
 
 // DefaultLLMBaseURL is the WebHub endpoint chosen as the free default
@@ -188,6 +199,17 @@ func Parse(getenv func(string) string) (Config, error) {
 			return cfg, fmt.Errorf("PORTAL_AGENT_WORKERS: want a non-negative integer, got %q", v)
 		}
 		cfg.AgentWorkers = n
+	}
+	// Signup surface (issue #80): default on, "0"/"false" turns it
+	// off — the landing page hides the Đăng ký button and /auth/login
+	// ignores ?signup=1.
+	cfg.SignupEnabled = true
+	if v := strings.TrimSpace(getenv("PORTAL_SIGNUP_ENABLED")); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return cfg, fmt.Errorf("PORTAL_SIGNUP_ENABLED: want a boolean, got %q", v)
+		}
+		cfg.SignupEnabled = b
 	}
 	if cfg.DatabaseURL == "" {
 		return cfg, errors.New("PORTAL_DATABASE_URL is required (postgres://user:pass@host:5432/db)")

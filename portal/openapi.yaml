@@ -17,6 +17,7 @@ servers:
 security:
   - bearerAuth: []
 tags:
+  - name: auth
   - name: tokens
   - name: sandboxes
   - name: exec
@@ -26,6 +27,62 @@ tags:
   - name: agent
 
 paths:
+  /auth/login:
+    get:
+      operationId: beginSSO
+      tags: [auth]
+      summary: Begin the OIDC Authorization Code + PKCE redirect.
+      description: >
+        Without an IdP configured the route answers 503 sso_not_configured.
+        An optional ?next= path (same-origin) rides along in a cookie and
+        is honoured by /auth/callback. ?signup=1 (when
+        PORTAL_SIGNUP_ENABLED is true) adds prompt=create to the redirect
+        so Zitadel lands on the account-creation screen; when signup is
+        disabled the param is silently dropped.
+      security: []
+      parameters:
+        - name: next
+          in: query
+          schema: { type: string }
+          description: Same-origin path to return to after the callback (e.g. an invite deep link).
+        - name: signup
+          in: query
+          schema: { type: string, enum: ["1"] }
+          description: Set to "1" to request the provider's account-creation screen (prompt=create).
+      responses:
+        "302":
+          description: Redirect to the OIDC provider.
+          headers:
+            Location:
+              schema: { type: string }
+        "503":
+          description: SSO is not configured.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /auth/methods:
+    get:
+      operationId: listAuthMethods
+      tags: [auth]
+      summary: Tell the SPA which sign-in surfaces to render.
+      description: >
+        Public (no session). Returns three booleans: sso (an OIDC
+        provider is configured), password (the local admin login is
+        enabled), signup (SSO is configured AND PORTAL_SIGNUP_ENABLED
+        is true). The SPA uses signup to decide whether to show the
+        "Đăng ký" button.
+      security: []
+      responses:
+        "200":
+          description: Available sign-in surfaces.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sso: { type: boolean }
+                  password: { type: boolean }
+                  signup: { type: boolean }
   /v1/tokens:
     post:
       operationId: createAgentToken
