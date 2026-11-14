@@ -5,6 +5,7 @@
 //   /orgs/:orgSlug/…          — app shell: chat, projects, members, api keys, audit
 //
 // The org context rides in the URL so refresh and deep links keep it.
+// Z1 #81: sign-in and "/" land in the first org's Chat, not Projects.
 
 import { BrowserRouter, Navigate, Outlet, Route, Routes, useLocation } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -51,7 +52,7 @@ export function PortalApp() {
               <Route element={<RequireAuth />}>
                 <Route path="/" element={<OrgIndexRedirect />} />
                 <Route path="/orgs/:orgSlug" element={<AppShell />}>
-                  <Route index element={<Navigate to="projects" replace />} />
+                  <Route index element={<Navigate to="chat" replace />} />
                   <Route path="chat" element={<ChatPage />} />
                   <Route path="chat/:chatId" element={<ChatPage />} />
                   <Route path="projects" element={<ProjectsPage />} />
@@ -101,12 +102,13 @@ function RequireAuth() {
   return <Outlet />;
 }
 
-// "/" lands on the first org's projects (bootstrapLogin always leaves
-// the user with at least their personal org).
+// "/" lands on the first org's Chat (Z1 #81: after sign-in users see
+// Chat right away — bootstrapLogin always leaves the user with at
+// least their personal org).
 function OrgIndexRedirect() {
   const me = useMe();
   const slug = me.data?.orgs[0]?.slug;
-  if (slug) return <Navigate to={`/orgs/${slug}/projects`} replace />;
+  if (slug) return <Navigate to={`/orgs/${slug}/chat`} replace />;
   return (
     <main className="flex min-h-dvh items-center justify-center px-4">
       <Card className="max-w-md text-center">
