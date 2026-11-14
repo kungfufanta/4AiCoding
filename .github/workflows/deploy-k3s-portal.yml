@@ -31,6 +31,15 @@
 #                                  write. When set, a generated key is also
 #                                  saved back as the PORTAL_SECRETS_KEY
 #                                  secret of this environment (backup).
+#   PORTAL_SANDBOXD_URL            optional: sandboxd control plane the
+#                                  agent runs in, e.g.
+#                                  https://4aicoding.devhub.io.vn. Unset =
+#                                  agent runs fail with sandbox_unavailable.
+#   PORTAL_SANDBOXD_API_KEY        sandboxd API key for the Portal (a key
+#                                  of its own, created in the sandboxd
+#                                  console). Needed with the URL.
+#   PORTAL_SANDBOXD_WEBHOOK_SECRET optional: HMAC secret for sandboxd usage
+#                                  webhooks.
 #
 # DNS: chat.devhub.io.vn must point at the k3s-1 edge (same target as
 # 4aicoding.devhub.io.vn) so Traefik routes the host and cert-manager can
@@ -213,8 +222,31 @@ jobs:
           OIDC_CLIENT_ID: ${{ secrets.PORTAL_OIDC_CLIENT_ID }}
           OIDC_CLIENT_SECRET: ${{ secrets.PORTAL_OIDC_CLIENT_SECRET }}
           LLM_API_LINK: ${{ secrets.PORTAL_DEFAULT_LLM_API_LINK }}
+          SBX_URL: ${{ secrets.PORTAL_SANDBOXD_URL }}
+          SBX_API_KEY: ${{ secrets.PORTAL_SANDBOXD_API_KEY }}
+          SBX_WEBHOOK_SECRET: ${{ secrets.PORTAL_SANDBOXD_WEBHOOK_SECRET }}
         run: |
           set -eu
+          sbx_args=()
+          if [ -n "$SBX_URL" ]; then
+            if [ -z "$SBX_API_KEY" ]; then
+              echo "::error::PORTAL_SANDBOXD_URL is set but PORTAL_SANDBOXD_API_KEY is not" >&2
+              exit 1
+            fi
+            sbx_file="$RUNNER_TEMP/portal-sandboxd-values.yaml"
+            {
+              echo "sandboxd:"
+              echo "  url: $(printf '%s' "$SBX_URL" | jq -Rs .)"
+              echo "  apiKey: $(printf '%s' "$SBX_API_KEY" | jq -Rs .)"
+              if [ -n "$SBX_WEBHOOK_SECRET" ]; then
+                echo "  webhookSecret: $(printf '%s' "$SBX_WEBHOOK_SECRET" | jq -Rs .)"
+              fi
+            } > "$sbx_file"
+            sbx_args=(--values "$sbx_file")
+            echo "sandboxd: wired to $SBX_URL"
+          else
+            echo "::warning::PORTAL_SANDBOXD_URL not set — agent runs will fail with sandbox_unavailable"
+          fi
           llm_args=()
           if [ -n "$LLM_API_LINK" ]; then
             # Same file trick as OIDC below: jq -Rs quotes the URL safely.
@@ -251,6 +283,7 @@ jobs:
             --set image.repository="$IMAGE" \
             --set image.tag="${{ github.sha }}" \
             "${llm_args[@]}" \
+            "${sbx_args[@]}" \
             "${oidc_args[@]}" \
             --wait --timeout 5m
       - name: Verify applied pod hardening
