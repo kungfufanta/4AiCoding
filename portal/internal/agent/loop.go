@@ -230,30 +230,17 @@ func (w *Worker) executeRun(runCtx context.Context, claimed ClaimedRun) (execute
 	if res.ErrorCode != "" {
 		final.DoneData["error_code"] = res.ErrorCode
 	}
-	// The terminal write must land even when the run context was
-	// cancelled (cancel_requested / shutdown) — the process is still
-	// alive, only the run's context is done.
+	// The chat summary / terminal note lands BEFORE SetFinal so that
+	// the moment a run's status becomes terminal (what the BFF and
+	// tests poll on) the chat_messages row with agent_run_id is
+	// already there. The previous order (SetFinal then SaveSummary)
+	// left a small window where a poller saw status=succeeded but
+	// the summary insert had not committed yet — the flake behind
+	// TestRunLifecycle ("chat summaries = []") and
+	// TestAgentA34ChatDTOAndSandboxRuns ("notes with agent_run_id
+	// = 0"). finalCtx survives a cancelled runCtx (the process is
+	// still alive, only the run's context is done).
 	finalCtx := context.WithoutCancel(runCtx)
-	if err := w.Store.SetFinal(finalCtx, orgID, run.ID, final); err != nil {
-		return res, err
-	}
-
-	// Metrics log (plan §11 A3.5): EXACTLY ONE info line per finished
-	// run — the ops surface for run cost/latency. executeRun owns the
-	// terminal write, so it owns the line; a run reaped as worker_lost
-	// is the one exception (its process died — the reaping worker only
-	// learns the ids).
-	w.Log.Info("agent run finished",
-		"run_id", run.ID,
-		"org_id", orgID,
-		"status", res.Status,
-		"error_code", res.ErrorCode,
-		"steps", res.Steps,
-		"input_tokens", res.InputTokens,
-		"output_tokens", res.OutputTokens,
-		"duration_ms", time.Since(run.CreatedAt).Milliseconds(),
-		"tool_mode", res.ToolMode)
-
 	// The chat keeps one assistant line per run (A3.4's result card
 	// reads it back; RecentSummaries feeds it to the NEXT run of
 	// the conversation — plan §11 A3.3 "tóm tắt run trước khi
@@ -275,6 +262,28 @@ func (w *Worker) executeRun(runCtx context.Context, claimed ClaimedRun) (execute
 			w.Log.Warn("agent summary not saved to chat", "run_id", run.ID, "error", err.Error())
 		}
 	}
+	// The terminal write must land even when the run context was
+	// cancelled (cancel_requested / shutdown) — the process is still
+	// alive, only the run's context is done.
+	if err := w.Store.SetFinal(finalCtx, orgID, run.ID, final); err != nil {
+		return res, err
+	}
+
+	// Metrics log (plan §11 A3.5): EXACTLY ONE info line per finished
+	// run — the ops surface for run cost/latency. executeRun owns the
+	// terminal write, so it owns the line; a run reaped as worker_lost
+	// is the one exception (its process died — the reaping worker only
+	// learns the ids).
+	w.Log.Info("agent run finished",
+		"run_id", run.ID,
+		"org_id", orgID,
+		"status", res.Status,
+		"error_code", res.ErrorCode,
+		"steps", res.Steps,
+		"input_tokens", res.InputTokens,
+		"output_tokens", res.OutputTokens,
+		"duration_ms", time.Since(run.CreatedAt).Milliseconds(),
+		"tool_mode", res.ToolMode)
 	return res, nil
 }
 
