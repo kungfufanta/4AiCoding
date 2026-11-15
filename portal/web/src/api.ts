@@ -40,7 +40,16 @@ export type ApiKeyCreateBody = {
 };
 
 // Chat MVP: conversations are private to their author.
-export type ChatStatus = { enabled: boolean; model: string; models?: string[] };
+// #82/#84: agent readiness rides the same status payload
+// (sandboxd configured+reachable, LLM configured). Old backends omit
+// both fields — the UI treats a missing field as "available".
+export type ChatStatus = {
+  enabled: boolean;
+  model: string;
+  models?: string[];
+  agent_available?: boolean;
+  agent_reason?: string;
+};
 export type ChatConversation = {
   id: string;
   title: string;
