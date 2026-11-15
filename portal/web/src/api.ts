@@ -150,8 +150,19 @@ export type SandboxCreateBody = {
   env?: Record<string, string>;
   resources?: { cpus: number; memory_mb: number };
   ports?: number[];
+  // "public" = open preview URL (embeddable in the Chat Preview tab).
+  visibility?: "public" | "private";
   egress?: { mode: string; allow?: string[] };
   workspace?: { repo_url: string; branch?: string };
+};
+export type SandboxFileEntry = { path: string; type: "file" | "dir"; size?: number };
+export type SandboxFileList = { path: string; entries: SandboxFileEntry[]; truncated: boolean };
+export type SandboxFileContent = {
+  path: string;
+  size: number;
+  encoding: "utf-8" | "base64";
+  data: string;
+  truncated: boolean;
 };
 export type ExecResult = {
   stdout: string;
@@ -301,6 +312,16 @@ export const api = {
     call<Sandbox>("POST", `/api/orgs/${orgID}/sandboxes`, body),
   getSandbox: (orgID: string, id: string) =>
     call<Sandbox>("GET", `/api/orgs/${orgID}/sandboxes/${encodeURIComponent(id)}`),
+  listSandboxFiles: (orgID: string, id: string, path: string) =>
+    call<SandboxFileList>(
+      "GET",
+      `/api/orgs/${orgID}/sandboxes/${encodeURIComponent(id)}/files?recursive=true&max_entries=2000&path=${encodeURIComponent(path)}`,
+    ),
+  getSandboxFile: (orgID: string, id: string, path: string) =>
+    call<SandboxFileContent>(
+      "GET",
+      `/api/orgs/${orgID}/sandboxes/${encodeURIComponent(id)}/files/content?limit=524288&path=${encodeURIComponent(path)}`,
+    ),
   execSandbox: (orgID: string, id: string, cmd: string) =>
     call<ExecResult>("POST", `/api/orgs/${orgID}/sandboxes/${encodeURIComponent(id)}/exec`, { cmd }),
   startSandbox: (orgID: string, id: string) =>

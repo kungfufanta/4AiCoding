@@ -77,15 +77,18 @@ type External struct {
 // and only to it); everything else maps onto sandboxd's v1 create
 // request.
 type CreateInput struct {
-	OrgID       string
-	ProjectID   string
-	UserID      string // api key id or user id, for the audit trail
-	Image       string
-	Command     []string
-	Env         map[string]string
-	CPUs        float64
-	MemoryMB    int
-	Ports       []int
+	OrgID     string
+	ProjectID string
+	UserID    string // api key id or user id, for the audit trail
+	Image     string
+	Command   []string
+	Env       map[string]string
+	CPUs      float64
+	MemoryMB  int
+	Ports     []int
+	// Visibility: "public" (preview open, embeddable) or "private"
+	// (sandboxd forward-auth); empty = sandboxd default (private).
+	Visibility  string
 	EgressMode  string // "" = sandboxd default (allowlist)
 	EgressAllow []string
 	RepoURL     string
@@ -304,6 +307,9 @@ func (c *Client) Create(ctx context.Context, in CreateInput) (Sandbox, error) {
 	}
 	if len(in.Ports) > 0 {
 		body["ports"] = in.Ports
+	}
+	if in.Visibility != "" {
+		body["visibility"] = in.Visibility
 	}
 	if in.EgressMode != "" || len(in.EgressAllow) > 0 {
 		body["network"] = map[string]any{

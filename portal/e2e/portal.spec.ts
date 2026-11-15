@@ -346,6 +346,18 @@ test.describe.serial("portal preview", () => {
     await expect(preview).toContainText("hello from agent");
     await shot(page, "28-agent-tool-output");
 
+    // 5b. Code tab: the file tree shows hello.txt and opens its content.
+    await page.getByRole("button", { name: "Code và Preview" }).click();
+    const panel = page.getByRole("region", { name: "Không gian làm việc" });
+    await expect(panel).toBeVisible();
+    const fileBtn = panel.locator('button[title$="hello.txt"]').first();
+    await expect(fileBtn).toBeVisible({ timeout: 15_000 });
+    await fileBtn.click();
+    await expect(panel.getByLabel("Nội dung file")).toContainText("hello from agent");
+    await panel.getByRole("tab", { name: "Preview" }).click();
+    await shot(page, "28b-agent-code-preview");
+    await panel.getByRole("button", { name: "Đóng bảng Code/Preview" }).click();
+
     // 6. Revert through the confirm dialog → the file is gone.
     await result.getByRole("button", { name: "Revert" }).click();
     const revertDialog = page.getByRole("dialog");
