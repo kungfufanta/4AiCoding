@@ -5,6 +5,7 @@
 
 import { Link } from "react-router";
 import { ArrowRight, Bot, Code2, MessageSquare, ShieldCheck } from "lucide-react";
+import { useAuthMethods } from "../../lib/queries";
 import { cn } from "../../lib/cn";
 
 const primaryLink =
@@ -32,6 +33,23 @@ const FEATURES = [
 ];
 
 export function LandingPage() {
+  const methods = useAuthMethods();
+  // Issue #102: when signup is enabled the primary CTA goes straight
+  // to the provider's create-account screen — a plain anchor because
+  // /auth/login is a server route, not a SPA one. With signup off or
+  // missing (older backends) the CTA keeps its /login behavior.
+  const primaryCTA = methods.data?.signup ? (
+    <a href="/auth/login?signup=1&next=/" className={primaryLink}>
+      Bắt đầu chat miễn phí
+      <ArrowRight aria-hidden className="size-4" />
+    </a>
+  ) : (
+    <Link to="/login" state={{ from: "/" }} className={primaryLink}>
+      Bắt đầu chat miễn phí
+      <ArrowRight aria-hidden className="size-4" />
+    </Link>
+  );
+
   return (
     <div className="flex min-h-dvh flex-col bg-bg">
       {/* Top bar */}
@@ -55,10 +73,7 @@ export function LandingPage() {
             Chat với AI agent, agent viết và chạy code trong sandbox riêng của bạn.
           </p>
           <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
-            <Link to="/login" state={{ from: "/" }} className={primaryLink}>
-              Bắt đầu chat miễn phí
-              <ArrowRight aria-hidden className="size-4" />
-            </Link>
+            {primaryCTA}
             <Link to="/login" state={{ from: "/" }} className={secondaryLink}>
               Đăng nhập
             </Link>
