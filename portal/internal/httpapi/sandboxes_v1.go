@@ -150,6 +150,7 @@ func (s *Server) gatewayCreate(ctx context.Context, orgID, projectID, actorType,
 		CPUs:        body.Resources.CPUs,
 		MemoryMB:    body.Resources.MemoryMB,
 		Ports:       body.Ports,
+		Visibility:  body.Visibility,
 		EgressMode:  body.Egress.Mode,
 		EgressAllow: body.Egress.Allow,
 		RepoURL:     body.Workspace.RepoURL,
@@ -585,8 +586,11 @@ type createSandboxBody struct {
 		CPUs     float64 `json:"cpus"`
 		MemoryMB int     `json:"memory_mb"`
 	} `json:"resources"`
-	Ports  []int `json:"ports"`
-	Egress struct {
+	Ports []int `json:"ports"`
+	// Visibility "public" makes the preview URL open (the Chat Preview
+	// tab embeds it); "private" or empty keeps sandboxd's forward-auth.
+	Visibility string `json:"visibility"`
+	Egress     struct {
 		Mode  string   `json:"mode"`
 		Allow []string `json:"allow"`
 	} `json:"egress"`
@@ -625,6 +629,8 @@ func (b *createSandboxBody) validate(w http.ResponseWriter) bool {
 		writeErr(w, http.StatusBadRequest, "bad_request", "resources.cpus must be 0..16")
 	case b.Resources.MemoryMB < 0 || b.Resources.MemoryMB > 65536:
 		writeErr(w, http.StatusBadRequest, "bad_request", "resources.memory_mb must be 0..65536")
+	case b.Visibility != "" && b.Visibility != "public" && b.Visibility != "private":
+		writeErr(w, http.StatusBadRequest, "bad_request", `visibility must be "public" or "private"`)
 	case len(b.Ports) > 8:
 		writeErr(w, http.StatusBadRequest, "bad_request", "at most 8 ports")
 	case !validPorts(b.Ports):

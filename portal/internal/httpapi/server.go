@@ -245,6 +245,8 @@ func (s *Server) Handler() *http.ServeMux {
 	mux.Handle("POST /api/orgs/{orgID}/sandboxes", s.withSession(http.HandlerFunc(s.handleBFFCreateSandbox)))
 	mux.Handle("GET /api/orgs/{orgID}/sandboxes/{id}", s.withSession(http.HandlerFunc(s.handleBFFGetSandbox)))
 	mux.Handle("POST /api/orgs/{orgID}/sandboxes/{id}/exec", s.withSession(http.HandlerFunc(s.handleBFFExecSandbox)))
+	mux.Handle("GET /api/orgs/{orgID}/sandboxes/{id}/files", s.withSession(http.HandlerFunc(s.handleBFFListFiles)))
+	mux.Handle("GET /api/orgs/{orgID}/sandboxes/{id}/files/content", s.withSession(http.HandlerFunc(s.handleBFFFileContent)))
 	mux.Handle("GET /api/orgs/{orgID}/sandboxes/{id}/logs", s.withSession(http.HandlerFunc(s.handleBFFSandboxLogs)))
 	mux.Handle("GET /api/orgs/{orgID}/sandboxes/{id}/metrics/stream", s.withSession(http.HandlerFunc(s.handleBFFSandboxMetricsStream)))
 	mux.Handle("POST /api/orgs/{orgID}/sandboxes/{id}/start", s.withSession(http.HandlerFunc(s.handleBFFSandboxAction)))

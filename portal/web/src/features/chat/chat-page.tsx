@@ -14,6 +14,7 @@ import {
   Loader2,
   MessageSquarePlus,
   PanelLeft,
+  PanelRight,
   SendHorizontal,
   Square,
   Trash2,
@@ -32,6 +33,7 @@ import { Skeleton } from "../../ui/skeleton";
 import { useToast } from "../../ui/toast";
 import { Markdown } from "./markdown";
 import { RunView } from "./agent-run";
+import { WorkspacePanel } from "./workspace-panel";
 import { useAgentRun } from "./use-agent-run";
 
 type Pending = { user: string; reply: string };
@@ -85,6 +87,8 @@ export function ChatPage() {
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState<Pending | null>(null);
   const [listOpen, setListOpen] = useState(false);
+  // Code/Preview side panel (desktop: third column; small screens: overlay).
+  const [panelOpen, setPanelOpen] = useState(false);
   // null = auto: a chat with a pinned sandbox and runs is mid-workflow
   // and comes back in Agent mode after a reload; everything else
   // starts in Chat. An explicit switch overrides for the session.
@@ -212,8 +216,13 @@ export function ChatPage() {
       // No image: sandboxd uses its instance image, the only one its
       // policy always allows and the one the agent tooling expects.
       // Guessing an image here (ubuntu:24.04) was refused on live.
+      // Port 3000 + public visibility: the Preview tab embeds the
+      // app the agent serves there (a private preview needs sandboxd's
+      // forward-auth, which the Portal session does not carry).
       const sb = await api.createSandbox(org.id, {
         resources: { cpus: 1, memory_mb: 512 },
+        ports: [3000],
+        visibility: "public",
       });
       await api.attachChatSandbox(org.id, id, sb.id);
     },
@@ -458,7 +467,12 @@ export function ChatPage() {
   );
 
   return (
-    <div className="-my-2 grid h-[calc(100dvh-3.5rem-2rem)] min-h-[420px] grid-cols-1 gap-4 md:grid-cols-[220px_minmax(0,1fr)]">
+    <div
+      className={cn(
+        "-my-2 grid h-[calc(100dvh-3.5rem-2rem)] min-h-[420px] grid-cols-1 gap-4 md:grid-cols-[220px_minmax(0,1fr)]",
+        attached && panelOpen && "xl:grid-cols-[200px_minmax(0,1fr)_minmax(0,1.1fr)]",
+      )}
+    >
       {/* Conversation list */}
       <aside
         className={cn(
@@ -540,6 +554,19 @@ export function ChatPage() {
               </span>
             ) : null}
             {sandboxPicker}
+            {attached && (
+              <Button
+                variant={panelOpen ? "secondary" : "ghost"}
+                size="sm"
+                aria-label="Code và Preview"
+                aria-pressed={panelOpen}
+                title="Code và Preview"
+                onClick={() => setPanelOpen((o) => !o)}
+              >
+                <PanelRight aria-hidden className="size-4" />
+                <span className="hidden sm:inline">Code · Preview</span>
+              </Button>
+            )}
             {modeSwitch}
           </div>
         </header>
@@ -715,6 +742,17 @@ export function ChatPage() {
           </div>
         </form>
       </section>
+
+      {attached && panelOpen && (
+        <WorkspacePanel
+          orgID={org.id}
+          sandbox={sbx}
+          sandboxID={attached}
+          live={ownActive}
+          onClose={() => setPanelOpen(false)}
+          className="fixed inset-x-4 top-16 bottom-4 z-40 shadow-lg xl:static xl:z-auto xl:shadow-none"
+        />
+      )}
     </div>
   );
 }
