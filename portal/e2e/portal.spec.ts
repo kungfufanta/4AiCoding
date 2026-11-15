@@ -532,4 +532,33 @@ test.describe.serial("portal preview", () => {
     await shot(page, "37-landing-mobile-390");
     await page.setViewportSize({ width: 1280, height: 800 });
   });
+
+  // Issue #102: when /auth/methods reports signup=true the primary
+  // landing CTA links straight to the provider's create-account
+  // screen (/auth/login?signup=1&next=/) instead of /login. The mock
+  // keeps the test independent of any OIDC provider; the compose
+  // stack answers signup=false, so the guest test above still
+  // exercises the /login path.
+  test("landing — primary CTA goes straight to signup when enabled (issue 102)", async ({ page }) => {
+    await page.context().clearCookies();
+    await page.route("**/auth/methods", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ sso: true, password: false, signup: true }),
+      });
+    });
+
+    await page.goto("/");
+    const cta = page.getByRole("link", { name: "Bắt đầu chat miễn phí" });
+    await expect(cta).toHaveAttribute("href", "/auth/login?signup=1&next=/", { timeout: 10_000 });
+    // The secondary Đăng nhập links (header + hero) keep pointing at
+    // the SPA login page.
+    await expect(page.getByRole("link", { name: "Đăng nhập", exact: true })).toHaveCount(2);
+    await expect(page.getByRole("link", { name: "Đăng nhập", exact: true }).first()).toHaveAttribute(
+      "href",
+      "/login",
+    );
+    await shot(page, "38-landing-signup-cta");
+  });
 });
