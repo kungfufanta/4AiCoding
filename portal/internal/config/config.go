@@ -170,8 +170,10 @@ func Parse(getenv func(string) string) (Config, error) {
 	// OpenAI-compatible endpoints live under /v1; a bare host (e.g. the
 	// WebHub link copied without /v1) would POST to {host}/chat/completions
 	// and get the hub's HTML 404. Add /v1 only when there is no path at all.
+	// The query is kept: the z.ai sandbox hub routes by ?XTransformPort=3003.
 	if u, err := url.Parse(cfg.LLMBaseURL); err == nil && (u.Path == "" || u.Path == "/") {
-		cfg.LLMBaseURL += "/v1"
+		u.Path = "/v1"
+		cfg.LLMBaseURL = u.String()
 	}
 	if v := getenv("PORTAL_SESSION_TTL"); v != "" {
 		d, err := time.ParseDuration(v)
