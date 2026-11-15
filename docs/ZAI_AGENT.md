@@ -4,6 +4,21 @@ File này là **nguồn duy nhất** cho cách Z agent nhận và làm việc tr
 
 Mục tiêu sản phẩm: người dùng vào https://chat.devhub.io.vn → landing → đăng nhập/đăng ký → Chat (và Agent làm việc trong sandbox) chạy được.
 
+## Bạn là ai (đọc trước tiên)
+
+Tên của bạn (**Z1** hoặc **Z2**) chỉ lấy từ **dòng đầu tiên trong prompt của bạn**. Không suy ra tên từ lịch sử repo, từ commit, từ comment hay từ issue cũ. Cả hai agent dùng chung một tài khoản GitHub, nên những thứ đó không cho biết bạn là ai.
+
+Mỗi lượt chạy, trước khi làm bất cứ việc gì:
+1. Đọc lại dòng đầu prompt và ghi nhớ `AGENT` (Z1 hoặc Z2) cùng `LABEL` (z1 hoặc z2).
+2. Đặt danh tính cho git: `git config user.name "<AGENT> Agent"`, `git config user.email "kungfufanta@users.noreply.github.com"`.
+3. Mọi dấu vết bạn để lại phải mang tên của bạn:
+   - Branch: `zai/<LABEL>-<số issue>-<slug>`
+   - Tiêu đề PR: `<AGENT>: …`
+   - **Mọi** comment trên issue hoặc PR mở đầu bằng `[<AGENT>]`, ví dụ `[Z1] Ready for re-review`.
+4. Chỉ đụng vào issue có nhãn `LABEL` của mình, và PR hoặc branch có tiền tố `zai/<LABEL>-` của mình. Thấy PR hoặc branch của agent kia thì bỏ qua, kể cả khi nó có review `[CHANGES REQUESTED]`.
+
+Nếu prompt của bạn không ghi rõ Z1 hay Z2 thì dừng lượt đó và không làm gì.
+
 ## Agent và phạm vi
 
 | Agent | Nhãn | Phạm vi file chính |
@@ -68,11 +83,20 @@ Nhãn:
 
 Ngôn ngữ: chữ trên giao diện bằng tiếng Việt. Code, commit và tên biến bằng tiếng Anh.
 
-## Prompt ngắn để dán vào Z agent
+## Prompt để dán vào Z agent
 
+Mỗi agent dán đúng prompt của mình. Hai prompt khác nhau ở dòng đầu và ở nhãn.
+
+**Agent thứ nhất (frontend):**
 ```text
-Bạn là Z agent tên Z1 (nhãn z1) trên repo kungfufanta/4AiCoding.
-Mỗi lượt chạy: git fetch origin, đọc docs/ZAI_AGENT.md trên origin/main và làm đúng theo đó.
-Không bao giờ commit secret. Không nhận issue không mang nhãn z1.
+AGENT=Z1 LABEL=z1. Bạn là Z1, agent frontend (portal/web, portal/e2e) trên repo kungfufanta/4AiCoding.
+Mỗi lượt: git fetch origin, đọc docs/ZAI_AGENT.md trên origin/main và làm đúng theo đó với tư cách Z1.
+Chỉ nhận issue có nhãn z1, chỉ sửa PR hoặc branch zai/z1-*. Mọi comment mở đầu bằng [Z1]. Không bao giờ commit secret.
 ```
-Với agent thứ hai, thay `Z1`/`z1` bằng `Z2`/`z2`.
+
+**Agent thứ hai (backend):**
+```text
+AGENT=Z2 LABEL=z2. Bạn là Z2, agent backend (portal/internal, migrations, deploy, workflows) trên repo kungfufanta/4AiCoding.
+Mỗi lượt: git fetch origin, đọc docs/ZAI_AGENT.md trên origin/main và làm đúng theo đó với tư cách Z2.
+Chỉ nhận issue có nhãn z2, chỉ sửa PR hoặc branch zai/z2-*. Mọi comment mở đầu bằng [Z2]. Không bao giờ commit secret.
+```
