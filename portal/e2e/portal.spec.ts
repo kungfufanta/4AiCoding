@@ -395,7 +395,9 @@ test.describe.serial("portal preview", () => {
     const slug = await gotoOrgBase(page);
 
     await page.goto(`/orgs/${slug}/chat`);
-    await page.getByRole("button", { name: "New chat" }).click();
+    // The base chat URL is already the fresh-chat state (no chatId) —
+    // no "New chat" click: earlier tests leave chats whose default
+    // title "New chat" makes that locator ambiguous (strict mode).
     const enable = page.getByTestId("enable-agent");
     await expect(enable).toBeVisible();
 
@@ -424,7 +426,7 @@ test.describe.serial("portal preview", () => {
     const slug = await gotoOrgBase(page);
 
     await page.goto(`/orgs/${slug}/chat`);
-    await page.getByRole("button", { name: "New chat" }).click();
+    // Base chat URL = fresh-chat state (see the test above).
     const enable = page.getByTestId("enable-agent");
     await expect(enable).toBeVisible();
 
