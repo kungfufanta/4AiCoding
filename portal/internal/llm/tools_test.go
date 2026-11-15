@@ -724,3 +724,21 @@ func TestGoldenFallbackBodyWebhub(t *testing.T) {
 	}
 	assertGoldenBody(t, "fallback_webhub", raw)
 }
+
+// A stream the provider drops after some text (the z.ai hub cuts every
+// stream at ~30 s) is ErrStreamCut, not retried: the text was shown.
+func TestStreamToolsCutMidReply(t *testing.T) {
+	srv := llmtest.NewServer(llmtest.Scenario{
+		Chunks:     []any{llmtest.TextChunk("<!DOCTYPE html>")},
+		Disconnect: true,
+	})
+	defer srv.Close()
+	c := webhubClient(srv.URL)
+	_, err := c.StreamTools(context.Background(), reqWith(Msg{Role: "user", Content: "hi"}), nil)
+	if !errors.Is(err, ErrStreamCut) || !errors.Is(err, ErrUpstream) {
+		t.Fatalf("err = %v, want ErrStreamCut wrapping ErrUpstream", err)
+	}
+	if srv.PopCount() != 0 || len(srv.Requests) != 1 {
+		t.Fatalf("requests = %d, want 1 (no retry after text was delivered)", len(srv.Requests))
+	}
+}

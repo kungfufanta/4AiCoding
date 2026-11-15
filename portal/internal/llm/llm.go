@@ -95,6 +95,14 @@ var ErrToolsUnsupported = errors.New("llm upstream does not support tools")
 // reason back to the model as a tool_result so it can retry the turn.
 var ErrBadToolBlock = errors.New("llm returned an invalid tool block")
 
+// ErrStreamCut is returned when the provider closed a stream mid-reply
+// (connection dropped, or the body ended with neither [DONE] nor a
+// finish_reason) after some text was already delivered. Some hubs cut
+// every stream at a fixed wall-clock limit (~30 s), so a long reply —
+// a whole file in one write_file — never completes. It wraps
+// ErrUpstream; the agent loop catches it and asks for smaller steps.
+var ErrStreamCut = fmt.Errorf("%w: stream closed mid-reply", ErrUpstream)
+
 // ErrBadToolCall is returned when the assembled tool call arguments
 // are not valid JSON (fragments did not concatenate into an object).
 var ErrBadToolCall = errors.New("llm returned an invalid tool call")
@@ -810,6 +818,7 @@ func (c *Client) attemptStreamTools(ctx context.Context, req ToolRequest, raw []
 	outputBytes := 0
 	accs := map[int]*toolCallAccumulator{}
 	finish := ""
+	sawDone := false
 	var usage Usage
 	usageSeen := false
 
@@ -822,6 +831,7 @@ func (c *Client) attemptStreamTools(ctx context.Context, req ToolRequest, raw []
 		}
 		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		if data == "[DONE]" {
+			sawDone = true
 			break
 		}
 		var chunk struct {
@@ -899,7 +909,13 @@ func (c *Client) attemptStreamTools(ctx context.Context, req ToolRequest, raw []
 		}
 	}
 	if err := sc.Err(); err != nil {
-		return Turn{}, delivered, delivered == false, fmt.Errorf("%w: %v", ErrUpstream, err)
+		if delivered {
+			return Turn{}, delivered, false, fmt.Errorf("%w (%v)", ErrStreamCut, err)
+		}
+		return Turn{}, delivered, true, fmt.Errorf("%w: %v", ErrUpstream, err)
+	}
+	if delivered && !sawDone && finish == "" {
+		return Turn{}, delivered, false, ErrStreamCut
 	}
 
 	// Fallback mode: split the assembled text into prose and the

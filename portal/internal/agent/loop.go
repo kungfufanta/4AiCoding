@@ -30,6 +30,21 @@ import (
 	"github.com/tastyeffectco/sandboxd/portal/internal/llmconfig"
 )
 
+// maxStreamCuts is how many mid-reply stream drops a run absorbs
+// before it fails llm_error.
+const maxStreamCuts = 3
+
+const streamCutNudge = "Your last reply was cut off by the model provider before it finished " +
+	"(replies are limited to about 30 seconds), so nothing in it was run or saved. " +
+	"Work in small steps: one tool call per reply, and keep each write_file under about 80 lines. " +
+	"Write a large file in parts: write_file the first part, then write_file with \"append\": true for the rest."
+
+const noToolNudge = "You did not call any tool, so nothing was created in the sandbox: text in your reply " +
+	"is NOT saved as files. Do the task with the tools — create files with write_file (large files in " +
+	"parts of about 80 lines, using \"append\": true), run commands with run_command — and call finish " +
+	"when done. If the task really needs no change, call finish with your answer. " +
+	"Call tools ONLY with one ```tool block as described in the protocol."
+
 // SystemPrompt is the go:embed'd agent system prompt (prompt/system.md).
 // Decision §2-1: ported from the upstream agentprompt, adapted to the
 // tool-based loop (no runtimed/sandbox.yaml), with the AGENTS.md /
@@ -486,6 +501,9 @@ func (w *Worker) loopBody(runCtx context.Context, claimed ClaimedRun, mode *stri
 		summary    string
 		finished   bool
 		consecDown int
+		cuts       int                  // streams the provider closed mid-reply
+		toolsUsed  bool                 // the model called at least one tool this run
+		nudged     bool                 // the "you did not call a tool" reminder was sent
 		msgStep    = make([]int, 0, 32) // step each history message was added at
 	)
 	for step := 1; step <= run.MaxSteps; step++ {
@@ -528,6 +546,21 @@ func (w *Worker) loopBody(runCtx context.Context, claimed ClaimedRun, mode *stri
 			case errors.Is(runCtx.Err(), context.DeadlineExceeded) ||
 				errors.Is(limCtx.Err(), context.DeadlineExceeded):
 				return fail(ErrTimeout, fmt.Errorf("run exceeded %s: %w", timeout, err))
+			case errors.Is(err, llm.ErrStreamCut) && cuts < maxStreamCuts:
+				// The provider dropped the stream mid-reply (some hubs
+				// cut every stream at ~30 s): nothing of that reply ran.
+				// Spend the step and ask for smaller pieces.
+				cuts++
+				w.Log.Warn("agent llm stream cut", "run_id", run.ID, "step", step, "cuts", cuts)
+				if _, aerr := w.Store.AppendEvent(runCtx, orgID, run.ID, "status", map[string]any{
+					"phase": "running", "tool_mode": toolMode,
+					"warning": "the model's reply was cut off by the provider; asking for smaller steps",
+				}); aerr != nil {
+					return fail(ErrInternal, aerr)
+				}
+				msgs = append(msgs, llm.Msg{Role: "user", Content: streamCutNudge})
+				msgStep = append(msgStep, step)
+				continue
 			case errors.Is(err, llm.ErrBadToolBlock) && !fallback:
 				// Native mode, but the model wrote an unreadable text
 				// call (the provider dropped the tools field): switch to
@@ -567,6 +600,30 @@ func (w *Worker) loopBody(runCtx context.Context, claimed ClaimedRun, mode *stri
 				run.MaxTokens, totalIn+totalOut))
 		}
 
+		if len(turn.ToolCalls) == 0 && !toolsUsed && !nudged && strings.Contains(turn.Text, "```") {
+			// No tool call yet, and the answer carries a code fence:
+			// the model wrote the work into the chat (e.g. a whole page in a ``` fence)
+			// instead of into the sandbox, typically because the
+			// provider dropped the tools field. Remind it once, in the
+			// fallback protocol, which spells the call format out.
+			nudged = true
+			if !fallback {
+				fallback = true
+				toolMode = toolModeFallback
+				*mode = toolMode
+			}
+			if _, aerr := w.Store.AppendEvent(runCtx, orgID, run.ID, "status", map[string]any{
+				"phase": "running", "tool_mode": toolMode,
+				"warning": "the model answered without calling a tool; reminding it to use the tools",
+			}); aerr != nil {
+				return fail(ErrInternal, aerr)
+			}
+			msgs = append(msgs,
+				llm.Msg{Role: "assistant", Content: cutUTF8(turn.Text, 2000)},
+				llm.Msg{Role: "user", Content: noToolNudge})
+			msgStep = append(msgStep, step, step)
+			continue
+		}
 		if len(turn.ToolCalls) == 0 {
 			// No tool call: the text is the final summary (plan §7.5).
 			summary = strings.TrimSpace(turn.Text)
@@ -588,6 +645,7 @@ func (w *Worker) loopBody(runCtx context.Context, claimed ClaimedRun, mode *stri
 				return fail(ErrInternal, aerr)
 			}
 		}
+		toolsUsed = true
 		msgs = append(msgs, llm.Msg{Role: "assistant", Content: turn.Text, ToolCalls: turn.ToolCalls})
 		msgStep = append(msgStep, step)
 

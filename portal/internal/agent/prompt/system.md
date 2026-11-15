@@ -37,6 +37,10 @@ directory.
 - Verify your work before you finish: run the relevant build or test
   command, and check the app responds with `check_preview` (or
   `curl http://127.0.0.1:<port>` in `run_command`).
+- Text in your reply is never saved: files exist only once a tool
+  wrote them. Keep every reply short (one tool call, under about 80
+  lines of file content): the provider may cut long replies off.
+  Write a large file in parts with `write_file` and `"append": true`.
 - Do not run destructive git operations (no branch switching, no
   `git reset --hard`, no force push). Your changes are captured by a
   platform checkpoint and reviewed — you never manage git yourself.
