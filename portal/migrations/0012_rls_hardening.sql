@@ -25,6 +25,13 @@
 -- R0: đọc password_logins để biết app.user_id có phải bootstrap admin.
 -- R1 sẽ thay bằng membership trong org platform. Trả về 'admin' khi
 -- app.user_id là một password login user, NULL khi không.
+--
+-- GIẢ ĐỊNH R0: mọi dòng trong password_logins đều là "platform admin".
+-- Hiện chỉ passwordauth.EnsureBootstrap tạo ra dòng đó (bootstrap
+-- admin), nên chấp nhận được. R1 thay giả định này bằng membership trong
+-- org platform (orgs.kind = 'platform'): app_platform_role() sẽ JOIN
+-- memberships với orgs WHERE kind = 'platform', và hàm chỉ trả về role
+-- trong org đó ('admin' khi là platform admin, NULL khi không).
 
 CREATE OR REPLACE FUNCTION app_platform_role() RETURNS TEXT
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
@@ -36,6 +43,26 @@ $$;
 
 REVOKE ALL ON FUNCTION app_platform_role() FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION app_platform_role() TO portal_app;
+
+-- === 1b. Hàm DEFINER: app_org_role() =================================
+-- Role của app.user_id trong org đang thao tác (app.org_id), hoặc NULL.
+-- Plan §4.2. SECURITY DEFINER để tránh đệ quy policy (memberships cũng
+-- có RLS): hàm chạy với quyền owner (table owner) nên bypass RLS khi
+-- đọc memberships. Không nhận tham số tự do làm điều kiện chéo org:
+-- chỉ đọc app.user_id và app.org_id (GUC).
+--
+-- Policy gọi dạng (SELECT app_org_role()) để Postgres tính một lần mỗi
+-- câu lệnh (initplan) thay vì một lần mỗi dòng.
+
+CREATE OR REPLACE FUNCTION app_org_role() RETURNS TEXT
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+  SELECT m.role FROM memberships m
+  WHERE m.org_id  = NULLIF(current_setting('app.org_id', true), '')::uuid
+    AND m.user_id = NULLIF(current_setting('app.user_id', true), '')::uuid
+$$;
+
+REVOKE ALL ON FUNCTION app_org_role() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION app_org_role() TO portal_app;
 
 -- === 2. orgs: tách policy + trigger chặn sửa plan_id (vá L1) =========
 -- Policy cũ: orgs_tenant FOR ALL USING (id = ORG OR EXISTS membership).
@@ -60,24 +87,19 @@ CREATE POLICY orgs_select ON orgs FOR SELECT
 CREATE POLICY orgs_insert ON orgs FOR INSERT
     WITH CHECK (id = NULLIF(current_setting('app.org_id', true), '')::uuid);
 
--- UPDATE: id = ORG, hoặc là thành viên. WITH CHECK viết rõ (Postgres
--- ngầm bằng USING nếu thiếu). Trigger chặn sửa plan_id.
+-- UPDATE: id = ORG VÀ caller là owner/admin của org đó (plan §5.1).
+-- Review fix: nhánh "là thành viên" cũ cho member đổi tên/slug của org.
+-- app_org_role() đọc membership của app.user_id trong app.org_id;
+-- gọi dạng (SELECT app_org_role()) thành initplan (một lần mỗi câu,
+-- không phải mỗi dòng). Trigger vẫn chặn sửa plan_id.
 CREATE POLICY orgs_update ON orgs FOR UPDATE
     USING (
         id = NULLIF(current_setting('app.org_id', true), '')::uuid
-        OR EXISTS (
-            SELECT 1 FROM memberships m
-            WHERE m.org_id = orgs.id
-              AND m.user_id = NULLIF(current_setting('app.user_id', true), '')::uuid
-        )
+        AND (SELECT app_org_role()) IN ('owner', 'admin')
     )
     WITH CHECK (
         id = NULLIF(current_setting('app.org_id', true), '')::uuid
-        OR EXISTS (
-            SELECT 1 FROM memberships m
-            WHERE m.org_id = orgs.id
-              AND m.user_id = NULLIF(current_setting('app.user_id', true), '')::uuid
-        )
+        AND (SELECT app_org_role()) IN ('owner', 'admin')
     );
 
 -- DELETE: R0 chặn qua portal_app (org không tự xóa). Login migration
@@ -143,28 +165,37 @@ CREATE POLICY memberships_insert ON memberships FOR INSERT
 -- UPDATE: admin/owner đổi role thành viên khác (user_id <> ME); role
 -- mới = 'owner' chỉ khi caller là owner của org. L2 cố gắng UPDATE
 -- role='owner' WHERE user_id=me: user_id <> ME fail -> 0 dòng hoặc 42501.
+-- Review fix: USING phải cũng yêu cầu R IN (owner, admin), không chỉ
+-- org_id = ORG, nếu không member có thể hạ/chỉnh người khác.
+-- role cũ/mới = 'owner' chỉ khi R = 'owner' (cho phép owner grant
+-- owner, chặn admin grant owner).
 CREATE POLICY memberships_update ON memberships FOR UPDATE
     USING (
         org_id = NULLIF(current_setting('app.org_id', true), '')::uuid
+        AND (SELECT app_org_role()) IN ('owner', 'admin')
+        AND user_id <> NULLIF(current_setting('app.user_id', true), '')::uuid
+        AND (role <> 'owner' OR (SELECT app_org_role()) = 'owner')
     )
     WITH CHECK (
         org_id = NULLIF(current_setting('app.org_id', true), '')::uuid
+        AND (SELECT app_org_role()) IN ('owner', 'admin')
         AND user_id <> NULLIF(current_setting('app.user_id', true), '')::uuid
-        AND (
-            EXISTS (
-                SELECT 1 FROM memberships m2
-                WHERE m2.org_id = memberships.org_id
-                  AND m2.user_id = NULLIF(current_setting('app.user_id', true), '')::uuid
-                  AND m2.role = 'owner'
-            )
-            OR role <> 'owner'
-        )
+        AND (role <> 'owner' OR (SELECT app_org_role()) = 'owner')
     );
 
--- DELETE: R0 giữ như cũ (org_id = ORG). R1+ sẽ thêm ràng buộc owner.
+-- DELETE: owner/admin gỡ thành viên khác (user_id <> ME, role <> owner);
+-- hoặc member tự rời org (user_id = ME, role <> owner). Review fix:
+-- chính sách cũ chỉ yêu cầu org_id = ORG, cho phép member đá owner.
 CREATE POLICY memberships_delete ON memberships FOR DELETE
     USING (
         org_id = NULLIF(current_setting('app.org_id', true), '')::uuid
+        AND (
+            ((SELECT app_org_role()) IN ('owner', 'admin')
+             AND user_id <> NULLIF(current_setting('app.user_id', true), '')::uuid
+             AND role <> 'owner')
+            OR (user_id = NULLIF(current_setting('app.user_id', true), '')::uuid
+                AND role <> 'owner')
+        )
     );
 
 -- === 4. accept_invite SECURITY DEFINER (vá L2, L3 đường invite) =====
