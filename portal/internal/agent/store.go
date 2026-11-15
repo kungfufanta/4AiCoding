@@ -51,7 +51,7 @@ const (
 	// (no sandboxes:files scope): every file tool would fail, so the
 	// run stops before the model starts guessing.
 	ErrSandboxFilesForbidden = "sandbox_files_forbidden"
-	ErrInternal           = "internal"
+	ErrInternal              = "internal"
 )
 
 // Store is the durable state of agent runs, events and LLM history.
