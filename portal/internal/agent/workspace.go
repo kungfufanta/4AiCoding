@@ -79,6 +79,9 @@ type Workspace struct {
 	AgentsMD string // "" when the file does not exist
 	BrainMD  string // "" when the file does not exist
 	Notes    []string
+	// FilesForbidden: sandboxd answered 403 on the files API (the
+	// Portal's key lacks the sandboxes:files scope).
+	FilesForbidden error
 }
 
 // BuildWorkspace reads the tree and the two note files. Individual
@@ -88,6 +91,10 @@ func BuildWorkspace(ctx context.Context, sbx *sandboxd.Client, sandboxID string,
 	w := Workspace{Dir: env.ProjectDir}
 	entries, truncated, err := tools.List(ctx, sbx, sandboxID, env.RelPrefix, 2000)
 	if err != nil {
+		if apiForbidden(err) {
+			w.FilesForbidden = err
+			return w
+		}
 		w.Notes = append(w.Notes, "workspace tree unavailable: "+err.Error())
 		w.Tree = "(unavailable)"
 	} else {
@@ -114,6 +121,11 @@ func readNote(ctx context.Context, sbx *sandboxd.Client, sandboxID, relPrefix, n
 		out = cutUTF8(out, notesMaxBytes) + "\n… [" + name + " truncated at 8 KiB]"
 	}
 	return out
+}
+
+func apiForbidden(err error) bool {
+	var api *sandboxd.APIError
+	return errors.As(err, &api) && api.Status == 403
 }
 
 func apiNotFound(err error) bool {

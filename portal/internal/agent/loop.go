@@ -424,6 +424,10 @@ func (w *Worker) loopBody(runCtx context.Context, claimed ClaimedRun, mode *stri
 
 	// --- step 4: context (plan §7.4) -----------------------------------
 	ws := BuildWorkspace(limCtx, w.Sandboxd, run.SandboxID, env)
+	if ws.FilesForbidden != nil {
+		return fail(ErrSandboxFilesForbidden, fmt.Errorf(
+			"sandboxd files API refused (PORTAL_SANDBOXD_API_KEY needs the sandboxes:files scope): %w", ws.FilesForbidden))
+	}
 	prevRows, serr := w.Store.RecentSummaries(limCtx, orgID, run.ConversationID, run.ID, 3)
 	if serr != nil {
 		w.Log.Warn("agent earlier-run summaries unavailable", "run_id", run.ID, "error", serr.Error())

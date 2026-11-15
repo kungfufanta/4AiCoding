@@ -192,7 +192,9 @@ function CodeTab({ orgID, sandboxID, live }: { orgID: string; sandboxID: string;
           <Loader2 aria-label="Đang tải" className="m-2 size-4 animate-spin text-muted" />
         ) : files.isError ? (
           <p className="px-1.5 text-xs text-danger">
-            Không đọc được file: {files.error instanceof Error ? files.error.message : String(files.error)}
+            {files.error instanceof ApiError && files.error.status === 403
+              ? "Key sandboxd của Portal chưa có quyền sandboxes:files nên không xem được file."
+              : `Không đọc được file: ${files.error instanceof Error ? files.error.message : String(files.error)}`}
           </p>
         ) : tree.length === 0 ? (
           <p className="px-1.5 text-xs text-muted">Workspace còn trống. Giao việc cho agent để tạo file.</p>

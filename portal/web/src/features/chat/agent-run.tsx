@@ -166,6 +166,12 @@ export function ResultCard({
         {res.preview_ok === true && <Badge variant="success">preview ✓</Badge>}
         {res.preview_ok === false && <Badge variant="warning">preview ✗</Badge>}
       </div>
+      {failed && run.error_code === "sandbox_files_forbidden" && (
+        <p className="mt-2 text-xs text-danger">
+          Key sandboxd của Portal chưa có quyền <code>sandboxes:files</code> nên agent không đọc/ghi được file. Quản
+          trị viên cần tạo key mới có scope này và cập nhật PORTAL_SANDBOXD_API_KEY.
+        </p>
+      )}
       {res.summary && <div className="mt-2 text-sm text-fg"><Markdown text={res.summary} /></div>}
       {res.warning && <p className="mt-2 text-xs text-warning">{res.warning}</p>}
       {res.files_changed.length > 0 && (

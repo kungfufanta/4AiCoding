@@ -47,6 +47,10 @@ const (
 	ErrTokenBudget        = "token_budget"
 	ErrLLM                = "llm_error"
 	ErrSandboxUnavailable = "sandbox_unavailable"
+	// The Portal's sandboxd key may exec but not use the files API
+	// (no sandboxes:files scope): every file tool would fail, so the
+	// run stops before the model starts guessing.
+	ErrSandboxFilesForbidden = "sandbox_files_forbidden"
 	ErrInternal           = "internal"
 )
 
