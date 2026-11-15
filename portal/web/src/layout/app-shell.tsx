@@ -70,15 +70,15 @@ export function AppShell() {
     return (
       <main className="mx-auto max-w-lg px-4 py-16">
         <div className="rounded-xl border border-border bg-surface p-6 text-center shadow-sm">
-          <h1 className="text-lg font-semibold text-fg">Organisation not found</h1>
+          <h1 className="text-lg font-semibold text-fg">Không tìm thấy tổ chức</h1>
           <p className="mt-1 text-sm text-muted">
-            The org <code className="font-mono">{orgSlug}</code> is not on your account.
+            Tổ chức <code className="font-mono">{orgSlug}</code> không thuộc tài khoản của bạn.
           </p>
           <Button
             className="mt-4"
             onClick={() => navigate(`/orgs/${meData.orgs[0]?.slug ?? ""}/chat`)}
           >
-            Back to your org
+            Về tổ chức của bạn
           </Button>
         </div>
       </main>
@@ -113,13 +113,13 @@ function Shell({ me, org }: { me: Me; org: Org }) {
       {drawerOpen && (
         <div className="fixed inset-0 z-50 lg:hidden" role="dialog" aria-modal="true">
           <button
-            aria-label="Close navigation"
+            aria-label="Đóng menu"
             className="absolute inset-0 bg-black/50 backdrop-blur-[2px]"
             onClick={() => setDrawerOpen(false)}
           />
           <aside className="relative flex h-full w-64 flex-col border-r border-border bg-surface">
             <button
-              aria-label="Close navigation"
+              aria-label="Đóng menu"
               className="absolute right-2 top-2.5 rounded-md p-1.5 text-muted hover:bg-surface-2 hover:text-fg"
               onClick={() => setDrawerOpen(false)}
             >
@@ -136,7 +136,7 @@ function Shell({ me, org }: { me: Me; org: Org }) {
             variant="ghost"
             size="sm"
             className="lg:hidden"
-            aria-label="Open navigation"
+            aria-label="Mở menu"
             onClick={() => setDrawerOpen(true)}
           >
             <Menu aria-hidden className="size-4.5" />
@@ -163,19 +163,19 @@ function SidebarContent({ org, role }: { org: Org; role?: string }) {
   // "Manage".
   const chatItem = { to: `${base}/chat`, label: "Chat", icon: MessageSquare };
   const devItems = [
-    { to: `${base}/projects`, label: "Projects", icon: FolderKanban },
-    { to: `${base}/sandboxes`, label: "Sandboxes", icon: Box },
-    { to: `${base}/api-keys`, label: "API keys", icon: KeyRound },
-    { to: `${base}/quickstart`, label: "Quickstart", icon: BookOpen },
-    { to: `${base}/usage`, label: "Usage", icon: Gauge },
+    { to: `${base}/projects`, label: "Dự án", icon: FolderKanban },
+    { to: `${base}/sandboxes`, label: "Sandbox", icon: Box },
+    { to: `${base}/api-keys`, label: "API key", icon: KeyRound },
+    { to: `${base}/quickstart`, label: "Hướng dẫn nhanh", icon: BookOpen },
+    { to: `${base}/usage`, label: "Sử dụng", icon: Gauge },
   ];
   const manageItems = [
-    { to: `${base}/models`, label: "Models", icon: Cpu },
+    { to: `${base}/models`, label: "Mô hình", icon: Cpu },
     ...(isOwnerOrAdmin
-      ? [{ to: `${base}/admin/llm`, label: "Admin LLM", icon: SlidersHorizontal }]
+      ? [{ to: `${base}/admin/llm`, label: "Quản trị LLM", icon: SlidersHorizontal }]
       : []),
-    { to: `${base}/members`, label: "Members", icon: Users },
-    { to: `${base}/audit`, label: "Audit", icon: ScrollText },
+    { to: `${base}/members`, label: "Thành viên", icon: Users },
+    { to: `${base}/audit`, label: "Nhật ký", icon: ScrollText },
   ];
 
   return (
@@ -185,20 +185,20 @@ function SidebarContent({ org, role }: { org: Org; role?: string }) {
           <LayoutGrid aria-hidden className="size-4" />
         </span>
         <span className="text-base font-semibold tracking-tight text-fg">Portal</span>
-        <span className="ml-auto text-xs text-muted">sandboxes for agents</span>
+        <span className="ml-auto text-xs text-muted">sandbox cho agent</span>
       </div>
-      <nav className="flex flex-col gap-0.5 px-2 py-2" aria-label="Main">
+      <nav className="flex flex-col gap-0.5 px-2 py-2" aria-label="Điều hướng chính">
         <NavLink
           key={chatItem.to}
           to={chatItem.to}
           label={chatItem.label}
           icon={<MessageSquare aria-hidden className="size-4" />}
         />
-        <SidebarGroup label="Developer" />
+        <SidebarGroup label="Nhà phát triển" />
         {devItems.map(({ to, label, icon: Icon }) => (
           <NavLink key={to} to={to} label={label} icon={<Icon aria-hidden className="size-4" />} />
         ))}
-        <SidebarGroup label="Manage" />
+        <SidebarGroup label="Quản lý" />
         {manageItems.map(({ to, label, icon: Icon }) => (
           <NavLink key={to} to={to} label={label} icon={<Icon aria-hidden className="size-4" />} />
         ))}
@@ -247,7 +247,7 @@ function OrgSwitcher({ me, org }: { me: Me; org: Org }) {
     onSuccess: async (created) => {
       setCreating(false);
       await qc.invalidateQueries({ queryKey: ["me"] });
-      toast("success", `Organisation “${created.name}” created`);
+      toast("success", `Đã tạo tổ chức “${created.name}”`);
       navigate(`/orgs/${created.slug}/chat`);
     },
     onError: (err) => {
@@ -266,7 +266,7 @@ function OrgSwitcher({ me, org }: { me: Me; org: Org }) {
           </Button>
         }
       >
-        <DropdownLabel>Organisations</DropdownLabel>
+        <DropdownLabel>Tổ chức</DropdownLabel>
         {me.orgs.map((o) => (
           <DropdownItem
             key={o.id}
@@ -279,7 +279,7 @@ function OrgSwitcher({ me, org }: { me: Me; org: Org }) {
         <DropdownSeparator />
         <DropdownItem onSelect={() => setCreating(true)}>
           <Plus aria-hidden className="size-4 text-muted" />
-          New organisation
+          Tạo tổ chức mới
         </DropdownItem>
       </Dropdown>
 
@@ -314,9 +314,9 @@ function CreateOrgDialog({
       }}
     >
       <DialogContent>
-        <DialogTitle>New organisation</DialogTitle>
+        <DialogTitle>Tạo tổ chức mới</DialogTitle>
         <DialogDescription>
-          You become the owner; invite your team from the Members page.
+          Bạn sẽ là chủ sở hữu; mời đồng đội ở trang Thành viên.
         </DialogDescription>
         <form
           className="mt-4"
@@ -325,21 +325,21 @@ function CreateOrgDialog({
             if (name.trim()) onCreate(name.trim());
           }}
         >
-          <Field label="Organisation name">
+          <Field label="Tên tổ chức">
             <Input
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="Acme Inc."
+              placeholder="Công ty ABC"
               required
               autoFocus
             />
           </Field>
           <DialogFooter>
             <Button variant="secondary" onClick={() => onOpenChange(false)}>
-              Cancel
+              Huỷ
             </Button>
             <Button type="submit" loading={pending} disabled={!name.trim()}>
-              Create
+              Tạo
             </Button>
           </DialogFooter>
         </form>
@@ -363,7 +363,7 @@ function UserMenu({ me }: { me: Me }) {
     <Dropdown
       trigger={
         <button
-          aria-label="Account menu"
+          aria-label="Menu tài khoản"
           className="flex h-8 items-center gap-2 rounded-full border border-border bg-surface pl-1 pr-2.5 transition-colors hover:bg-surface-2"
         >
           <span className="flex size-6 items-center justify-center rounded-full bg-brand text-xs font-semibold text-brand-fg">
@@ -382,7 +382,7 @@ function UserMenu({ me }: { me: Me }) {
         onSelect={() => void signOut()}
       >
         <LogOut aria-hidden className="size-4" />
-        Sign out
+        Đăng xuất
       </DropdownItem>
     </Dropdown>
   );
@@ -399,7 +399,7 @@ export function ThemeToggle() {
   }
 
   return (
-    <Button variant="ghost" size="sm" aria-label="Toggle dark mode" onClick={toggle}>
+    <Button variant="ghost" size="sm" aria-label="Bật/tắt giao diện tối" onClick={toggle}>
       {dark ? <Sun aria-hidden className="size-4.5" /> : <Moon aria-hidden className="size-4.5" />}
     </Button>
   );

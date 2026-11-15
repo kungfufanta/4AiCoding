@@ -68,13 +68,13 @@ test.describe.serial("portal preview", () => {
 
   test("dark mode toggle", async ({ page }) => {
     const slug = await gotoOrgBase(page);
-    await page.getByRole("button", { name: "Toggle dark mode" }).click();
+    await page.getByRole("button", { name: "Bật/tắt giao diện tối" }).click();
     await expect(page.locator("html")).toHaveClass(/dark/);
     // Let the 150ms color transition settle so the screenshot shows
     // the final palette, not a mid-fade frame.
     await page.waitForTimeout(300);
     await shot(page, "06-dark-mode");
-    await page.getByRole("button", { name: "Toggle dark mode" }).click();
+    await page.getByRole("button", { name: "Bật/tắt giao diện tối" }).click();
     await expect(page.locator("html")).not.toHaveClass(/dark/);
   });
 
@@ -85,7 +85,7 @@ test.describe.serial("portal preview", () => {
     await expect(page.getByRole("heading", { name: "Members" })).toBeVisible();
     await shot(page, "07-mobile");
 
-    await page.getByRole("button", { name: "Open navigation" }).click();
+    await page.getByRole("button", { name: "Mở menu" }).click();
     await expect(page.getByRole("dialog", { includeHidden: false }).first()).toBeVisible();
     await shot(page, "08-mobile-drawer");
     await page.setViewportSize({ width: 1280, height: 800 });
@@ -197,7 +197,7 @@ test.describe.serial("portal preview", () => {
 
     // 1. Chat is initially disabled (no env LLM, no DB connection yet).
     await page.goto(`/orgs/${slug}/chat`);
-    await expect(page.getByText("Chat is not configured yet")).toBeVisible();
+    await expect(page.getByText("Chat chưa được cấu hình")).toBeVisible();
     await shot(page, "20-chat-disabled");
 
     // 2. Admin adds a platform connection pointing at the public WebHub
@@ -313,7 +313,7 @@ test.describe.serial("portal preview", () => {
     // 2. New chat → attach the sandbox via the header dropdown →
     //    the attach lands the chat in Agent mode.
     await page.goto(`/orgs/${slug}/chat`);
-    await page.getByRole("button", { name: "New chat" }).click();
+    await page.getByRole("button", { name: "Chat mới" }).click();
     await page.getByRole("button", { name: "Gắn sandbox" }).click();
     await page.getByRole("menuitem", { name: new RegExp(agentSandboxId) }).click();
     await expect(page).toHaveURL(/\/orgs\/.+\/chat\/[0-9a-f-]{36}/, { timeout: 15_000 });
@@ -575,11 +575,11 @@ test.describe.serial("portal preview", () => {
     await page.goto(agentChatUrl);
     await expect(page.getByTestId("agent-result").first()).toBeVisible({ timeout: 30_000 });
 
-    await page.getByRole("button", { name: "Toggle dark mode" }).click();
+    await page.getByRole("button", { name: "Bật/tắt giao diện tối" }).click();
     await expect(page.locator("html")).toHaveClass(/dark/);
     await page.waitForTimeout(300);
     await shot(page, "32-agent-dark");
-    await page.getByRole("button", { name: "Toggle dark mode" }).click();
+    await page.getByRole("button", { name: "Bật/tắt giao diện tối" }).click();
 
     await page.setViewportSize({ width: 390, height: 844 });
     await expect(page.getByTestId("agent-result").first()).toBeVisible();
