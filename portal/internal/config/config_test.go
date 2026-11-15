@@ -169,6 +169,10 @@ func TestParseLLMDefaults(t *testing.T) {
 	if cfg, err = Parse(func(k string) string { return env[k] }); err != nil || cfg.LLMBaseURL != "https://hub.example/v1" {
 		t.Fatalf("bare host base url = %q, %v; want /v1 appended", cfg.LLMBaseURL, err)
 	}
+	env["PORTAL_DEFAULT_LLM_BASE_URL"] = "https://hub.example?XTransformPort=3003"
+	if cfg, err = Parse(func(k string) string { return env[k] }); err != nil || cfg.LLMBaseURL != "https://hub.example/v1?XTransformPort=3003" {
+		t.Fatalf("bare host with query = %q, %v; want /v1 before the query", cfg.LLMBaseURL, err)
+	}
 	env["PORTAL_DEFAULT_LLM_BASE_URL"] = "https://hub.example/api/openai"
 	if cfg, err = Parse(func(k string) string { return env[k] }); err != nil || cfg.LLMBaseURL != "https://hub.example/api/openai" {
 		t.Fatalf("explicit path base url = %q, %v; want unchanged", cfg.LLMBaseURL, err)

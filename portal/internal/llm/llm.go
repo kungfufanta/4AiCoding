@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -146,7 +147,7 @@ func (c *Client) Stream(ctx context.Context, req Request, onDelta func(string) e
 		return "", err
 	}
 	hreq, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		strings.TrimRight(c.BaseURL, "/")+"/chat/completions", bytes.NewReader(raw))
+		endpoint(c.BaseURL, "/chat/completions"), bytes.NewReader(raw))
 	if err != nil {
 		return "", err
 	}
@@ -263,7 +264,7 @@ func (c *Client) Test(ctx context.Context, model string) TestResult {
 	}
 	raw, _ := json.Marshal(body)
 	hreq, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		strings.TrimRight(c.BaseURL, "/")+"/chat/completions", bytes.NewReader(raw))
+		endpoint(c.BaseURL, "/chat/completions"), bytes.NewReader(raw))
 	if err != nil {
 		return TestResult{Error: err.Error()}
 	}
@@ -310,7 +311,7 @@ func (c *Client) Test(ctx context.Context, model string) TestResult {
 // Used by the connection editor's "Load models" button.
 func (c *Client) ListModels(ctx context.Context) ([]string, error) {
 	hreq, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		strings.TrimRight(c.BaseURL, "/")+"/models", nil)
+		endpoint(c.BaseURL, "/models"), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -728,7 +729,7 @@ func (c *Client) StreamTools(ctx context.Context, req ToolRequest, onText func(s
 // reports whether onText fired at least once.
 func (c *Client) attemptStreamTools(ctx context.Context, req ToolRequest, raw []byte, inputBytes int, onText func(string) error) (turn Turn, delivered bool, retryable bool, err error) {
 	hreq, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		strings.TrimRight(c.BaseURL, "/")+"/chat/completions", bytes.NewReader(raw))
+		endpoint(c.BaseURL, "/chat/completions"), bytes.NewReader(raw))
 	if err != nil {
 		return Turn{}, false, false, err
 	}
@@ -997,4 +998,19 @@ func parseFallbackTurn(text string, tools []Tool) (Turn, error) {
 	}}
 	turn.FinishReason = "tool_calls"
 	return turn, nil
+}
+
+// endpoint appends suffix to the base URL's path and keeps its query.
+// Some gateways route by query (the z.ai sandbox hub needs
+// ?XTransformPort=3003), so "https://h/v1?XTransformPort=3003" must
+// become "https://h/v1/chat/completions?XTransformPort=3003", not a
+// string with the suffix glued after the query.
+func endpoint(base, suffix string) string {
+	u, err := url.Parse(base)
+	if err != nil || u.Scheme == "" {
+		return strings.TrimRight(base, "/") + suffix
+	}
+	u.Path = strings.TrimRight(u.Path, "/") + suffix
+	u.RawPath = ""
+	return u.String()
 }
