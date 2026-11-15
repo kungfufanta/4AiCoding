@@ -458,7 +458,7 @@ function UsersTab() {
 
 // --- API keys --------------------------------------------------------------
 
-const SCOPES = ["health", "sandboxes:read", "sandboxes:write", "sandboxes:exec", "snapshots", "sandboxes:egress"];
+const SCOPES = ["health", "sandboxes:read", "sandboxes:write", "sandboxes:exec", "snapshots", "sandboxes:egress", "sandboxes:files"];
 
 function KeysTab() {
   const { data, error, reload } = useLoad(() => get<{ keys: ApiKey[] }>("/v1/api-keys"));
