@@ -1,5 +1,7 @@
-// Router + providers (PORTAL_PLAN_V2 §3). Route tree:
+// Router + providers (PORTAL_PLAN_V2 §3; Z1 #79). Route tree:
 //
+//   /                         — public landing for guests; signed-in users
+//                               go to the first org's Chat (#81)
 //   /login                    — sign-in (SSO + password)
 //   /invites/:orgId?token=…   — accept an invite (signs in first)
 //   /orgs/:orgSlug/…          — app shell: chat, projects, members, api keys, audit
@@ -16,6 +18,7 @@ import { ConfirmProvider } from "../ui/dialog";
 import { ToastProvider } from "../ui/toast";
 import { FullPageSpinner } from "../ui/skeleton";
 import { Card } from "../ui/card";
+import { LandingPage } from "../features/landing/landing-page";
 import { LoginPage } from "../features/auth/login-page";
 import { AcceptInvitePage } from "../features/invites/accept-invite-page";
 import { ProjectsPage } from "../features/projects/projects-page";
@@ -47,10 +50,11 @@ export function PortalApp() {
         <ConfirmProvider>
           <BrowserRouter>
             <Routes>
+              <Route path="/" element={<HomeGate />} />
               <Route path="/login" element={<LoginPage />} />
               <Route path="/invites/:orgId" element={<AcceptInvitePage />} />
               <Route element={<RequireAuth />}>
-                <Route path="/" element={<OrgIndexRedirect />} />
+                <Route path="/quickstart" element={<OrgShortRedirect target="quickstart" />} />
                 <Route path="/orgs/:orgSlug" element={<AppShell />}>
                   <Route index element={<Navigate to="chat" replace />} />
                   <Route path="chat" element={<ChatPage />} />
@@ -102,19 +106,52 @@ function RequireAuth() {
   return <Outlet />;
 }
 
-// "/" lands on the first org's Chat (Z1 #81: after sign-in users see
-// Chat right away — bootstrapLogin always leaves the user with at
-// least their personal org).
-function OrgIndexRedirect() {
+// "/" is public (Z1 #79): guests get the landing page instead of a
+// redirect to /login. Signed-in users go to the first org's Chat
+// (Z1 #81). bootstrapLogin always
+// leaves at least the personal org, so the no-org card is a repair
+// hint, not a dead end.
+function HomeGate() {
   const me = useMe();
-  const slug = me.data?.orgs[0]?.slug;
-  if (slug) return <Navigate to={`/orgs/${slug}/chat`} replace />;
+
+  if (me.isPending) return <FullPageSpinner />;
+  if (me.data) {
+    const slug = me.data.orgs[0]?.slug;
+    if (slug) return <Navigate to={`/orgs/${slug}/chat`} replace />;
+    return <NoOrgCard />;
+  }
+  if (me.error instanceof ApiError && me.error.status === 401) {
+    return <LandingPage />;
+  }
   return (
     <main className="flex min-h-dvh items-center justify-center px-4">
       <Card className="max-w-md text-center">
-        <h1 className="text-base font-semibold text-fg">No organisation yet</h1>
+        <h1 className="text-base font-semibold text-fg">Đã xảy ra lỗi</h1>
         <p className="mt-2 text-sm text-muted">
-          Sign out and in again to recreate your personal organisation.
+          {me.error instanceof Error ? me.error.message : "Không tải được thông tin của bạn."}
+        </p>
+      </Card>
+    </main>
+  );
+}
+
+// Short links like /quickstart (the landing feature card) resolve into
+// the first org's page — guests are bounced through RequireAuth to
+// /login and come back here after signing in.
+function OrgShortRedirect({ target }: { target: string }) {
+  const me = useMe();
+  const slug = me.data?.orgs[0]?.slug;
+  if (slug) return <Navigate to={`/orgs/${slug}/${target}`} replace />;
+  return <NoOrgCard />;
+}
+
+function NoOrgCard() {
+  return (
+    <main className="flex min-h-dvh items-center justify-center px-4">
+      <Card className="max-w-md text-center">
+        <h1 className="text-base font-semibold text-fg">Chưa có tổ chức nào</h1>
+        <p className="mt-2 text-sm text-muted">
+          Đăng xuất rồi đăng nhập lại để tái tạo tổ chức cá nhân của bạn.
         </p>
       </Card>
     </main>

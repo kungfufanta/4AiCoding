@@ -499,4 +499,37 @@ test.describe.serial("portal preview", () => {
     await shot(page, "33-agent-mobile-390");
     await page.setViewportSize({ width: 1280, height: 800 });
   });
+
+  // Z1 #79: guests (no session) see the public landing at "/" instead
+  // of a redirect to /login — desktop + 390px shots for the PR, plus
+  // the no-horizontal-scroll check. Runs LAST: it clears the shared
+  // storage-state cookies.
+  test("landing page for guests (Z1 #79)", async ({ page }) => {
+    await page.context().clearCookies();
+
+    await page.goto("/");
+    await expect(page).toHaveURL(/\/$/);
+    await expect(
+      page.getByRole("heading", { name: "Chat với AI agent. Agent làm việc cho bạn." }),
+    ).toBeVisible();
+    await shot(page, "36-landing");
+
+    // The primary CTA carries the deep link: guests land on /login and
+    // come back after signing in.
+    await page.getByRole("link", { name: "Bắt đầu chat miễn phí" }).click();
+    await expect(page).toHaveURL(/\/login/);
+
+    // 390px: landing stays on one column with no horizontal overflow.
+    await page.goto("/");
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(
+      page.getByRole("heading", { name: "Chat với AI agent. Agent làm việc cho bạn." }),
+    ).toBeVisible();
+    const overflow = await page.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    );
+    expect(overflow).toBeLessThanOrEqual(0);
+    await shot(page, "37-landing-mobile-390");
+    await page.setViewportSize({ width: 1280, height: 800 });
+  });
 });
