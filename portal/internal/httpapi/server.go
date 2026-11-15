@@ -45,6 +45,13 @@ type Server struct {
 	// bootstrap admin is created at boot by passwordauth when set
 	// (cmd/portal main).
 	PasswordLogin bool
+	// SignupEnabled exposes the SSO registration surface (issue
+	// #80): /auth/login?signup=1 adds prompt=create to the OIDC
+	// redirect and /auth/methods reports signup=true so the SPA
+	// renders the "Đăng ký" button. Default on; PORTAL_SIGNUP_ENABLED
+	// false (deploy/helm/portal signup.enabled=false) hides it.
+	// SSO must still be configured (OIDC != nil) for either surface.
+	SignupEnabled bool
 
 	// Keys verifies Bearer API keys (POST /v1/tokens) and caches
 	// results for 60 s (PORTAL_PLAN 3.2). Tokens mints the agent

@@ -174,6 +174,7 @@ func run() error {
 		Sessions:      session.New(pool, cfg.SessionTTL),
 		OIDC:          provider,
 		PasswordLogin: cfg.PasswordLogin,
+		SignupEnabled: cfg.SignupEnabled,
 		Keys:          keys,
 		Tokens:        signer,
 		LLM:           chat,

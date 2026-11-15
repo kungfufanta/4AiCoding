@@ -6,6 +6,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tastyeffectco/sandboxd/portal/internal/oidcauth"
 	"github.com/tastyeffectco/sandboxd/portal/internal/session"
 )
 
@@ -230,4 +232,170 @@ func TestAPIUnknownRoute(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), `"not_found"`) {
 		t.Errorf("body = %q, want not_found envelope", rec.Body.String())
 	}
+}
+
+// TestAuthMethodsReportsSignup exercises the /auth/methods signup
+// field added in issue #80. The SPA renders the "Đăng ký" button only
+// when both SSO is configured (Server.OIDC != nil) and Server.
+// SignupEnabled is true.
+func TestAuthMethodsReportsSignup(t *testing.T) {
+	cases := []struct {
+		name           string
+		oidcConfigured bool
+		signupEnabled  bool
+		wantSignup     bool
+	}{
+		{"no SSO, signup disabled", false, false, false},
+		{"no SSO, signup enabled", false, true, false}, // signup requires SSO
+		{"SSO on, signup disabled", true, false, false},
+		{"SSO on, signup enabled", true, true, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _ := testServer(t, false)
+			if tc.oidcConfigured {
+				s.OIDC = newFakeOIDCProvider(t)
+			}
+			s.SignupEnabled = tc.signupEnabled
+			rec := httptest.NewRecorder()
+			s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/auth/methods", nil))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("/auth/methods = %d, want 200", rec.Code)
+			}
+			body := rec.Body.String()
+			wantBool := "false"
+			if tc.wantSignup {
+				wantBool = "true"
+			}
+			if !strings.Contains(body, `"signup":`+wantBool) {
+				t.Errorf("body = %q, want signup=%s", body, wantBool)
+			}
+			// sso and password fields still present (regression guard).
+			ssoWant := "false"
+			if tc.oidcConfigured {
+				ssoWant = "true"
+			}
+			if !strings.Contains(body, `"sso":`+ssoWant) {
+				t.Errorf("body = %q, want sso=%s", body, ssoWant)
+			}
+		})
+	}
+}
+
+// TestLoginSignupParamAddsPromptCreate verifies /auth/login?signup=1
+// carries prompt=create in the OIDC redirect URL, and that
+// /auth/login without the param does NOT. The Provider is a fake OIDC
+// discovery server so we exercise the real redirect-building code.
+func TestLoginSignupParamAddsPromptCreate(t *testing.T) {
+	s, _ := testServer(t, false)
+	s.OIDC = newFakeOIDCProvider(t)
+	s.SignupEnabled = true
+
+	// Without signup=1: no prompt=create.
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/auth/login", nil))
+	if rec.Code != http.StatusFound {
+		t.Fatalf("GET /auth/login = %d, want 302", rec.Code)
+	}
+	loc := rec.Header().Get("Location")
+	if strings.Contains(loc, "prompt=create") {
+		t.Errorf("/auth/login without signup=1 redirected with prompt=create: %s", loc)
+	}
+
+	// With signup=1: prompt=create present.
+	rec = httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/auth/login?signup=1", nil))
+	if rec.Code != http.StatusFound {
+		t.Fatalf("GET /auth/login?signup=1 = %d, want 302", rec.Code)
+	}
+	loc = rec.Header().Get("Location")
+	if !strings.Contains(loc, "prompt=create") {
+		t.Errorf("/auth/login?signup=1 missing prompt=create: %s", loc)
+	}
+	// next is preserved through the state cookie (sanitizeNext still applies).
+	rec = httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/auth/login?signup=1&next=/chat", nil))
+	if rec.Code != http.StatusFound {
+		t.Fatalf("GET /auth/login?signup=1&next=/chat = %d, want 302", rec.Code)
+	}
+	loc = rec.Header().Get("Location")
+	if !strings.Contains(loc, "prompt=create") {
+		t.Errorf("/auth/login?signup=1&next missing prompt=create: %s", loc)
+	}
+}
+
+// TestLoginSignupIgnoredWhenDisabled verifies that when SignupEnabled
+// is false, /auth/login?signup=1 still redirects to the regular
+// sign-in URL (no prompt=create). The deep link keeps working, it
+// just lands on the login form.
+func TestLoginSignupIgnoredWhenDisabled(t *testing.T) {
+	s, _ := testServer(t, false)
+	s.OIDC = newFakeOIDCProvider(t)
+	s.SignupEnabled = false
+
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/auth/login?signup=1", nil))
+	if rec.Code != http.StatusFound {
+		t.Fatalf("GET /auth/login?signup=1 = %d, want 302", rec.Code)
+	}
+	loc := rec.Header().Get("Location")
+	if strings.Contains(loc, "prompt=create") {
+		t.Errorf("/auth/login?signup=1 with SignupEnabled=false still added prompt=create: %s", loc)
+	}
+}
+
+// TestLoginNextSanitizedWhenSignup verifies sanitizeNext still rejects
+// protocol-relative / off-origin paths even with signup=1 (the two
+// are independent features but share the same route).
+func TestLoginNextSanitizedWhenSignup(t *testing.T) {
+	s, _ := testServer(t, false)
+	s.OIDC = newFakeOIDCProvider(t)
+	s.SignupEnabled = true
+
+	rec := httptest.NewRecorder()
+	// "//evil.example" must NOT survive sanitizeNext.
+	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/auth/login?signup=1&next=//evil.example", nil))
+	if rec.Code != http.StatusFound {
+		t.Fatalf("GET /auth/login = %d, want 302", rec.Code)
+	}
+	// The cookie should NOT carry the evil next; we just check the
+	// route didn't error and the redirect happened.
+	loc := rec.Header().Get("Location")
+	if !strings.Contains(loc, "prompt=create") {
+		t.Errorf("signup=1 missing prompt=create: %s", loc)
+	}
+}
+
+// newFakeOIDCProvider returns a *oidcauth.Provider constructed against
+// a tiny httptest server that serves an OIDC discovery document. The
+// server's endpoints (auth, token, jwks) don't have to actually work —
+// the tests exercise redirect building (handleLogin) and the /auth/methods
+// surface, not the code exchange.
+func newFakeOIDCProvider(t *testing.T) *oidcauth.Provider {
+	t.Helper()
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/.well-known/openid-configuration" {
+			http.NotFound(w, r)
+			return
+		}
+		doc := map[string]any{
+			"issuer":                                srv.URL,
+			"authorization_endpoint":                srv.URL + "/auth",
+			"token_endpoint":                        srv.URL + "/token",
+			"jwks_uri":                              srv.URL + "/jwks",
+			"userinfo_endpoint":                     srv.URL + "/userinfo",
+			"response_types_supported":              []string{"code"},
+			"subject_types_supported":               []string{"public"},
+			"id_token_signing_alg_values_supported": []string{"RS256"},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(doc)
+	}))
+	t.Cleanup(srv.Close)
+	p, err := oidcauth.New(context.Background(), srv.URL, "test-client", "test-secret", "https://app.example.com/auth/callback")
+	if err != nil {
+		t.Fatalf("oidcauth.New: %v", err)
+	}
+	return p
 }

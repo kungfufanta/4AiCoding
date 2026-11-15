@@ -70,13 +70,27 @@ func PKCEPair() (verifier, challenge string) {
 }
 
 // AuthCodeURL builds the provider redirect with state, PKCE and
-// nonce.
-func (p *Provider) AuthCodeURL(state, codeChallenge, nonce string) string {
-	return p.oauth.AuthCodeURL(state,
+// nonce. When signup is true the URL also carries prompt=create, the
+// OIDC standard hint that asks the provider (Zitadel, Keycloak,
+// Auth0) to land on the account-creation screen instead of the sign-
+// in form. The Portal decides when to pass signup based on
+// /auth/login?signup=1 and PORTAL_SIGNUP_ENABLED (httpapi.handleLogin);
+// oidcauth just builds the URL.
+func (p *Provider) AuthCodeURL(state, codeChallenge, nonce string, signup bool) string {
+	opts := []oauth2.AuthCodeOption{
 		oauth2.SetAuthURLParam("code_challenge", codeChallenge),
 		oauth2.SetAuthURLParam("code_challenge_method", "S256"),
 		oidc.Nonce(nonce),
-	)
+	}
+	if signup {
+		// OIDC Core §3.1.2.1: prompt=create asks the provider to
+		// surface registration. Zitadel honours this in its login
+		// UI (docs/issue-80). Other providers ignore unknown
+		// prompt values, so the worst case is the regular sign-
+		// in screen.
+		opts = append(opts, oauth2.SetAuthURLParam("prompt", "create"))
+	}
+	return p.oauth.AuthCodeURL(state, opts...)
 }
 
 // ErrStateMismatch marks a bad state/nonce (possible CSRF on the
