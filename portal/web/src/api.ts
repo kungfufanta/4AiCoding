@@ -368,7 +368,7 @@ export const api = {
   testLLMConnection: (orgID: string, cid: string) =>
     call<LLMTestResult>("POST", `/api/orgs/${orgID}/llm/connections/${cid}/test`),
   listLLMModels: (orgID: string, cid: string) =>
-    call<{ models: string[] }>("GET", `/api/orgs/${orgID}/llm/connections/${cid}/models`),
+    call<{ models: string[]; unsupported?: boolean }>("GET", `/api/orgs/${orgID}/llm/connections/${cid}/models`),
   listPlatformLLMConnections: () =>
     call<LLMConnectionList>("GET", `/api/admin/llm/connections`),
   createPlatformLLMConnection: (body: LLMConnectionBody) =>
@@ -380,7 +380,7 @@ export const api = {
   testPlatformLLMConnection: (cid: string) =>
     call<LLMTestResult>("POST", `/api/admin/llm/connections/${cid}/test`),
   listPlatformLLMModels: (cid: string) =>
-    call<{ models: string[] }>("GET", `/api/admin/llm/connections/${cid}/models`),
+    call<{ models: string[]; unsupported?: boolean }>("GET", `/api/admin/llm/connections/${cid}/models`),
 };
 
 // streamChat POSTs one message and parses the SSE reply (events

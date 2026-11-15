@@ -55,7 +55,10 @@ type Client struct {
 	APIKey  string
 	Model   string
 	Flavor  string // "webhub" or "generic"
-	HTTP    *http.Client
+	// Models is the env fallback's model list for the Chat picker
+	// (PORTAL_DEFAULT_LLM_MODELS). DB connections carry their own.
+	Models []string
+	HTTP   *http.Client
 	// MaxOutputBytes caps the assembled reply so a runaway stream
 	// cannot grow without bound. Zero means 256 KiB.
 	MaxOutputBytes int
@@ -281,6 +284,17 @@ func (c *Client) Test(ctx context.Context, model string) TestResult {
 	}
 	defer res.Body.Close()
 	data, _ := io.ReadAll(io.LimitReader(res.Body, 4<<10))
+	if res.StatusCode == http.StatusBadRequest {
+		// Some hubs (the z.ai sandbox WebHub) only take stream=true and
+		// answer 400 otherwise: retry the same prompt streamed.
+		sc := *c
+		sc.Model = model
+		sc.MaxOutputBytes = 4 << 10
+		reply, serr := sc.Stream(ctx, Request{Messages: []Message{{Role: "user", Content: "Reply with the single word: ok"}}, DisableMemory: true}, func(string) error { return nil })
+		if serr == nil && strings.TrimSpace(reply) != "" {
+			return TestResult{OK: true, Model: model, Latency: time.Since(start).Milliseconds(), Reply: reply}
+		}
+	}
 	if res.StatusCode != http.StatusOK {
 		return TestResult{Error: fmt.Sprintf("upstream %d: %s", res.StatusCode, string(data))}
 	}
@@ -307,6 +321,10 @@ func (c *Client) Test(ctx context.Context, model string) TestResult {
 	}
 }
 
+// ErrModelsUnsupported means the provider has no GET /models (404):
+// the model ids must be typed in by hand.
+var ErrModelsUnsupported = errors.New("provider has no /models endpoint")
+
 // ListModels calls GET {base}/models and returns the model id list.
 // Used by the connection editor's "Load models" button.
 func (c *Client) ListModels(ctx context.Context) ([]string, error) {
@@ -323,6 +341,9 @@ func (c *Client) ListModels(ctx context.Context) ([]string, error) {
 		return nil, err
 	}
 	defer res.Body.Close()
+	if res.StatusCode == http.StatusNotFound {
+		return nil, ErrModelsUnsupported
+	}
 	if res.StatusCode != http.StatusOK {
 		data, _ := io.ReadAll(io.LimitReader(res.Body, 1<<10))
 		return nil, fmt.Errorf("upstream %d: %s", res.StatusCode, string(data))

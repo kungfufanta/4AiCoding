@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -65,10 +66,11 @@ type Config struct {
 	// WebHub glm-4.6 is the free default). The chat routes answer
 	// 503 chat_not_configured until an API key is set; A2 replaces
 	// this with per-org model connections.
-	LLMBaseURL string // PORTAL_DEFAULT_LLM_BASE_URL
-	LLMModel   string // PORTAL_DEFAULT_LLM_MODEL, default glm-4.6
-	LLMFlavor  string // PORTAL_DEFAULT_LLM_FLAVOR: webhub | generic
-	LLMAPIKey  string // PORTAL_DEFAULT_LLM_API_KEY (secret; never logged)
+	LLMBaseURL string   // PORTAL_DEFAULT_LLM_BASE_URL
+	LLMModel   string   // PORTAL_DEFAULT_LLM_MODEL, default glm-4.6 (or the first of LLMModels)
+	LLMModels  []string // PORTAL_DEFAULT_LLM_MODELS, comma list for the Chat model picker
+	LLMFlavor  string   // PORTAL_DEFAULT_LLM_FLAVOR: webhub | generic
+	LLMAPIKey  string   // PORTAL_DEFAULT_LLM_API_KEY (secret; never logged)
 	// SandboxdURL is the base URL of the sandboxd control plane the
 	// gateway proxies to (PORTAL_SANDBOXD_URL, e.g.
 	// http://sandboxd:9191). Empty (with SandboxdAPIKey) disables the
@@ -154,7 +156,19 @@ func Parse(getenv func(string) string) (Config, error) {
 		cfg.AdminPassword, cfg.PasswordLogin = pw, true
 	}
 	cfg.LLMBaseURL = strings.TrimRight(firstNonEmpty(strings.TrimSpace(getenv("PORTAL_DEFAULT_LLM_BASE_URL")), DefaultLLMBaseURL), "/")
-	cfg.LLMModel = firstNonEmpty(strings.TrimSpace(getenv("PORTAL_DEFAULT_LLM_MODEL")), "glm-4.6")
+	for _, m := range strings.Split(getenv("PORTAL_DEFAULT_LLM_MODELS"), ",") {
+		if m = strings.TrimSpace(m); m != "" && !slices.Contains(cfg.LLMModels, m) {
+			cfg.LLMModels = append(cfg.LLMModels, m)
+		}
+	}
+	firstModel := ""
+	if len(cfg.LLMModels) > 0 {
+		firstModel = cfg.LLMModels[0]
+	}
+	cfg.LLMModel = firstNonEmpty(strings.TrimSpace(getenv("PORTAL_DEFAULT_LLM_MODEL")), firstModel, "glm-4.6")
+	if len(cfg.LLMModels) > 0 && !slices.Contains(cfg.LLMModels, cfg.LLMModel) {
+		cfg.LLMModels = append([]string{cfg.LLMModel}, cfg.LLMModels...)
+	}
 	cfg.LLMAPIKey = strings.TrimSpace(getenv("PORTAL_DEFAULT_LLM_API_KEY"))
 	switch f := strings.ToLower(strings.TrimSpace(getenv("PORTAL_DEFAULT_LLM_FLAVOR"))); f {
 	case "", "webhub":

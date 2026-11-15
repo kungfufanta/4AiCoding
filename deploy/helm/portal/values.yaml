@@ -88,6 +88,9 @@ chat:
   apiKeyKey: llm-api-key
   baseURL: ""
   model: ""
+  # Comma list shown in the Chat model picker when no DB connection
+  # exists (PORTAL_DEFAULT_LLM_MODELS); the first one is the default.
+  models: ""
   flavor: ""
 
 # Master key (PORTAL_SECRETS_KEY) that encrypts stored LLM API keys

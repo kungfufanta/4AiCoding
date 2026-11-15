@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -106,6 +107,7 @@ func (s *Server) handleChatStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	} else if s.LLM != nil {
 		model = s.LLM.Model
+		models = append(models, s.LLM.Models...)
 	}
 	enabled := model != ""
 	agentAvailable, agentReason := s.agentAvailability(r.Context(), enabled)
@@ -508,7 +510,8 @@ func (s *Server) resolveChatClient(ctx context.Context, orgID string) (*llm.Clie
 func (s *Server) modelAllowed(ctx context.Context, orgID, model string) bool {
 	k, err := llmconfig.ResolveEffective(ctx, s.Pool, orgID)
 	if err != nil {
-		return false // no connection = no override
+		// No DB connection: the env fallback allows its own list only.
+		return s.LLM != nil && slices.Contains(s.LLM.Models, model)
 	}
 	if len(k.Models) == 0 {
 		return true // open list

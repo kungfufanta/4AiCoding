@@ -177,6 +177,15 @@ func TestParseLLMDefaults(t *testing.T) {
 	if cfg, err = Parse(func(k string) string { return env[k] }); err != nil || cfg.LLMBaseURL != "https://hub.example/api/openai" {
 		t.Fatalf("explicit path base url = %q, %v; want unchanged", cfg.LLMBaseURL, err)
 	}
+	env["PORTAL_DEFAULT_LLM_MODELS"] = " glm-5.3, glm-4.6 ,glm-5.3,"
+	if cfg, err = Parse(func(k string) string { return env[k] }); err != nil || cfg.LLMModel != "glm-5.3" || len(cfg.LLMModels) != 2 {
+		t.Fatalf("models list: model=%q models=%v err=%v", cfg.LLMModel, cfg.LLMModels, err)
+	}
+	env["PORTAL_DEFAULT_LLM_MODEL"] = "glm-4.5-air"
+	if cfg, err = Parse(func(k string) string { return env[k] }); err != nil || cfg.LLMModel != "glm-4.5-air" || len(cfg.LLMModels) != 3 || cfg.LLMModels[0] != "glm-4.5-air" {
+		t.Fatalf("explicit model joins the list: model=%q models=%v err=%v", cfg.LLMModel, cfg.LLMModels, err)
+	}
+	env["PORTAL_DEFAULT_LLM_MODEL"], env["PORTAL_DEFAULT_LLM_MODELS"] = "", ""
 	env["PORTAL_DEFAULT_LLM_FLAVOR"] = "bogus"
 	if _, err := Parse(func(k string) string { return env[k] }); err == nil {
 		t.Fatal("bogus flavor accepted")

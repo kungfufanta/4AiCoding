@@ -90,6 +90,10 @@ spec:
             - name: PORTAL_DEFAULT_LLM_MODEL
               value: {{ .Values.chat.model | quote }}
             {{- end }}
+            {{- if .Values.chat.models }}
+            - name: PORTAL_DEFAULT_LLM_MODELS
+              value: {{ .Values.chat.models | quote }}
+            {{- end }}
             {{- if .Values.chat.flavor }}
             - name: PORTAL_DEFAULT_LLM_FLAVOR
               value: {{ .Values.chat.flavor | quote }}
