@@ -19,7 +19,7 @@ import {
   Trash2,
   User,
 } from "lucide-react";
-import { api, ApiError, type AgentRun, type ChatMessage } from "../../api";
+import { api, ApiError, type AgentRun, type ChatMessage, type Sandbox } from "../../api";
 import { useChatMessages, useChats, useChatStatus } from "../../lib/queries";
 import { useSandboxes, statusTone } from "../sandboxes/hooks";
 import { cn } from "../../lib/cn";
@@ -49,6 +49,36 @@ const DOT: Record<string, string> = {
   danger: "bg-danger",
   neutral: "bg-muted",
 };
+
+// Issue #84: Vietnamese explanations for the agent_reason values the
+// chat/status endpoint returns when agent_available is false. An
+// unknown reason falls back to the generic line.
+const AGENT_REASON_TEXT: Record<string, string> = {
+  sandboxd_not_configured: "Hệ thống chưa cấu hình sandbox cho Agent — hãy báo quản trị viên.",
+  sandboxd_unreachable: "Hệ thống sandbox đang không phản hồi — thử lại sau.",
+  llm_not_configured: "Chưa cấu hình mô hình AI — quản trị viên cần thêm kết nối mô hình.",
+};
+const AGENT_REASON_FALLBACK = "Agent tạm thời chưa sẵn sàng.";
+
+// Friendly Vietnamese mappings for the create-sandbox error codes the
+// gateway answers with (quota/plan limits, sandboxd down). Everything
+// else keeps the server's own message in the toast.
+const AGENT_ERROR_TEXT: Record<string, string> = {
+  quota_exceeded: "Bạn đã dùng hết hạn mức sandbox của gói.",
+  plan_limit: "Bạn đã dùng hết hạn mức sandbox của gói.",
+  sandbox_unavailable: "Agent tạm thời chưa sẵn sàng.",
+};
+
+// The one-tap sandbox image (issue #84): prefer the newest existing
+// sandbox's image — anything that already passed the deployment's
+// image allowlist is known-good — falling back to the dialog's first
+// suggestion for an org with no sandbox yet.
+function defaultAgentImage(sandboxes: Sandbox[]): string {
+  const newest = [...sandboxes]
+    .filter((s) => s.image)
+    .sort((a, b) => (a.created_at < b.created_at ? 1 : -1))[0];
+  return newest?.image ?? "ubuntu:24.04";
+}
 
 export function ChatPage() {
   const { org, me, isAdmin } = useShell();
@@ -173,6 +203,42 @@ export function ChatPage() {
     },
     onError: (err) => {
       toast("error", err instanceof ApiError ? err.message : String(err));
+    },
+  });
+
+  // Issue #84: one-tap "Bật Agent" — create the chat (when needed),
+  // create a sandbox with the dialog's default resources, attach it
+  // and land in Agent mode. The button locks while pending, so a
+  // double click never fires a second create request.
+  const agentAvailable = status.data?.agent_available ?? true;
+  const enableAgent = useMutation({
+    mutationFn: async () => {
+      let id = chatId;
+      if (!id) {
+        const created = await api.createChat(org.id);
+        id = created.id;
+        qc.setQueryData(["chat-messages", org.id, id], []);
+        navigate(`${base}/${id}`);
+      }
+      const sb = await api.createSandbox(org.id, {
+        image: defaultAgentImage(sandboxes.data?.sandboxes ?? []),
+        resources: { cpus: 1, memory_mb: 512 },
+      });
+      await api.attachChatSandbox(org.id, id, sb.id);
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["chats", org.id] });
+      void qc.invalidateQueries({ queryKey: ["sandboxes", org.id] });
+      setMode("agent");
+      toast("success", "Đã bật Agent — sandbox đã gắn vào chat này.");
+    },
+    onError: (err) => {
+      // The chat may exist even when the sandbox step failed.
+      void qc.invalidateQueries({ queryKey: ["chats", org.id] });
+      void qc.invalidateQueries({ queryKey: ["sandboxes", org.id] });
+      const text =
+        err instanceof ApiError ? (AGENT_ERROR_TEXT[err.code] ?? err.message) : String(err);
+      toast("error", text);
     },
   });
 
@@ -502,8 +568,8 @@ export function ChatPage() {
               <Bot aria-hidden className="mx-auto size-9 text-brand" />
               <p className="mt-3 text-base font-semibold text-fg">Giao việc cho agent</p>
               <p className="mt-1 text-sm text-muted">
-                Gắn một sandbox vào chat (nút “Gắn sandbox” ở trên) rồi mô tả việc — agent làm trực tiếp trong
-                sandbox, mỗi run có checkpoint để hoàn tác.
+                Bấm “Bật Agent” bên dưới: hệ thống tự tạo sandbox và gắn vào chat này. Agent làm việc trực tiếp
+                trong sandbox, mỗi run có checkpoint để hoàn tác. Đã có sandbox? Dùng “Gắn sandbox” ở trên.
               </p>
             </div>
           ) : empty ? (
@@ -573,8 +639,37 @@ export function ChatPage() {
               Agent đang chạy trên sandbox này (từ API) — ô nhập khoá cho tới khi run đó xong.
             </p>
           )}
+          {/* Issue #84: the one-tap path replaces the trip to the
+              Sandboxes page; the header dropdown stays as the secondary
+              "attach an existing sandbox" option. Hidden while the
+              chats list is still loading — an attached chat must not
+              flash the button on open. */}
+          {!attached && !disabled && !chats.isPending && (
+            <div className="flex items-center gap-2 pb-2">
+              <Button
+                type="button"
+                data-testid="enable-agent"
+                onClick={() => enableAgent.mutate()}
+                disabled={!agentAvailable || foreignActive || enableAgent.isPending}
+              >
+                {enableAgent.isPending ? (
+                  <Loader2 aria-hidden className="size-4 animate-spin" />
+                ) : (
+                  <Bot aria-hidden className="size-4" />
+                )}
+                {enableAgent.isPending ? "Đang chuẩn bị sandbox…" : "Bật Agent"}
+              </Button>
+              {!agentAvailable && (
+                <p className="text-xs text-warning" data-testid="agent-unavailable">
+                  {AGENT_REASON_TEXT[status.data?.agent_reason ?? ""] ?? AGENT_REASON_FALLBACK}
+                </p>
+              )}
+            </div>
+          )}
           {mode === "agent" && !attached && (
-            <p className="pb-2 text-xs text-muted">Gắn sandbox để giao việc cho agent.</p>
+            <p className="pb-2 text-xs text-muted">
+              Bấm “Bật Agent” để tự tạo sandbox và gắn vào chat, hoặc gắn sandbox có sẵn ở trên.
+            </p>
           )}
           <div className="flex items-end gap-2 rounded-[var(--radius)] border border-border bg-bg p-2 focus-within:ring-2 focus-within:ring-[var(--ring)]">
             <textarea
@@ -589,7 +684,7 @@ export function ChatPage() {
                   : mode === "agent"
                     ? attached
                       ? "Mô tả việc cho agent… (Enter để gửi, Shift+Enter xuống dòng)"
-                      : "Gắn sandbox để giao việc cho agent"
+                      : "Bật Agent để giao việc cho agent"
                     : "Nhắn tin… (Enter để gửi, Shift+Enter xuống dòng)"
               }
               aria-label="Message"
