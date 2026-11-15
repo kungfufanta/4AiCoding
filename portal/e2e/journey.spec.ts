@@ -96,8 +96,10 @@ for (const vp of [
     await expect(box).toBeEnabled({ timeout: 15_000 });
     await box.fill("xin chào");
     await page.getByRole("button", { name: "Send" }).click();
-    await expect(page.getByText("xin chào").first()).toBeVisible({ timeout: 10_000 });
-    await expect(page.getByText("pong — fake-llm.").first()).toBeVisible({ timeout: 30_000 });
+    // :visible — on a phone the conversation list (holding the desktop
+    // run's "xin chào" chat title) is a hidden drawer.
+    await expect(page.locator(':text-is("xin chào"):visible').first()).toBeVisible({ timeout: 10_000 });
+    await expect(page.locator(':text("pong — fake-llm."):visible').first()).toBeVisible({ timeout: 30_000 });
     await noSideScroll(page);
     await page.screenshot({ path: `${SHOTS}/journey-${vp.name}-3-chat.png`, fullPage: true });
   });
