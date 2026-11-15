@@ -1,6 +1,8 @@
 // Password sign-in form (bootstrap admin). Shared by the login page
 // and the accept-invite page (sign in where you landed, then the
-// invite accepts in place).
+// invite accepts in place). Labels and errors are Vietnamese per the
+// portal language rule (issue Z1 #83); server error details stay out
+// of the UI — only the friendly mapping is shown.
 
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -11,7 +13,7 @@ import { Field, Input } from "../../ui/input";
 
 export function PasswordForm({
   onAuthenticated,
-  submitLabel = "Sign in",
+  submitLabel = "Đăng nhập",
   className,
 }: {
   onAuthenticated?: () => void;
@@ -34,10 +36,8 @@ export function PasswordForm({
     onError: (err) => {
       setError(
         err instanceof ApiError && err.code === "invalid_credentials"
-          ? "Invalid username or password."
-          : err instanceof Error
-            ? err.message
-            : String(err),
+          ? "Tên đăng nhập hoặc mật khẩu không đúng."
+          : "Không thể đăng nhập, vui lòng thử lại.",
       );
     },
   });
@@ -52,7 +52,7 @@ export function PasswordForm({
       }}
     >
       <div className="space-y-3">
-        <Field label="Username">
+        <Field label="Tên đăng nhập">
           <Input
             value={username}
             onChange={(e) => setUsername(e.target.value)}
@@ -61,7 +61,7 @@ export function PasswordForm({
             required
           />
         </Field>
-        <Field label="Password">
+        <Field label="Mật khẩu">
           <Input
             type="password"
             value={password}
@@ -71,7 +71,7 @@ export function PasswordForm({
           />
         </Field>
         <Button type="submit" className="w-full" loading={login.isPending}>
-          {login.isPending ? "Signing in…" : submitLabel}
+          {login.isPending ? "Đang đăng nhập…" : submitLabel}
         </Button>
       </div>
       {error && (

@@ -13,7 +13,8 @@ setup("sign in as the bootstrap admin", async ({ page }) => {
   await page.goto("/login");
   await page.getByPlaceholder("admin").fill(username);
   await page.locator('input[type="password"]').fill(password);
-  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  // Z1 #83: the submit button is Vietnamese now.
+  await page.getByRole("button", { name: "Đăng nhập", exact: true }).click();
 
   // Z1 #81: sign-in lands straight in the first org's Chat.
   await expect(page).toHaveURL(/\/orgs\/.+\/chat/, { timeout: 15_000 });
