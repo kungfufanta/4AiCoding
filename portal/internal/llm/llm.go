@@ -17,9 +17,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -560,6 +562,10 @@ type Turn struct {
 	ToolCalls    []ToolCall
 	FinishReason string
 	Usage        Usage
+	// TextToolCall: the call was salvaged from text markup in native
+	// mode (the provider dropped the tools field). The loop switches
+	// the run to the fallback protocol so tool results reach the model.
+	TextToolCall bool
 }
 
 // ToolRequest is one StreamTools call.
@@ -934,6 +940,17 @@ func (c *Client) attemptStreamTools(ctx context.Context, req ToolRequest, raw []
 			})
 		}
 	}
+	if len(turn.ToolCalls) == 0 {
+		// Some hubs drop the tools field and the model then writes the
+		// call as text (GLM: <tool name="x"><parameter name="k">v
+		// </parameter></tool>). Salvage it instead of ending the run
+		// with the markup as the "summary".
+		if xt, ok := parseXMLToolTurn(turn.Text, req.Tools); ok {
+			xt.Usage = turn.Usage
+			xt.TextToolCall = true
+			turn = xt
+		}
+	}
 	if usageSeen {
 		turn.Usage = usage
 	} else {
@@ -979,6 +996,9 @@ func parseFallbackTurn(text string, tools []Tool) (Turn, error) {
 	}
 	turn := Turn{FinishReason: "stop"}
 	if len(blocks) == 0 {
+		if xt, ok := parseXMLToolTurn(text, tools); ok {
+			return xt, nil
+		}
 		turn.Text = strings.TrimSpace(text)
 		return turn, nil
 	}
@@ -1034,4 +1054,50 @@ func endpoint(base, suffix string) string {
 	u.Path = strings.TrimRight(u.Path, "/") + suffix
 	u.RawPath = ""
 	return u.String()
+}
+
+var (
+	xmlToolRe  = regexp.MustCompile(`(?s)<tool\s+name\s*=\s*["']([A-Za-z0-9_.-]+)["']\s*>(.*?)</tool>`)
+	xmlParamRe = regexp.MustCompile(`(?s)<parameter\s+name\s*=\s*["']([A-Za-z0-9_.-]+)["']\s*>(.*?)</parameter>`)
+)
+
+// parseXMLToolTurn recognises one text-form tool call of the shape
+// <tool name="list_files"><parameter name="path">/x</parameter></tool>
+// for a tool in the registry. Parameter values that are valid JSON
+// scalars/objects (numbers, true/false, {...}, [...]) keep their type;
+// everything else is a string. Only the first call is taken; the
+// markup is removed from the visible text.
+func parseXMLToolTurn(text string, tools []Tool) (Turn, bool) {
+	m := xmlToolRe.FindStringSubmatchIndex(text)
+	if m == nil {
+		return Turn{}, false
+	}
+	name := text[m[2]:m[3]]
+	known := false
+	for _, t := range tools {
+		if t.Name == name {
+			known = true
+			break
+		}
+	}
+	if !known {
+		return Turn{}, false
+	}
+	args := map[string]any{}
+	for _, pm := range xmlParamRe.FindAllStringSubmatch(text[m[4]:m[5]], -1) {
+		raw := strings.TrimSpace(pm[2])
+		var v any
+		if raw != "" && strings.ContainsAny(raw[:1], "{[0123456789-tfn") && json.Unmarshal([]byte(raw), &v) == nil {
+			args[pm[1]] = v
+		} else {
+			args[pm[1]] = html.UnescapeString(raw)
+		}
+	}
+	argJSON, _ := json.Marshal(args)
+	visible := strings.TrimSpace(strings.TrimSpace(text[:m[0]]) + "\n" + strings.TrimSpace(text[m[1]:]))
+	return Turn{
+		Text:         visible,
+		ToolCalls:    []ToolCall{{ID: "xml_0", Name: name, Arguments: json.RawMessage(argJSON)}},
+		FinishReason: "tool_calls",
+	}, true
 }

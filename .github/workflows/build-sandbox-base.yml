@@ -1,0 +1,86 @@
+# Builds the full sandbox base image (image/Dockerfile: git, Node 22 +
+# pnpm/bun, Python 3 + uv, build tools, ripgrep/jq) on the PVE1
+# control-plane host and, if asked, makes it the instance image of the
+# live control plane (https://4aicoding.devhub.io.vn).
+#
+# Why: the live instance image 4aicoding-demo-base:0.1 has no git, so
+# agent runs end with "no checkpoint" (files_changed empty, no revert)
+# and most presets lack their toolchains.
+#
+# Run: Actions → build-sandbox-base → Run workflow.
+#   switch_instance=true writes SANDBOXD_IMAGE=<tag> to /opt/4aicoding/.env
+#   and recreates the sandboxd service. Existing sandboxes keep their old
+#   image; new sandboxes (and "Bật Agent") get the new one.
+
+name: build-sandbox-base
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Image tag to build
+        default: sandboxd-base:0.3.0
+      switch_instance:
+        description: Make it the live instance image (SANDBOXD_IMAGE) and restart sandboxd
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-4aicoding-control-plane
+  cancel-in-progress: false
+
+jobs:
+  build:
+    # Same self-hosted runner as deploy-control-plane: the image must
+    # live on the PVE1 Docker daemon that sandboxd talks to.
+    runs-on: [self-hosted, linux, x64, 4aicoding-control]
+    environment: pve1-4aicoding
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build the base image
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          case "$TAG" in
+            *[!A-Za-z0-9._:/-]*|"") echo "::error::bad tag: $TAG" >&2; exit 1 ;;
+          esac
+          sudo docker build -f image/Dockerfile -t "$TAG" .
+
+      - name: Verify the toolchains (and git)
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          sudo docker run --rm "$TAG" bash /opt/verify-base.sh
+          sudo docker run --rm "$TAG" git --version
+
+      - name: Make it the instance image
+        if: inputs.switch_instance
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          cd /opt/4aicoding
+          sudo touch .env
+          if sudo grep -q '^SANDBOXD_IMAGE=' .env; then
+            sudo sed -i "s|^SANDBOXD_IMAGE=.*|SANDBOXD_IMAGE=$TAG|" .env
+          else
+            echo "SANDBOXD_IMAGE=$TAG" | sudo tee -a .env >/dev/null
+          fi
+          sudo docker compose up -d sandboxd
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:9090/healthz >/dev/null; then
+              echo "sandboxd healthy with SANDBOXD_IMAGE=$TAG"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "sandboxd health check failed" >&2
+          sudo docker compose logs --tail=100 sandboxd >&2 || true
+          exit 1

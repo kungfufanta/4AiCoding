@@ -553,6 +553,20 @@ func (w *Worker) loopBody(runCtx context.Context, claimed ClaimedRun, mode *stri
 			break
 		}
 
+		if turn.TextToolCall && !fallback {
+			// The provider dropped the tools field (the model wrote the
+			// call as text): native tool roles would be dropped too, so
+			// carry on in the fallback protocol (once, like the 400 flip).
+			fallback = true
+			toolMode = toolModeFallback
+			*mode = toolMode
+			if _, aerr := w.Store.AppendEvent(runCtx, orgID, run.ID, "status", map[string]any{
+				"phase": "running", "tool_mode": toolMode,
+				"warning": "model wrote the tool call as text; switched to the JSON fallback protocol",
+			}); aerr != nil {
+				return fail(ErrInternal, aerr)
+			}
+		}
 		msgs = append(msgs, llm.Msg{Role: "assistant", Content: turn.Text, ToolCalls: turn.ToolCalls})
 		msgStep = append(msgStep, step)
 
