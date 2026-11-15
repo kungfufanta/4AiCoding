@@ -949,6 +949,10 @@ func (c *Client) attemptStreamTools(ctx context.Context, req ToolRequest, raw []
 			xt.Usage = turn.Usage
 			xt.TextToolCall = true
 			turn = xt
+		} else if mentionsTextToolCall(turn.Text, req.Tools) {
+			// Looks like a call we cannot read: let the loop switch to
+			// the fallback protocol and ask again.
+			return Turn{}, delivered, false, fmt.Errorf("%w: tool call written as unreadable text", ErrBadToolBlock)
 		}
 	}
 	if usageSeen {
@@ -992,7 +996,13 @@ func parseFallbackTurn(text string, tools []Tool) (Turn, error) {
 		rest = after[end+3:]
 	}
 	if len(blocks) > 1 {
-		return Turn{}, fmt.Errorf("%w: %d tool blocks, want exactly one", ErrBadToolBlock, len(blocks))
+		// Models often plan several calls in one reply. Run the first
+		// one; the model sees its result and re-issues the rest. Keep
+		// only the prose before the first block (the text after it
+		// describes calls that did not run).
+		start := strings.Index(text, fence)
+		text = text[:start] + fence + "\n" + blocks[0] + "\n```"
+		blocks = blocks[:1]
 	}
 	turn := Turn{FinishReason: "stop"}
 	if len(blocks) == 0 {
@@ -1057,47 +1067,119 @@ func endpoint(base, suffix string) string {
 }
 
 var (
-	xmlToolRe  = regexp.MustCompile(`(?s)<tool\s+name\s*=\s*["']([A-Za-z0-9_.-]+)["']\s*>(.*?)</tool>`)
-	xmlParamRe = regexp.MustCompile(`(?s)<parameter\s+name\s*=\s*["']([A-Za-z0-9_.-]+)["']\s*>(.*?)</parameter>`)
+	xmlToolRe  = regexp.MustCompile(`(?s)<tool\s+name\s*=\s*["']([A-Za-z0-9_.-]+)["']\s*>(.*?)</tool\s*>`)
+	xmlParamRe = regexp.MustCompile(`(?s)<parameter\s+name\s*=\s*["']([A-Za-z0-9_.-]+)["']\s*>(.*?)</parameter\s*>`)
+	xmlChildRe = regexp.MustCompile(`(?s)<([A-Za-z_][A-Za-z0-9_]*)>(.*?)</([A-Za-z_][A-Za-z0-9_]*)\s*>`)
+	// key="value" | key='value' | key=value | key: value, one per line.
+	kvQuotedRe = regexp.MustCompile(`(?s)([A-Za-z_][A-Za-z0-9_]*)\s*[=:]\s*"((?:[^"\\]|\\.)*)"`)
+	kvSingleRe = regexp.MustCompile(`(?s)([A-Za-z_][A-Za-z0-9_]*)\s*[=:]\s*'((?:[^'\\]|\\.)*)'`)
+	kvBareRe   = regexp.MustCompile(`(?m)^\s*([A-Za-z_][A-Za-z0-9_]*)\s*[=:]\s*(.+?)\s*$`)
 )
 
-// parseXMLToolTurn recognises one text-form tool call of the shape
-// <tool name="list_files"><parameter name="path">/x</parameter></tool>
-// for a tool in the registry. Parameter values that are valid JSON
-// scalars/objects (numbers, true/false, {...}, [...]) keep their type;
-// everything else is a string. Only the first call is taken; the
-// markup is removed from the visible text.
-func parseXMLToolTurn(text string, tools []Tool) (Turn, bool) {
-	m := xmlToolRe.FindStringSubmatchIndex(text)
-	if m == nil {
-		return Turn{}, false
+// textCallValue keeps JSON scalars/objects typed and everything else a
+// (HTML-unescaped) string.
+func textCallValue(raw string) any {
+	raw = strings.TrimSpace(raw)
+	var v any
+	if raw != "" && strings.ContainsAny(raw[:1], "{[0123456789-tfn") && json.Unmarshal([]byte(raw), &v) == nil {
+		return v
 	}
-	name := text[m[2]:m[3]]
-	known := false
-	for _, t := range tools {
-		if t.Name == name {
-			known = true
-			break
-		}
-	}
-	if !known {
-		return Turn{}, false
-	}
+	return html.UnescapeString(raw)
+}
+
+// textCallArgs parses the body of a text-form tool call: a JSON object,
+// <parameter name="k">v</parameter>, <k>v</k>, or key="v" / key: v lines.
+func textCallArgs(body string) map[string]any {
 	args := map[string]any{}
-	for _, pm := range xmlParamRe.FindAllStringSubmatch(text[m[4]:m[5]], -1) {
-		raw := strings.TrimSpace(pm[2])
-		var v any
-		if raw != "" && strings.ContainsAny(raw[:1], "{[0123456789-tfn") && json.Unmarshal([]byte(raw), &v) == nil {
-			args[pm[1]] = v
-		} else {
-			args[pm[1]] = html.UnescapeString(raw)
+	trimmed := strings.TrimSpace(body)
+	if strings.HasPrefix(trimmed, "{") {
+		if json.Unmarshal([]byte(trimmed), &args) == nil {
+			return args
+		}
+		args = map[string]any{}
+	}
+	if ps := xmlParamRe.FindAllStringSubmatch(body, -1); len(ps) > 0 {
+		for _, p := range ps {
+			args[p[1]] = textCallValue(p[2])
+		}
+		return args
+	}
+	if cs := xmlChildRe.FindAllStringSubmatch(body, -1); len(cs) > 0 {
+		for _, c := range cs {
+			if c[1] == c[3] {
+				args[c[1]] = textCallValue(c[2])
+			}
+		}
+		if len(args) > 0 {
+			return args
 		}
 	}
-	argJSON, _ := json.Marshal(args)
-	visible := strings.TrimSpace(strings.TrimSpace(text[:m[0]]) + "\n" + strings.TrimSpace(text[m[1]:]))
+	for _, m := range kvQuotedRe.FindAllStringSubmatch(body, -1) {
+		var v string
+		if json.Unmarshal([]byte(`"`+m[2]+`"`), &v) != nil {
+			v = m[2]
+		}
+		args[m[1]] = v
+	}
+	for _, m := range kvSingleRe.FindAllStringSubmatch(body, -1) {
+		if _, ok := args[m[1]]; !ok {
+			args[m[1]] = strings.ReplaceAll(m[2], `\'`, "'")
+		}
+	}
+	if len(args) == 0 {
+		for _, m := range kvBareRe.FindAllStringSubmatch(body, -1) {
+			args[m[1]] = textCallValue(m[2])
+		}
+	}
+	return args
+}
+
+// parseXMLToolTurn recognises one text-form tool call for a tool in the
+// registry, in the shapes models write when the provider dropped the
+// tools field:
+//
+//	<tool name="list_files"><parameter name="path">/x</parameter></tool>
+//	<run_command>command="ls -la"</run_command>
+//	<read_file><path>a.txt</path></read_file>
+//
+// Only the first call is taken; the markup is removed from the text.
+func parseXMLToolTurn(text string, tools []Tool) (Turn, bool) {
+	known := map[string]bool{}
+	for _, t := range tools {
+		known[t.Name] = true
+	}
+	best, name, body := []int(nil), "", ""
+	if m := xmlToolRe.FindStringSubmatchIndex(text); m != nil && known[text[m[2]:m[3]]] {
+		best, name, body = m[:2], text[m[2]:m[3]], text[m[4]:m[5]]
+	}
+	for _, t := range tools {
+		re := regexp.MustCompile(`(?s)<` + regexp.QuoteMeta(t.Name) + `(?:\s[^>]*)?>(.*?)</` + regexp.QuoteMeta(t.Name) + `\s*>`)
+		if m := re.FindStringSubmatchIndex(text); m != nil && (best == nil || m[0] < best[0]) {
+			best, name, body = m[:2], t.Name, text[m[2]:m[3]]
+		}
+	}
+	if best == nil {
+		return Turn{}, false
+	}
+	argJSON, _ := json.Marshal(textCallArgs(body))
+	visible := strings.TrimSpace(strings.TrimSpace(text[:best[0]]) + "\n" + strings.TrimSpace(text[best[1]:]))
 	return Turn{
 		Text:         visible,
 		ToolCalls:    []ToolCall{{ID: "xml_0", Name: name, Arguments: json.RawMessage(argJSON)}},
 		FinishReason: "tool_calls",
 	}, true
+}
+
+// mentionsTextToolCall reports markup that looks like a tool call
+// (<run_command, <tool name=, ```tool) the parser could not read.
+func mentionsTextToolCall(text string, tools []Tool) bool {
+	if strings.Contains(text, "```tool") || strings.Contains(text, "<tool ") {
+		return true
+	}
+	for _, t := range tools {
+		if strings.Contains(text, "<"+t.Name+">") || strings.Contains(text, "<"+t.Name+" ") {
+			return true
+		}
+	}
+	return false
 }
