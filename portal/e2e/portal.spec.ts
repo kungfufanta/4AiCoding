@@ -402,7 +402,7 @@ test.describe.serial("portal preview", () => {
     await expect(enable).toBeVisible();
 
     // One tap: the chat is created, a sandbox is created with the
-    // org's known-good image, attached, and the chat lands in Agent
+    // sandboxd instance image (no image sent), attached, and the chat lands in Agent
     // mode — the enable row disappears once a sandbox is attached.
     await enable.click();
     await expect(page).toHaveURL(/\/orgs\/.+\/chat\/[0-9a-f-]{36}/, { timeout: 15_000 });

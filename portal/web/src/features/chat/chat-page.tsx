@@ -19,7 +19,7 @@ import {
   Trash2,
   User,
 } from "lucide-react";
-import { api, ApiError, type AgentRun, type ChatMessage, type Sandbox } from "../../api";
+import { api, ApiError, type AgentRun, type ChatMessage } from "../../api";
 import { useChatMessages, useChats, useChatStatus } from "../../lib/queries";
 import { useSandboxes, statusTone } from "../sandboxes/hooks";
 import { cn } from "../../lib/cn";
@@ -68,17 +68,6 @@ const AGENT_ERROR_TEXT: Record<string, string> = {
   plan_limit: "Bạn đã dùng hết hạn mức sandbox của gói.",
   sandbox_unavailable: "Agent tạm thời chưa sẵn sàng.",
 };
-
-// The one-tap sandbox image (issue #84): prefer the newest existing
-// sandbox's image — anything that already passed the deployment's
-// image allowlist is known-good — falling back to the dialog's first
-// suggestion for an org with no sandbox yet.
-function defaultAgentImage(sandboxes: Sandbox[]): string {
-  const newest = [...sandboxes]
-    .filter((s) => s.image)
-    .sort((a, b) => (a.created_at < b.created_at ? 1 : -1))[0];
-  return newest?.image ?? "ubuntu:24.04";
-}
 
 export function ChatPage() {
   const { org, me, isAdmin } = useShell();
@@ -220,8 +209,10 @@ export function ChatPage() {
         qc.setQueryData(["chat-messages", org.id, id], []);
         navigate(`${base}/${id}`);
       }
+      // No image: sandboxd uses its instance image, the only one its
+      // policy always allows and the one the agent tooling expects.
+      // Guessing an image here (ubuntu:24.04) was refused on live.
       const sb = await api.createSandbox(org.id, {
-        image: defaultAgentImage(sandboxes.data?.sandboxes ?? []),
         resources: { cpus: 1, memory_mb: 512 },
       });
       await api.attachChatSandbox(org.id, id, sb.id);

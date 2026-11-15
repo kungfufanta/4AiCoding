@@ -678,9 +678,8 @@ components:
             used: { description: Present on 422 plan_limit. }
     CreateSandboxRequest:
       type: object
-      required: [image]
       properties:
-        image: { type: string, description: "repo[:tag], max 200 chars." }
+        image: { type: string, description: "repo[:tag], max 200 chars. Omitted or empty = the sandboxd instance image (always allowed by policy)." }
         project_id: { type: string, format: uuid }
         command:
           type: array

@@ -610,8 +610,11 @@ var (
 // only rejects what can never be right.
 func (b *createSandboxBody) validate(w http.ResponseWriter) bool {
 	switch {
-	case b.Image == "" || !imageRe.MatchString(b.Image):
-		writeErr(w, http.StatusBadRequest, "bad_request", "image is required (repo[:tag] form, max 200 chars)")
+	// An empty image means sandboxd's instance image: the one image the
+	// instance policy always allows (and the one the agent tooling —
+	// git, the workspace layout — is built for). "Bật Agent" relies on it.
+	case b.Image != "" && !imageRe.MatchString(b.Image):
+		writeErr(w, http.StatusBadRequest, "bad_request", "image must be repo[:tag] form, max 200 chars (or empty for the instance image)")
 	case len(b.Command) > 64:
 		writeErr(w, http.StatusBadRequest, "bad_request", "command must have at most 64 argv entries")
 	case len(b.Command) > 0 && !validArgv(b.Command):
