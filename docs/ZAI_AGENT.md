@@ -26,7 +26,8 @@ Nhãn:
 ### 0. Đọc trạng thái
 - `git fetch origin` và làm việc trên `origin/main` mới nhất.
 - Liệt kê PR đang mở của mình (branch `zai/<nhãn của mình>-*`).
-- Nếu một PR của mình có CI đỏ, review "changes requested" hoặc comment của reviewer chưa xử lý: sửa PR đó **trước** (push thêm commit lên cùng branch), rồi kết thúc lượt. Không nhận issue mới.
+- Nếu một PR của mình có CI đỏ, hoặc có review/comment của reviewer bắt đầu bằng **`[CHANGES REQUESTED]`** mà chưa xử lý: sửa PR đó **trước** (push thêm commit lên cùng branch), comment `ready for re-review` trên PR, rồi kết thúc lượt. Không nhận issue mới. (Reviewer và Z agent dùng chung tài khoản GitHub nên GitHub không cho bấm "Request changes"; tiền tố `[CHANGES REQUESTED]` thay cho trạng thái đó.)
+- Reviewer có thể tự đẩy commit lên branch của bạn (ví dụ merge main để gỡ conflict). Luôn `git pull` branch của mình trước khi sửa tiếp.
 - Nếu PR conflict với main: rebase lên `origin/main`, chạy lại test, rồi `git push --force-with-lease`. Chỉ làm vậy với branch của chính mình.
 
 ### 1. Chọn issue
@@ -54,7 +55,7 @@ Nhãn:
 - Tiêu đề: `<Z1|Z2>: <tiêu đề issue, bỏ phần [P..][Z..]>`.
 - Dòng đầu của body là `Closes #<số issue>`. Sau đó là danh sách acceptance criteria đã tick, cách test, và ảnh chụp nếu là thay đổi UI.
 - Base: `main`. **Không tự merge**: reviewer (Claude) review và merge mỗi 3 giờ.
-- Đợi CI chạy. Nếu CI đỏ, đọc log và sửa ngay trong lượt nếu kịp. Nếu là flake mạng (DNS, apt), ghi rõ điều đó trong comment PR.
+- Đợi CI chạy. Nếu CI đỏ, đọc log và sửa ngay trong lượt nếu kịp. Nếu nghi test bị flake (mạng, DNS, apt, test chậm), ghi tên test và link log vào comment PR. **Không** đẩy commit rỗng (`ci: retrigger`) để chạy lại CI.
 
 ### 5. Kết thúc lượt
 - Comment tiến độ ngắn vào issue: link PR, CI xanh hay đỏ.
