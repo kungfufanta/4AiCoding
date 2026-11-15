@@ -7,7 +7,7 @@ import { defineConfig, devices } from "@playwright/test";
 
 export default defineConfig({
   testDir: ".",
-  testMatch: /(auth\.setup\.ts|portal\.spec\.ts)/,
+  testMatch: /(auth\.setup\.ts|portal\.spec\.ts|journey\.spec\.ts)/,
   timeout: 30_000,
   retries: 0,
   // One bootstrap admin; the tests share signed-in state and run serially.
@@ -35,6 +35,15 @@ export default defineConfig({
         storageState: "playwright/.auth/admin.json",
       },
       dependencies: ["setup"],
+    },
+    {
+      // Issue #87: signed-out journey (own sign-in, no storageState).
+      // After "portal": it makes fake-llm the default connection, and
+      // portal.spec.ts first asserts Chat starts unconfigured.
+      name: "journey",
+      testMatch: /journey\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"] },
+      dependencies: ["portal"],
     },
   ],
 });
