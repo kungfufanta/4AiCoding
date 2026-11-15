@@ -13,8 +13,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -105,6 +107,7 @@ func (s *Server) handleChatStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	} else if s.LLM != nil {
 		model = s.LLM.Model
+		models = append(models, s.LLM.Models...)
 	}
 	enabled := model != ""
 	agentAvailable, agentReason := s.agentAvailability(r.Context(), enabled)
@@ -467,7 +470,7 @@ func (s *Server) handleSendChatMessage(w http.ResponseWriter, r *http.Request) {
 		s.Log.Warn("chat stream failed", slog.Any("error", streamErr))
 		_ = send("error", map[string]string{
 			"code":    "upstream",
-			"message": "the model did not answer; try again",
+			"message": upstreamMessage(streamErr),
 		})
 		return
 	}
@@ -507,7 +510,8 @@ func (s *Server) resolveChatClient(ctx context.Context, orgID string) (*llm.Clie
 func (s *Server) modelAllowed(ctx context.Context, orgID, model string) bool {
 	k, err := llmconfig.ResolveEffective(ctx, s.Pool, orgID)
 	if err != nil {
-		return false // no connection = no override
+		// No DB connection: the env fallback allows its own list only.
+		return s.LLM != nil && slices.Contains(s.LLM.Models, model)
 	}
 	if len(k.Models) == 0 {
 		return true // open list
@@ -518,4 +522,35 @@ func (s *Server) modelAllowed(ctx context.Context, orgID, model string) bool {
 		}
 	}
 	return false
+}
+
+// upstreamMessage tells the user why the model did not answer without
+// leaking anything secret: only the provider's HTTP status (401 = bad
+// key, 404 = wrong base URL, ...) is surfaced, never the body or URL.
+func upstreamMessage(err error) string {
+	var code int
+	if _, scanErr := fmt.Sscanf(lastField(err.Error(), "status "), "%d", &code); scanErr == nil && code > 0 {
+		hint := ""
+		switch {
+		case code == 401 || code == 403:
+			hint = " (API key bị từ chối)"
+		case code == 404:
+			hint = " (sai base URL)"
+		case code == 400:
+			hint = " (provider từ chối request)"
+		case code == 429:
+			hint = " (provider đang giới hạn tốc độ)"
+		}
+		return fmt.Sprintf("the model did not answer: HTTP %d%s; try again", code, hint)
+	}
+	return "the model did not answer (cannot reach the provider); try again"
+}
+
+// lastField returns the text after the last occurrence of sep, or "".
+func lastField(s, sep string) string {
+	i := strings.LastIndex(s, sep)
+	if i < 0 {
+		return ""
+	}
+	return s[i+len(sep):]
 }

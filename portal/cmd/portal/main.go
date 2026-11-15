@@ -126,7 +126,7 @@ func run() error {
 
 	var chat *llm.Client
 	if cfg.ChatEnabled() {
-		chat = &llm.Client{BaseURL: cfg.LLMBaseURL, APIKey: cfg.LLMAPIKey, Model: cfg.LLMModel, Flavor: cfg.LLMFlavor}
+		chat = &llm.Client{BaseURL: cfg.LLMBaseURL, APIKey: cfg.LLMAPIKey, Model: cfg.LLMModel, Models: cfg.LLMModels, Flavor: cfg.LLMFlavor}
 		log.Info("chat enabled", "llm_base_url", cfg.LLMBaseURL, "model", cfg.LLMModel, "flavor", cfg.LLMFlavor)
 	} else {
 		log.Info("chat disabled: PORTAL_DEFAULT_LLM_API_KEY not set")

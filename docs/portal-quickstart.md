@@ -336,3 +336,9 @@ See the **Usage** page for your current month-to-date numbers.
 The source of truth for the Portal `/v1` API is `portal/openapi.yaml`
 in the repo. The SDK is hand-written to match it; if the contract
 changes, the openapi changes first, then the SDK, then this doc.
+
+## Self sign-up on auth.devhub.io.vn (operators)
+
+- **When:** once per Zitadel instance (or if sign-up stops working), run Actions → `zitadel-login-policy` → Run workflow. It needs no input and is safe to re-run.
+- **What it does:** sets `allowRegister` and `allowUsernamePassword` in the default login policy and prints the policy before and after (no secrets).
+- **Check:** open `https://auth.devhub.io.vn/ui/v2/login/register`. New users must verify their email, so SMTP has to be set up (`zitadel-admin-smtp`); the Portal refuses `email_verified=false`.

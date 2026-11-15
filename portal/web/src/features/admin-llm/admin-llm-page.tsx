@@ -250,6 +250,9 @@ export function LLMConnectionDialog({
             ? await api.listPlatformLLMModels(existing.id)
             : await api.listLLMModels(orgID!, existing.id);
         setModels(res.models);
+        if (res.unsupported) {
+          toast("error", "Provider này không có danh sách model (/models). Hãy nhập tên model bằng tay.");
+        }
       } else {
         toast("error", "Save the connection first, then use Load models.");
       }

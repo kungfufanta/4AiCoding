@@ -354,9 +354,9 @@ export function ChatPage() {
 
   async function remove(id: string) {
     const ok = await confirm({
-      title: "Delete this chat?",
-      description: "The conversation and all its messages are removed for good.",
-      confirmLabel: "Delete",
+      title: "Xoá cuộc chat này?",
+      description: "Cuộc chat và toàn bộ tin nhắn sẽ bị xoá vĩnh viễn.",
+      confirmLabel: "Xoá",
       danger: true,
     });
     if (!ok) return;
@@ -469,7 +469,7 @@ export function ChatPage() {
       >
         <Button className="mb-2 w-full" onClick={() => navigate(base)} disabled={busy}>
           <MessageSquarePlus aria-hidden className="size-4" />
-          New chat
+          Chat mới
         </Button>
         <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto">
           {chats.isPending ? (
@@ -478,7 +478,7 @@ export function ChatPage() {
               <Skeleton className="h-7" />
             </div>
           ) : (chats.data ?? []).length === 0 ? (
-            <p className="px-2 py-3 text-xs text-muted">No conversations yet.</p>
+            <p className="px-2 py-3 text-xs text-muted">Chưa có cuộc chat nào.</p>
           ) : (
             chats.data!.map((c) => (
               <div
@@ -523,7 +523,7 @@ export function ChatPage() {
             <PanelLeft aria-hidden className="size-4" />
           </Button>
           <h1 className="truncate text-sm font-semibold text-fg">
-            {chat?.title ?? "New chat"}
+            {chat?.title ?? "Chat mới"}
           </h1>
           <div className="ml-auto flex flex-wrap items-center gap-2">
             {availableModels.length > 1 ? (
@@ -548,10 +548,10 @@ export function ChatPage() {
           {disabled ? (
             <div className="mx-auto max-w-md pt-10 text-center">
               <Bot aria-hidden className="mx-auto size-8 text-muted" />
-              <p className="mt-3 text-sm font-medium text-fg">Chat is not configured yet</p>
+              <p className="mt-3 text-sm font-medium text-fg">Chat chưa được cấu hình</p>
               <p className="mt-1 text-sm text-muted">
-                The operator needs to set <code className="font-mono">PORTAL_DEFAULT_LLM_API_KEY</code> on the
-                Portal deployment.
+                Quản trị viên cần đặt <code className="font-mono">PORTAL_DEFAULT_LLM_API_KEY</code> cho bản
+                Portal đang chạy.
               </p>
             </div>
           ) : mode === "agent" && !attached && empty ? (
@@ -671,7 +671,7 @@ export function ChatPage() {
               maxLength={16000}
               placeholder={
                 disabled
-                  ? "Chat is not configured"
+                  ? "Chat chưa được cấu hình"
                   : mode === "agent"
                     ? attached
                       ? "Mô tả việc cho agent… (Enter để gửi, Shift+Enter xuống dòng)"

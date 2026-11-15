@@ -95,9 +95,9 @@ function RequireAuth() {
     return (
       <main className="flex min-h-dvh items-center justify-center px-4">
         <Card className="max-w-md text-center">
-          <h1 className="text-base font-semibold text-fg">Something went wrong</h1>
+          <h1 className="text-base font-semibold text-fg">Đã có lỗi xảy ra</h1>
           <p className="mt-2 text-sm text-muted">
-            {me.error instanceof Error ? me.error.message : "Could not load your profile."}
+            {me.error instanceof Error ? me.error.message : "Không tải được thông tin của bạn."}
           </p>
         </Card>
       </main>
@@ -162,8 +162,8 @@ function NotFound() {
   return (
     <main className="flex min-h-dvh items-center justify-center px-4">
       <Card className="max-w-md text-center">
-        <h1 className="text-base font-semibold text-fg">Page not found</h1>
-        <p className="mt-2 text-sm text-muted">The address does not match anything in the portal.</p>
+        <h1 className="text-base font-semibold text-fg">Không tìm thấy trang</h1>
+        <p className="mt-2 text-sm text-muted">Địa chỉ này không có trong Portal.</p>
       </Card>
     </main>
   );

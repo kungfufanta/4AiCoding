@@ -1,0 +1,55 @@
+# Turns on self sign-up (allowRegister + username/password) in the default
+# login policy of https://auth.devhub.io.vn, with the iam-admin PAT from
+# the cluster. Pairs with the Portal's "Đăng ký" button (prompt=create).
+#
+# Run: Actions → zitadel-login-policy → Run workflow. Safe to re-run.
+# Check: open https://auth.devhub.io.vn/ui/v2/login/register.
+
+name: zitadel-login-policy
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zitadel-login-policy
+  cancel-in-progress: false
+
+env:
+  ISSUER: https://auth.devhub.io.vn
+  NAMESPACE: 4aicoding
+
+jobs:
+  policy:
+    runs-on: ubuntu-latest
+    environment: k3s-1
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Configure scoped kubeconfig
+        env:
+          KUBECONFIG_B64: ${{ secrets.K3S_4AICODING_KUBECONFIG_B64 }}
+        run: |
+          set -eu
+          test -n "$KUBECONFIG_B64"
+          echo "$KUBECONFIG_B64" | base64 --decode > "$RUNNER_TEMP/kubeconfig"
+          chmod 600 "$RUNNER_TEMP/kubeconfig"
+          echo "KUBECONFIG=$RUNNER_TEMP/kubeconfig" >> "$GITHUB_ENV"
+
+      - name: Read the iam-admin PAT from the cluster
+        run: |
+          set -eu
+          kubectl -n "$NAMESPACE" get secret iam-admin-pat -o jsonpath='{.data.pat}' | base64 --decode > "$RUNNER_TEMP/zitadel-pat"
+          chmod 600 "$RUNNER_TEMP/zitadel-pat"
+          test "$(wc -c < "$RUNNER_TEMP/zitadel-pat")" -gt 10
+
+      - name: Allow self sign-up in the default login policy
+        env:
+          ZITADEL_SETUP_PAT_FILE: ${{ runner.temp }}/zitadel-pat
+        run: python3 scripts/zitadel_login_policy.py
+
+      - name: Remove the PAT file
+        if: always()
+        run: rm -f "$RUNNER_TEMP/zitadel-pat"

@@ -1,0 +1,31 @@
+name: portal-smoke
+
+# Smoke-checks the live Portal (landing → SSO redirect → API auth gate)
+# after every successful deploy, every 6 hours, and on demand.
+# Needs no secret. See scripts/portal-smoke.sh.
+on:
+  workflow_run:
+    workflows: [deploy-k3s-portal]
+    types: [completed]
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: Portal base URL
+        default: https://chat.devhub.io.vn
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Smoke-check the live Portal
+        env:
+          BASE_URL: ${{ inputs.base_url || 'https://chat.devhub.io.vn' }}
+        run: bash scripts/portal-smoke.sh "$BASE_URL"

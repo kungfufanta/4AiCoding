@@ -263,6 +263,10 @@ func (s *Server) handleListLLMModels(w http.ResponseWriter, r *http.Request) {
 		Flavor: conn.Flavor, HTTP: s.llmHTTPFor(conn.OrgID, 10*time.Second),
 	}
 	models, err := client.ListModels(r.Context())
+	if errors.Is(err, llm.ErrModelsUnsupported) {
+		writeJSON(w, http.StatusOK, map[string]any{"models": []string{}, "unsupported": true})
+		return
+	}
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, "upstream_error", err.Error())
 		return

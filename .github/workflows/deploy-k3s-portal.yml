@@ -22,6 +22,10 @@
 #   PORTAL_DEFAULT_LLM_API_LINK    optional: WebHub base URL for the Chat
 #                                  page (PORTAL_DEFAULT_LLM_BASE_URL).
 #                                  Unset = the binary default.
+#   PORTAL_DEFAULT_LLM_MODELS      optional (variable or secret): comma
+#                                  list for the Chat model picker when no
+#                                  Admin → LLM connection exists, e.g.
+#                                  "glm-5.3,glm-4.6". First = default.
 #   PORTAL_SECRETS_KEY             optional: master key for stored LLM
 #                                  keys (A2). Leave it unset and the first
 #                                  deploy generates one and keeps it in the
@@ -222,6 +226,7 @@ jobs:
           OIDC_CLIENT_ID: ${{ secrets.PORTAL_OIDC_CLIENT_ID }}
           OIDC_CLIENT_SECRET: ${{ secrets.PORTAL_OIDC_CLIENT_SECRET }}
           LLM_API_LINK: ${{ secrets.PORTAL_DEFAULT_LLM_API_LINK }}
+          LLM_MODELS: ${{ vars.PORTAL_DEFAULT_LLM_MODELS || secrets.PORTAL_DEFAULT_LLM_MODELS }}
           SBX_URL: ${{ secrets.PORTAL_SANDBOXD_URL }}
           SBX_API_KEY: ${{ secrets.PORTAL_SANDBOXD_API_KEY }}
           SBX_WEBHOOK_SECRET: ${{ secrets.PORTAL_SANDBOXD_WEBHOOK_SECRET }}
@@ -248,17 +253,27 @@ jobs:
             echo "::warning::PORTAL_SANDBOXD_URL not set — agent runs will fail with sandbox_unavailable"
           fi
           llm_args=()
-          if [ -n "$LLM_API_LINK" ]; then
+          if [ -n "$LLM_API_LINK" ] || [ -n "$LLM_MODELS" ]; then
             # Same file trick as OIDC below: jq -Rs quotes the URL safely.
             llm_file="$RUNNER_TEMP/portal-llm-values.yaml"
             {
               echo "chat:"
-              echo "  baseURL: $(printf '%s' "$LLM_API_LINK" | jq -Rs .)"
+              if [ -n "$LLM_API_LINK" ]; then
+                echo "  baseURL: $(printf '%s' "$LLM_API_LINK" | jq -Rs .)"
+              fi
+              if [ -n "$LLM_MODELS" ]; then
+                echo "  models: $(printf '%s' "$LLM_MODELS" | jq -Rs .)"
+              fi
             } > "$llm_file"
             llm_args=(--values "$llm_file")
+          fi
+          if [ -n "$LLM_API_LINK" ]; then
             echo "chat base URL: from PORTAL_DEFAULT_LLM_API_LINK"
           else
             echo "chat base URL: binary default (PORTAL_DEFAULT_LLM_API_LINK not set)"
+          fi
+          if [ -n "$LLM_MODELS" ]; then
+            echo "chat models: $LLM_MODELS"
           fi
           oidc_args=()
           if [ -n "$OIDC_ISSUER" ] && [ -n "$OIDC_CLIENT_ID" ] && [ -n "$OIDC_CLIENT_SECRET" ]; then
