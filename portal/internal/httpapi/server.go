@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -105,6 +106,75 @@ type Server struct {
 	// run events land; nil = poll-only streaming (still correct, 1 s
 	// latency floor). Wired in main from agent.NewNotifier.
 	AgentNotify *agent.Notifier
+
+	// sandboxdHealth caches the sandboxd /healthz result for
+	// sandboxdHealthTTL so /api/orgs/{orgID}/chat/status (issue #82)
+	// does not call sandboxd on every poll. Zero-value is "never
+	// checked"; the first call after expiry re-probes. Protected by
+	// sandboxdHealthMu.
+	sandboxdHealthMu sync.Mutex
+	sandboxdHealth   sandboxdHealthCache
+}
+
+// sandboxdHealthTTL bounds how long a cached "reachable" or
+// "unreachable" answer is reused. 30 s is short enough that an
+// operator restarting sandboxd sees the Chat page recover within
+// half a minute, long enough that the SPA's focus-refresh burst
+// (a handful of polls) does not flood the control plane.
+const sandboxdHealthTTL = 30 * time.Second
+
+// sandboxdHealthTimeout bounds the /healthz probe. The Chat page
+// should not wait more than a couple of seconds for sandboxd to
+// answer before it reports the Agent as unavailable.
+const sandboxdHealthTimeout = 2 * time.Second
+
+// sandboxdHealthCache holds one cached probe result.
+type sandboxdHealthCache struct {
+	checkedAt time.Time
+	reachable bool
+}
+
+// agentAvailability reports whether Agent runs will succeed, and a
+// machine-readable reason when they will not. Used by
+// handleChatStatus (issue #82). The order matters: LLM is checked
+// first because it is a local DB read and cheaper; sandboxd is
+// checked second and cached. If both are down the LLM reason wins
+// (it is the more actionable one for an operator).
+func (s *Server) agentAvailability(ctx context.Context, llmEnabled bool) (bool, string) {
+	if !llmEnabled {
+		return false, "llm_not_configured"
+	}
+	if s.Sandboxd == nil {
+		return false, "sandboxd_not_configured"
+	}
+	if !s.sandboxdReachable(ctx) {
+		return false, "sandboxd_unreachable"
+	}
+	return true, ""
+}
+
+// sandboxdReachable returns the cached health result when it is fresh,
+// otherwise probes sandboxd /healthz and caches the outcome. The
+// probe runs under a 2 s timeout so a hung sandboxd does not stall
+// the chat-status response.
+func (s *Server) sandboxdReachable(ctx context.Context) bool {
+	s.sandboxdHealthMu.Lock()
+	if time.Since(s.sandboxdHealth.checkedAt) < sandboxdHealthTTL {
+		ok := s.sandboxdHealth.reachable
+		s.sandboxdHealthMu.Unlock()
+		return ok
+	}
+	s.sandboxdHealthMu.Unlock()
+
+	probeCtx, cancel := context.WithTimeout(ctx, sandboxdHealthTimeout)
+	defer cancel()
+	err := s.Sandboxd.Health(probeCtx)
+	reachable := err == nil
+
+	s.sandboxdHealthMu.Lock()
+	s.sandboxdHealth = sandboxdHealthCache{checkedAt: time.Now(), reachable: reachable}
+	s.sandboxdHealthMu.Unlock()
+	return reachable
 }
 
 func (s *Server) sessionTTL() time.Duration {

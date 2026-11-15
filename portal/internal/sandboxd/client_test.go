@@ -29,8 +29,8 @@ func TestCreateTagsTenant(t *testing.T) {
 		_ = json.NewDecoder(r.Body).Decode(&gotBody)
 		w.WriteHeader(http.StatusCreated)
 		_, _ = w.Write([]byte(`{"id":"01HX","status":"running","image":"ubuntu:24.04",
-			"resources":{"cpus":1,"memory_mb":512},"ports":[],"egress":[],"egress_mode":"allowlist",
-			"created_at":"2026-11-11T00:00:00Z"}`))
+                        "resources":{"cpus":1,"memory_mb":512},"ports":[],"egress":[],"egress_mode":"allowlist",
+                        "created_at":"2026-11-11T00:00:00Z"}`))
 	})
 	c := New(srv.URL, "test-key", 5*time.Second)
 	sb, err := c.Create(context.Background(), CreateInput{
@@ -201,5 +201,55 @@ func TestStreamsOutliveCallTimeout(t *testing.T) {
 	out, err := c.Exec(context.Background(), "sb1", ExecInput{Cmd: []string{"sleep", "1"}})
 	if err != nil || out.Stdout != "done" {
 		t.Fatalf("exec cut by the call timeout: %v %+v", err, out)
+	}
+}
+
+// Health returns nil on 2xx and an APIError on 5xx; a closed server
+// surfaces as a transport error. The BFF caches the result for 30 s
+// (issue #82), so this is the one call per cache window.
+func TestHealth(t *testing.T) {
+	// 200 → nil.
+	srvOK := fakeSandboxd(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/healthz" {
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok\n"))
+	})
+	c := New(srvOK.URL, "test-key", 2*time.Second)
+	if err := c.Health(context.Background()); err != nil {
+		t.Errorf("Health on 200 = %v, want nil", err)
+	}
+
+	// 503 → APIError.
+	srvBusy := fakeSandboxd(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	})
+	c2 := New(srvBusy.URL, "", 2*time.Second)
+	err := c2.Health(context.Background())
+	var apiErr *APIError
+	if !errorsAs(err, &apiErr) || apiErr.Status != http.StatusServiceUnavailable {
+		t.Errorf("Health on 503 = %v, want APIError{503}", err)
+	}
+
+	// Closed server → transport error (not APIError).
+	srvDead := fakeSandboxd(t, func(w http.ResponseWriter, r *http.Request) {})
+	srvDead.Close()
+	c3 := New(srvDead.URL, "", 2*time.Second)
+	if err := c3.Health(context.Background()); err == nil {
+		t.Error("Health on dead server = nil, want transport error")
+	}
+
+	// Auth header carried.
+	var gotAuth string
+	srvAuth := fakeSandboxd(t, func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+	})
+	c4 := New(srvAuth.URL, "bearer-test", 2*time.Second)
+	_ = c4.Health(context.Background())
+	if gotAuth != "Bearer bearer-test" {
+		t.Errorf("Health auth = %q, want Bearer bearer-test", gotAuth)
 	}
 }

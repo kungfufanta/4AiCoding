@@ -529,6 +529,37 @@ func (c *Client) KeepAlive(ctx context.Context, id string, on bool) error {
 	return c.do(ctx, method, "/v1/sandboxes/"+url.PathEscape(id)+"/keep-alive", map[string]any{}, nil)
 }
 
+// Health pings sandboxd's /healthz endpoint. It is the only call the
+// BFF makes to sandboxd outside the S3 surface: the Chat page polls
+// /api/orgs/{orgID}/chat/status and needs to know whether Agent runs
+// will succeed before the user sends one (issue #82). A 2xx body means
+// the control plane is up; the Portal caches the result for 30 s so a
+// burst of chat-status requests does not flood sandboxd.
+//
+// The caller bounds the timeout through ctx. Health never retries — a
+// cached "unreachable" answer is fine for 30 s, and a retry storm would
+// mask the very outage the caller wants to surface.
+func (c *Client) Health(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/healthz", nil)
+	if err != nil {
+		return err
+	}
+	if c.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	}
+	res, err := c.httpClient().Do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	// Drain so the connection can be reused; cap to avoid a runaway body.
+	_, _ = io.Copy(io.Discard, io.LimitReader(res.Body, 1<<20))
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		return &APIError{Status: res.StatusCode, Code: "health", Message: "sandboxd /healthz returned " + http.StatusText(res.StatusCode)}
+	}
+	return nil
+}
+
 // ExecStream opens the exec v2 endpoint in NDJSON streaming mode
 // (?stream=ndjson) and returns the raw response. The caller reads
 // newline-delimited JSON lines and relays them; the request context

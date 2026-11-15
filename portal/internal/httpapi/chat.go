@@ -65,8 +65,11 @@ type chatMessageJSON struct {
 }
 
 // handleChatStatus tells the SPA whether chat is wired, which model
-// answers by default and which models the picker may offer (A2).
-// Resolution order: org default → platform default → env fallback.
+// answers by default and which models the picker may offer (A2), and
+// whether Agent runs will actually work (issue #82). The latter needs
+// both a configured LLM and a reachable sandboxd: a run that lands on
+// "sandbox_unavailable" after the user has typed a prompt is the UX
+// this route exists to prevent.
 //
 // The route is org-scoped (GET /api/orgs/{orgID}/chat/status) so the
 // resolver can see DB-configured org + platform connections; the
@@ -75,6 +78,19 @@ type chatMessageJSON struct {
 // appear disabled even after the admin added a platform connection.
 // Membership is checked first so a foreign org id answers 404 (no
 // existence leak).
+//
+// agent_reason is one of:
+//
+//	""                            — agent is available
+//	"sandboxd_not_configured"    — PORTAL_SANDBOXD_URL is empty
+//	"sandboxd_unreachable"       — /healthz timed out or returned non-2xx
+//	"llm_not_configured"         — no effective model connection and no
+//	                                env fallback
+//
+// The sandboxd health check is cached for 30 s (sandboxdHealthTTL) so a
+// burst of chat-status polls (the SPA refreshes on focus) does not
+// flood the control plane. The cache is keyed only on "is sandboxd up"
+// because there is no per-org dimension to sandboxd reachability.
 func (s *Server) handleChatStatus(w http.ResponseWriter, r *http.Request) {
 	orgID := pathOrgID(r)
 	if _, ok := s.requireMember(w, r, orgID); !ok {
@@ -90,10 +106,14 @@ func (s *Server) handleChatStatus(w http.ResponseWriter, r *http.Request) {
 	} else if s.LLM != nil {
 		model = s.LLM.Model
 	}
+	enabled := model != ""
+	agentAvailable, agentReason := s.agentAvailability(r.Context(), enabled)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"enabled": model != "",
-		"model":   model,
-		"models":  models,
+		"enabled":         enabled,
+		"model":           model,
+		"models":          models,
+		"agent_available": agentAvailable,
+		"agent_reason":    agentReason,
 	})
 }
 
