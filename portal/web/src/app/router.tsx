@@ -1,13 +1,13 @@
 // Router + providers (PORTAL_PLAN_V2 §3; Z1 #79). Route tree:
 //
 //   /                         — public landing for guests; signed-in users
-//                               keep the first-org redirect (chat-first
-//                               lands with issue #81)
+//                               go to the first org's Chat (#81)
 //   /login                    — sign-in (SSO + password)
 //   /invites/:orgId?token=…   — accept an invite (signs in first)
 //   /orgs/:orgSlug/…          — app shell: chat, projects, members, api keys, audit
 //
 // The org context rides in the URL so refresh and deep links keep it.
+// Z1 #81: sign-in and "/" land in the first org's Chat, not Projects.
 
 import { BrowserRouter, Navigate, Outlet, Route, Routes, useLocation } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -56,7 +56,7 @@ export function PortalApp() {
               <Route element={<RequireAuth />}>
                 <Route path="/quickstart" element={<OrgShortRedirect target="quickstart" />} />
                 <Route path="/orgs/:orgSlug" element={<AppShell />}>
-                  <Route index element={<Navigate to="projects" replace />} />
+                  <Route index element={<Navigate to="chat" replace />} />
                   <Route path="chat" element={<ChatPage />} />
                   <Route path="chat/:chatId" element={<ChatPage />} />
                   <Route path="projects" element={<ProjectsPage />} />
@@ -107,8 +107,8 @@ function RequireAuth() {
 }
 
 // "/" is public (Z1 #79): guests get the landing page instead of a
-// redirect to /login. Signed-in users keep the pre-existing first-org
-// redirect (it moves to Chat with issue #81). bootstrapLogin always
+// redirect to /login. Signed-in users go to the first org's Chat
+// (Z1 #81). bootstrapLogin always
 // leaves at least the personal org, so the no-org card is a repair
 // hint, not a dead end.
 function HomeGate() {
@@ -117,7 +117,7 @@ function HomeGate() {
   if (me.isPending) return <FullPageSpinner />;
   if (me.data) {
     const slug = me.data.orgs[0]?.slug;
-    if (slug) return <Navigate to={`/orgs/${slug}/projects`} replace />;
+    if (slug) return <Navigate to={`/orgs/${slug}/chat`} replace />;
     return <NoOrgCard />;
   }
   if (me.error instanceof ApiError && me.error.status === 401) {

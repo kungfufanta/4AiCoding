@@ -12,17 +12,20 @@ async function shot(page: Page, name: string) {
   await page.screenshot({ path: `${SHOTS}/${name}.png`, fullPage: true });
 }
 
-// "/" redirects to the first org's projects; return the slug for the
-// org-scoped pages.
+// "/" lands signed-in users in the first org's Chat (Z1 #81); take
+// the slug from that URL for the org-scoped pages.
 async function gotoOrgBase(page: Page): Promise<string> {
   await page.goto("/");
-  await expect(page).toHaveURL(/\/orgs\/([^/]+)\/projects/);
-  return page.url().match(/\/orgs\/([^/]+)\/projects/)![1];
+  await expect(page).toHaveURL(/\/orgs\/([^/]+)\/chat/);
+  return page.url().match(/\/orgs\/([^/]+)\/chat/)![1];
 }
 
 test.describe.serial("portal preview", () => {
   test("projects page and create-project dialog", async ({ page }) => {
     const slug = await gotoOrgBase(page);
+    // Z1 #81: the org index now lands in Chat — Projects tests drive
+    // their own route.
+    await page.goto(`/orgs/${slug}/projects`);
     await expect(page.getByRole("heading", { name: "Projects" })).toBeVisible();
     await shot(page, "01-projects");
 
