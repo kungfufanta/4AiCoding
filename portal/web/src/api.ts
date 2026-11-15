@@ -143,7 +143,8 @@ export type SandboxList = {
   unreachable_nodes?: string[];
 };
 export type SandboxCreateBody = {
-  image: string;
+  // Omitted or "" = sandboxd's instance image (always allowed by policy).
+  image?: string;
   project_id?: string;
   command?: string[];
   env?: Record<string, string>;
