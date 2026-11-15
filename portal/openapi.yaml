@@ -570,6 +570,52 @@ paths:
   # These serve the SPA with the login session cookie (member role,
   # CSRF on writes); they are not part of the /v1 key contract and are
   # listed here so the UI's data surface stays documented.
+  /api/orgs/{orgID}/chat/status:
+    get:
+      operationId: bffChatStatus
+      tags: [agent]
+      summary: >-
+        Whether chat is wired and Agent runs will succeed (BFF, session
+        cookie, member role). The Chat page polls this to decide
+        whether to enable the Agent composer; it answers before the
+        user sends a prompt so "sandbox_unavailable" never lands on a
+        half-typed message (issue #82).
+      security: []
+      parameters:
+        - name: orgID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Chat + Agent status for this org.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled: { type: boolean, description: "true when a default model is resolved (org default → platform default → env fallback)." }
+                  model: { type: string, description: "Default model id, or empty when enabled=false." }
+                  models:
+                    type: array
+                    items: { type: string }
+                    description: Models the picker may offer.
+                  agent_available:
+                    type: boolean
+                    description: >-
+                      Whether Agent runs will succeed. Requires enabled=true
+                      AND a reachable sandboxd. false when the LLM is not
+                      configured, sandboxd is not configured, or /healthz
+                      fails.
+                  agent_reason:
+                    type: string
+                    description: >-
+                      Machine-readable reason when agent_available=false.
+                      One of "" (available), "llm_not_configured",
+                      "sandboxd_not_configured", "sandboxd_unreachable".
+        "401": { $ref: "#/components/responses/Error", description: no session. }
+        "403": { $ref: "#/components/responses/Error", description: not an org member. }
+        "404": { $ref: "#/components/responses/Error", description: unknown org id. }
   /api/orgs/{orgID}/sandboxes/{id}/agent/runs:
     get:
       operationId: bffListSandboxAgentRuns
