@@ -143,12 +143,15 @@ func Definitions() []llm.Tool {
 		{
 			Name: "write_file",
 			Description: "Create or overwrite a file (<= 1 MiB). Parent directories are " +
-				"created automatically. Prefer edit_file for existing files.",
+				"created automatically. Prefer edit_file for existing files. " +
+				"append=true adds content to the end of the file (creating it if " +
+				"missing): write a large file in parts of at most ~80 lines each.",
 			Parameters: json.RawMessage(`{
   "type": "object",
   "properties": {
     "path":    {"type": "string"},
-    "content": {"type": "string"}
+    "content": {"type": "string"},
+    "append":  {"type": "boolean"}
   },
   "required": ["path", "content"]
 }`),
@@ -596,6 +599,7 @@ func (r *Registry) writeFile(ctx context.Context, call llm.ToolCall) (Result, er
 	var a struct {
 		Path    string `json:"path"`
 		Content string `json:"content"`
+		Append  bool   `json:"append"`
 	}
 	if err := toolArgs(call, &a); err != nil {
 		return badRequest(err.Error()), nil
@@ -605,6 +609,20 @@ func (r *Registry) writeFile(ctx context.Context, call llm.ToolCall) (Result, er
 		return blocked(err), nil
 	}
 	data := []byte(a.Content)
+	verb := "wrote"
+	if a.Append {
+		prev, _, rerr := Read(ctx, r.sbx, r.sandboxID, rel)
+		var api *sandboxd.APIError
+		switch {
+		case rerr == nil:
+			data = append(prev, data...)
+			verb = "appended to"
+		case errors.As(rerr, &api) && api.Status == 404:
+			// missing file: append creates it
+		default:
+			return r.filesErr(rerr)
+		}
+	}
 	if len(data) > writeMaxBytes {
 		return Result{OK: false, ExitCode: -1, ErrCode: "too_large",
 			Text: fmt.Sprintf("write_file content is %d bytes, the limit is 1 MiB", len(data))}, nil
@@ -613,7 +631,7 @@ func (r *Registry) writeFile(ctx context.Context, call llm.ToolCall) (Result, er
 		return r.filesErr(err)
 	}
 	return Result{OK: true, ExitCode: -1,
-		Text: fmt.Sprintf("wrote %s (%d bytes)", r.display(a.Path), len(data))}, nil
+		Text: fmt.Sprintf("%s %s (%d bytes)", verb, r.display(a.Path), len(data))}, nil
 }
 
 // filesErr distinguishes a model-visible files-API error (missing
