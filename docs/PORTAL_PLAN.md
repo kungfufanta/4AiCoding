@@ -81,7 +81,7 @@ Các mục đánh dấu *(giả định)* là mặc định khi chưa có quyế
 
 ### 3.3 Portal → sandboxd
 
-- Portal dùng **một** API key sandboxd (tạo qua `POST /v1/api-keys`, role `operator`, scopes `sandboxes:read`, `sandboxes:write`, `sandboxes:exec`, `sandboxes:egress`, `snapshots`). Lưu trong Kubernetes Secret, có runbook xoay vòng.
+- Portal dùng **một** API key sandboxd (tạo qua `POST /v1/api-keys`, role `operator`, scopes `sandboxes:read`, `sandboxes:write`, `sandboxes:exec`, `sandboxes:egress`, `sandboxes:files`, `snapshots`; thiếu `sandboxes:files` thì agent và tab Code không đọc/ghi được file, run dừng với `sandbox_files_forbidden`). Lưu trong Kubernetes Secret, có runbook xoay vòng.
 - Mọi sandbox Portal tạo đều mang tag tenant (xem 4.1).
 - **Data plane trực tiếp (tuỳ chọn, S3b)**: với tác vụ dài, Portal gọi `POST /v1/api-keys` của sandboxd với `sandbox_id` + `ttl_seconds` (300–600) + scopes hẹp, rồi trả key đó cho agent. Key này chỉ dùng được cho đúng sandbox đó. Mặc định ở S3, Portal proxy `exec` luôn; chỉ làm S3b nếu đo thấy proxy là nút thắt.
 
