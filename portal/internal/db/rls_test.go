@@ -158,14 +158,20 @@ func TestRLSCrossOrgIsolation(t *testing.T) {
 		if _, err := tx.Exec(ctx, `ROLLBACK TO SAVEPOINT rls_probe`); err != nil {
 			return err
 		}
-		// DELETE without WHERE must not touch org B memberships; it
-		// may only remove rows the caller can see (their own).
+		// DELETE without WHERE must not touch org B memberships.
+		// Plan §5.2 (migration 0012 review fix): a member can
+		// self-leave (user_id = ME AND role <> 'owner'), but the
+		// owner row cannot be removed by the caller themselves
+		// (role = 'owner' branch is excluded) — only by another
+		// owner. User A is the owner of org A, so the WHERE-less
+		// DELETE finds zero deletable rows. The invariant is "org
+		// B is not touched", which still holds.
 		ct, err = tx.Exec(ctx, `DELETE FROM memberships`)
 		if err != nil {
 			return err
 		}
-		if ct.RowsAffected() == 0 {
-			t.Errorf("DELETE FROM memberships removed 0 rows, want at least the caller's own")
+		if ct.RowsAffected() != 0 {
+			t.Errorf("DELETE FROM memberships removed %d rows, want 0 (owner cannot self-leave)", ct.RowsAffected())
 		}
 		return nil
 	})
