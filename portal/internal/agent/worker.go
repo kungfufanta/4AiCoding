@@ -243,6 +243,16 @@ func (w *Worker) startRun(claimed ClaimedRun) {
 	w.wg.Add(1)
 	go func() {
 		defer w.wg.Done()
+		// runDone is closed when executeRun returns. The heartbeat
+		// loop keeps renewing the lease until then — even after a
+		// user cancel lands — so the sweeper cannot reap a run
+		// whose worker is still finalising. Before this, the
+		// heartbeat stopped renewing the moment cancel() was
+		// called, and a slow CI runner could let executeRun's
+		// cleanup (postcheck, keep-alive-off, SaveSummary) outrun
+		// the lease + sweeper grace, turning a cancelled run into
+		// worker_lost (issue #101, TestCancelDuringPrep).
+		runDone := make(chan struct{})
 		defer func() {
 			if r := recover(); r != nil {
 				w.Log.Error("agent run panicked", "run_id", claimed.ID, "panic", fmt.Sprint(r))
@@ -254,6 +264,7 @@ func (w *Worker) startRun(claimed ClaimedRun) {
 					DoneData:  map[string]any{"status": StatusFailed, "error_code": ErrInternal},
 				})
 			}
+			close(runDone)
 			w.mu.Lock()
 			delete(w.active, claimed.ID)
 			w.mu.Unlock()
@@ -264,14 +275,13 @@ func (w *Worker) startRun(claimed ClaimedRun) {
 		hbDone := make(chan struct{})
 		go func() {
 			defer close(hbDone)
-			w.heartbeatLoop(runCtx, claimed, t.heartbeat, t.lease, t.cancelPoll, cancel)
+			w.heartbeatLoop(runCtx, runDone, claimed, t.heartbeat, t.lease, t.cancelPoll, cancel)
 		}()
 
 		// The one-line metrics log for the finished run lives in
 		// executeRun (right after SetFinal — A3.5 plan §11): it is
 		// richer (org_id, duration_ms, tool_mode) and the "exactly
-		// one line per run" contract means there must not be a
-		// second one here.
+		// one per run" contract means there must not be a second one here.
 		_, err := w.executeRun(runCtx, claimed)
 		// Wait for the heartbeat goroutine before releasing the slot.
 		<-hbDone
@@ -289,7 +299,15 @@ func (w *Worker) startRun(claimed ClaimedRun) {
 //   - cancel_requested seen by the 1 s poll (fallback path);
 //   - a lease renewal rejection (reaped/lost ownership — the loop
 //     aborts; SetFinal keeps the first outcome anyway).
-func (w *Worker) heartbeatLoop(runCtx context.Context, claimed ClaimedRun, heartbeat, lease, cancelPoll time.Duration, cancel context.CancelFunc) {
+//
+// The lease is renewed until runDone closes (executeRun returned),
+// not just until cancel() is called. A user cancel stops the run's
+// work but the worker is still alive finalising it (SaveSummary,
+// postcheck, keep-alive-off); without continued renewal the sweeper
+// would reap the run as worker_lost before SetFinal landed. The
+// sweeper is the backstop for a worker that truly died, not for one
+// that is winding down on purpose (issue #101).
+func (w *Worker) heartbeatLoop(runCtx context.Context, runDone <-chan struct{}, claimed ClaimedRun, heartbeat, lease, cancelPoll time.Duration, cancel context.CancelFunc) {
 	ticker := time.NewTicker(heartbeat)
 	defer ticker.Stop()
 	poller := time.NewTicker(cancelPoll)
@@ -302,26 +320,64 @@ func (w *Worker) heartbeatLoop(runCtx context.Context, claimed ClaimedRun, heart
 		notify, stopNotify = w.Notify.SubscribeRun(claimed.ID)
 		defer stopNotify()
 	}
+	cancelled := false
 	for {
 		// Renew first: a fresh run must not be sweepable for a full
-		// heartbeat period.
-		ok, err := w.Store.RenewLease(runCtx, claimed.OrgID, claimed.ID, w.ID, lease)
+		// heartbeat period. Renew under the worker's context (w.ctx)
+		// when runCtx is already cancelled — the lease must stay
+		// alive while executeRun finalises.
+		renewCtx := runCtx
+		if cancelled {
+			// runCtx is done (user cancel); renew under the
+			// worker context so the lease outlives the run's
+			// work context. executeRun's final write uses
+			// context.WithoutCancel(runCtx) for the same reason.
+			renewCtx = w.ctx
+		}
+		ok, err := w.Store.RenewLease(renewCtx, claimed.OrgID, claimed.ID, w.ID, lease)
 		if err != nil || !ok {
+			if cancelled {
+				// Already cancelling and the lease renewal
+				// failed (worker context done, or the run
+				// was reaped by another path). Stop; the
+				// sweeper / SetFinal own the terminal write.
+				return
+			}
 			w.Log.Warn("agent lease renewal failed (stopping run)",
 				"run_id", claimed.ID, "error", fmt.Sprint(err))
 			cancel()
-			return
+			cancelled = true
+			// Keep renewing under the worker context so the
+			// run is not reaped while executeRun finalises.
+			continue
+		}
+		if cancelled {
+			// Run's work context is cancelled; we only renew
+			// now. Wait for the next heartbeat tick or runDone.
+			select {
+			case <-runDone:
+				return
+			case <-w.ctx.Done():
+				return
+			case <-ticker.C:
+				continue
+			}
 		}
 		select {
 		case <-runCtx.Done():
-			return
+			// User/system cancel: signal executeRun to stop,
+			// but keep renewing (handled above) until it does.
+			cancel()
+			cancelled = true
+			continue
 		case <-ticker.C:
 		case <-poller.C:
 			want, err := w.Store.CancelRequested(runCtx, claimed.OrgID, claimed.ID)
 			if err == nil && want {
 				w.Log.Info("agent run cancel requested (poll)", "run_id", claimed.ID)
 				cancel()
-				return
+				cancelled = true
+				continue
 			}
 		case msg, open := <-notify:
 			if !open {
@@ -331,8 +387,11 @@ func (w *Worker) heartbeatLoop(runCtx context.Context, claimed ClaimedRun, heart
 			if msg.Channel == NotifyCancel && msg.RunID == claimed.ID {
 				w.Log.Info("agent run cancel requested (notify)", "run_id", claimed.ID)
 				cancel()
-				return
+				cancelled = true
+				continue
 			}
+		case <-runDone:
+			return
 		}
 	}
 }
