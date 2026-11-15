@@ -514,11 +514,13 @@ func TestFallbackPlainText(t *testing.T) {
 	}
 }
 
-// TestFallbackRejectsTwoBlocks — the protocol says exactly one.
-func TestFallbackRejectsTwoBlocks(t *testing.T) {
-	_, err := parseFallbackTurn("a ```tool\n{\"name\":\"get_weather\",\"arguments\":{}}\n``` b ```tool\n{\"name\":\"get_weather\",\"arguments\":{}}\n```", simpleTools())
-	if !errors.Is(err, ErrBadToolBlock) {
-		t.Fatalf("err = %v", err)
+// TestFallbackTwoBlocksRunsFirst — the protocol asks for one block, but
+// models (GLM on the z.ai hub) often plan several: the first runs, the
+// rest are dropped and the model re-issues them after seeing the result.
+func TestFallbackTwoBlocksRunsFirst(t *testing.T) {
+	turn, err := parseFallbackTurn("a ```tool\n{\"name\":\"get_weather\",\"arguments\":{}}\n``` b ```tool\n{\"name\":\"get_weather\",\"arguments\":{}}\n```", simpleTools())
+	if err != nil || len(turn.ToolCalls) != 1 || turn.Text != "a" {
+		t.Fatalf("turn = %+v, err = %v", turn, err)
 	}
 }
 

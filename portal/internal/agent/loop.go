@@ -524,6 +524,23 @@ func (w *Worker) loopBody(runCtx context.Context, claimed ClaimedRun, mode *stri
 			case errors.Is(runCtx.Err(), context.DeadlineExceeded) ||
 				errors.Is(limCtx.Err(), context.DeadlineExceeded):
 				return fail(ErrTimeout, fmt.Errorf("run exceeded %s: %w", timeout, err))
+			case errors.Is(err, llm.ErrBadToolBlock) && !fallback:
+				// Native mode, but the model wrote an unreadable text
+				// call (the provider dropped the tools field): switch to
+				// the fallback protocol, which spells out the format.
+				fallback = true
+				toolMode = toolModeFallback
+				*mode = toolMode
+				if _, aerr := w.Store.AppendEvent(runCtx, orgID, run.ID, "status", map[string]any{
+					"phase": "running", "tool_mode": toolMode,
+					"warning": "model wrote the tool call as text; switched to the JSON fallback protocol",
+				}); aerr != nil {
+					return fail(ErrInternal, aerr)
+				}
+				msgs = append(msgs, llm.Msg{Role: "user", Content: "Your last reply tried to call a tool in a format I cannot read. " +
+					"Call tools ONLY with one ```tool block as described in the protocol."})
+				msgStep = append(msgStep, step)
+				continue
 			case errors.Is(err, llm.ErrBadToolBlock) || errors.Is(err, llm.ErrBadToolCall):
 				// The tool protocol was violated (fallback fence, or
 				// assembled arguments that are not JSON): feed the
