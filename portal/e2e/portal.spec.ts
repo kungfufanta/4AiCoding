@@ -385,6 +385,91 @@ test.describe.serial("portal preview", () => {
     await expect(page.getByText("hello.txt")).toHaveCount(0);
   });
 
+  // --- Issue #84: one-tap "Bật Agent" — the chat creates and attaches
+  // its own sandbox; no trip to the Sandboxes page. Runs right after
+  // the attach test above, so the org already holds an allowlisted
+  // sandbox whose image the one-tap create reuses (the preview
+  // allowlist only takes sandboxd-e2e:ci).
+  test("agent — one-tap Bật Agent creates a sandbox and runs (issue 84)", async ({ page }) => {
+    test.setTimeout(240_000);
+    const slug = await gotoOrgBase(page);
+
+    await page.goto(`/orgs/${slug}/chat`);
+    await page.getByRole("button", { name: "New chat" }).click();
+    const enable = page.getByTestId("enable-agent");
+    await expect(enable).toBeVisible();
+
+    // One tap: the chat is created, a sandbox is created with the
+    // org's known-good image, attached, and the chat lands in Agent
+    // mode — the enable row disappears once a sandbox is attached.
+    await enable.click();
+    await expect(page).toHaveURL(/\/orgs\/.+\/chat\/[0-9a-f-]{36}/, { timeout: 15_000 });
+    await expect(enable).toBeHidden({ timeout: 60_000 });
+    await expect(page.getByRole("button", { name: "Agent" })).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByRole("button", { name: "Sandbox của chat" })).toBeVisible({ timeout: 10_000 });
+
+    // A full agent run on the auto-created sandbox (fake-llm's
+    // default scenario: write_file hello.txt → cat → finish).
+    await page.getByLabel("Message").fill("tạo file hello.txt cho tôi");
+    await page.getByRole("button", { name: "Send" }).click();
+    const result = page.getByTestId("agent-result");
+    await expect(result).toBeVisible({ timeout: 90_000 });
+    await expect(result.getByText("Hoàn thành")).toBeVisible();
+    await expect(result.getByLabel("Files changed").getByText("hello.txt", { exact: true })).toBeVisible();
+    await shot(page, "40-enable-agent-run");
+  });
+
+  test("agent — Bật Agent locks while creating and maps error codes (issue 84)", async ({ page }) => {
+    test.setTimeout(60_000);
+    const slug = await gotoOrgBase(page);
+
+    await page.goto(`/orgs/${slug}/chat`);
+    await page.getByRole("button", { name: "New chat" }).click();
+    const enable = page.getByTestId("enable-agent");
+    await expect(enable).toBeVisible();
+
+    // Hold POST /sandboxes open so the first create is still in
+    // flight for the double-click check, then answer quota_exceeded.
+    let createCalls = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let firstPostSeen!: () => void;
+    const postSeen = new Promise<void>((resolve) => {
+      firstPostSeen = resolve;
+    });
+    await page.route("**/api/orgs/*/sandboxes", async (route) => {
+      if (route.request().method() !== "POST") return route.continue();
+      createCalls += 1;
+      firstPostSeen();
+      await gate;
+      await route.fulfill({
+        status: 403,
+        contentType: "application/json",
+        body: JSON.stringify({ error: { code: "quota_exceeded", message: "quota exceeded" } }),
+      });
+    });
+
+    await enable.click();
+    // While the first request is in flight the button is locked — a
+    // second click (forced past actionability checks) must not fire a
+    // second create request.
+    await expect(enable).toBeDisabled({ timeout: 5_000 });
+    await postSeen;
+    await enable.click({ force: true });
+    await page.waitForTimeout(500);
+    expect(createCalls).toBe(1);
+    release();
+
+    // quota_exceeded maps to the Vietnamese plan-limit message and
+    // the button recovers for another try.
+    await expect(
+      page.getByRole("status").filter({ hasText: "Bạn đã dùng hết hạn mức sandbox của gói." }),
+    ).toBeVisible({ timeout: 10_000 });
+    await expect(enable).toBeEnabled({ timeout: 10_000 });
+  });
+
   test("agent — reload mid-run rebuilds the run view (A3.4)", async ({ page }) => {
     test.setTimeout(180_000);
     if (!agentChatUrl) throw new Error("agent chat not prepared by the previous test");
