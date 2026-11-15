@@ -318,7 +318,7 @@ test.describe.serial("portal preview", () => {
     await page.getByRole("menuitem", { name: new RegExp(agentSandboxId) }).click();
     await expect(page).toHaveURL(/\/orgs\/.+\/chat\/[0-9a-f-]{36}/, { timeout: 15_000 });
     agentChatUrl = page.url();
-    await expect(page.getByRole("button", { name: "Agent" })).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByRole("button", { name: "Agent", exact: true })).toHaveAttribute("aria-pressed", "true");
     await shot(page, "26-agent-attached");
 
     // 3. Hand the task over; tool cards stream in one line each.
@@ -407,7 +407,7 @@ test.describe.serial("portal preview", () => {
     await enable.click();
     await expect(page).toHaveURL(/\/orgs\/.+\/chat\/[0-9a-f-]{36}/, { timeout: 15_000 });
     await expect(enable).toBeHidden({ timeout: 60_000 });
-    await expect(page.getByRole("button", { name: "Agent" })).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByRole("button", { name: "Agent", exact: true })).toHaveAttribute("aria-pressed", "true");
     await expect(page.getByRole("button", { name: "Sandbox của chat" })).toBeVisible({ timeout: 10_000 });
 
     // A full agent run on the auto-created sandbox (fake-llm's
@@ -479,8 +479,8 @@ test.describe.serial("portal preview", () => {
     // Mode is per mount — switch back to Agent before handing over a
     // new job (in Chat mode this text would go to the LLM as a plain
     // message and the asserts below would ride run 1's card).
-    await page.getByRole("button", { name: "Agent" }).click();
-    await expect(page.getByRole("button", { name: "Agent" })).toHaveAttribute("aria-pressed", "true");
+    await page.getByRole("button", { name: "Agent", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Agent", exact: true })).toHaveAttribute("aria-pressed", "true");
 
     await page.getByLabel("Message").fill("SLOW tạo lại hello.txt");
     await page.getByRole("button", { name: "Send" }).click();
@@ -504,7 +504,7 @@ test.describe.serial("portal preview", () => {
     if (!agentChatUrl) throw new Error("agent chat not prepared by the previous test");
     await page.goto(agentChatUrl);
     // Mode is per mount — see the reload test.
-    await page.getByRole("button", { name: "Agent" }).click();
+    await page.getByRole("button", { name: "Agent", exact: true }).click();
 
     await page.getByLabel("Message").fill("HANG đừng làm gì cả");
     await page.getByRole("button", { name: "Send" }).click();
@@ -522,8 +522,8 @@ test.describe.serial("portal preview", () => {
     if (!agentChatUrl) throw new Error("agent chat not prepared by the previous test");
     await page.goto(agentChatUrl);
     // Mode is per mount — see the reload test.
-    await page.getByRole("button", { name: "Agent" }).click();
-    await expect(page.getByRole("button", { name: "Agent" })).toHaveAttribute("aria-pressed", "true");
+    await page.getByRole("button", { name: "Agent", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Agent", exact: true })).toHaveAttribute("aria-pressed", "true");
 
     // Run A creates a.txt. It must exist BEFORE the renaming run's
     // checkpoint — that is what makes the rename visible as D+A (a

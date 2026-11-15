@@ -641,8 +641,10 @@ export function ChatPage() {
           )}
           {/* Issue #84: the one-tap path replaces the trip to the
               Sandboxes page; the header dropdown stays as the secondary
-              "attach an existing sandbox" option. */}
-          {!attached && !disabled && (
+              "attach an existing sandbox" option. Hidden while the
+              chats list is still loading — an attached chat must not
+              flash the button on open. */}
+          {!attached && !disabled && !chats.isPending && (
             <div className="flex items-center gap-2 pb-2">
               <Button
                 type="button"
