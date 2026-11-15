@@ -3,7 +3,7 @@
 // retry would double-submit mutations' GET cousins for no benefit.
 
 import { useQuery } from "@tanstack/react-query";
-import { api, type Me } from "../api";
+import { api, type AuthMethods, type Me } from "../api";
 
 export function useMe() {
   return useQuery<Me>({
@@ -14,8 +14,11 @@ export function useMe() {
   });
 }
 
+// Z1 #83: `signup` is optional — newer backends report it so the
+// login page can show the Đăng ký button; older ones omit the field
+// and the button stays hidden without any error.
 export function useAuthMethods() {
-  return useQuery({
+  return useQuery<AuthMethods & { signup?: boolean }>({
     queryKey: ["auth-methods"],
     queryFn: api.authMethods,
     staleTime: 60_000,
